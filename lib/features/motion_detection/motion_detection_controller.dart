@@ -49,7 +49,15 @@ class MotionDetectionController extends ChangeNotifier {
   String get elapsedDisplay => formatDurationMicros(_runSnapshot.elapsedMicros);
   List<int> get currentSplitMicros =>
       List.unmodifiable(_runSnapshot.splitMicros);
-  String get runStatusLabel => _runSnapshot.isActive ? 'running' : 'ready';
+  String get runStatusLabel {
+    if (_runSnapshot.isActive) {
+      return 'running';
+    }
+    if (_runSnapshot.startedAtMicros != null) {
+      return 'stopped';
+    }
+    return 'ready';
+  }
   bool get isStreaming => _isStreaming;
   bool get isLoading => _isLoading;
   String? get errorText => _errorText;
@@ -227,15 +235,35 @@ class MotionDetectionController extends ChangeNotifier {
   }
 
   void ingestTrigger(MotionTriggerEvent trigger, {bool forwardToSync = true}) {
-    _addTriggerToHistory(trigger);
-    if (forwardToSync) {
-      _onTrigger?.call(trigger);
+    final normalizedTrigger = trigger.type == MotionTriggerType.split
+        ? MotionTriggerEvent(
+            triggerMicros: trigger.triggerMicros,
+            score: trigger.score,
+            type: MotionTriggerType.stop,
+            splitIndex: 0,
+          )
+        : trigger;
+
+    if (normalizedTrigger.type == MotionTriggerType.start &&
+        _runSnapshot.startedAtMicros != null &&
+        !_runSnapshot.isActive) {
+      return;
     }
 
-    if (trigger.type == MotionTriggerType.start) {
+    if (normalizedTrigger.type == MotionTriggerType.stop &&
+        (!_runSnapshot.isActive || _runSnapshot.startedAtMicros == null)) {
+      return;
+    }
+
+    _addTriggerToHistory(normalizedTrigger);
+    if (forwardToSync) {
+      _onTrigger?.call(normalizedTrigger);
+    }
+
+    if (normalizedTrigger.type == MotionTriggerType.start) {
       _runSnapshot = MotionRunSnapshot(
         isActive: true,
-        startedAtMicros: trigger.triggerMicros,
+        startedAtMicros: normalizedTrigger.triggerMicros,
         elapsedMicros: 0,
         splitMicros: const <int>[],
       );
@@ -245,20 +273,17 @@ class MotionDetectionController extends ChangeNotifier {
       return;
     }
 
-    if (!_runSnapshot.isActive || _runSnapshot.startedAtMicros == null) {
-      return;
-    }
-
     final elapsedMicros = math.max(
       0,
-      trigger.triggerMicros - _runSnapshot.startedAtMicros!,
+      normalizedTrigger.triggerMicros - _runSnapshot.startedAtMicros!,
     );
-    final splitMicros = List<int>.from(_runSnapshot.splitMicros)
-      ..add(elapsedMicros);
+    final splitMicros = <int>[elapsedMicros];
     _runSnapshot = _runSnapshot.copyWith(
+      isActive: false,
       elapsedMicros: elapsedMicros,
       splitMicros: splitMicros,
     );
+    _stopRunTicker();
     unawaited(_persistCurrentRun());
     notifyListeners();
   }

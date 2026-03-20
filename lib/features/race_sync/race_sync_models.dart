@@ -2,7 +2,15 @@ import 'dart:convert';
 
 enum RaceRole { none, host, client }
 
-enum RaceEventType { raceStarted, raceSplit, latencyProbe, latencyPong }
+enum RaceEventType {
+  raceStarted,
+  raceStopped,
+  raceStartRequest,
+  raceStopRequest,
+  raceSplit,
+  latencyProbe,
+  latencyPong,
+}
 
 enum ConnectionQuality { offline, good, warning, bad }
 
@@ -95,6 +103,12 @@ class RaceEventMessage {
     switch (type) {
       case RaceEventType.raceStarted:
         return 'race_started';
+      case RaceEventType.raceStopped:
+        return 'race_stopped';
+      case RaceEventType.raceStartRequest:
+        return 'race_start_request';
+      case RaceEventType.raceStopRequest:
+        return 'race_stop_request';
       case RaceEventType.raceSplit:
         return 'race_split';
       case RaceEventType.latencyProbe:
@@ -107,6 +121,15 @@ class RaceEventMessage {
   static RaceEventType? _typeFromWire(dynamic source) {
     if (source == 'race_started') {
       return RaceEventType.raceStarted;
+    }
+    if (source == 'race_stopped') {
+      return RaceEventType.raceStopped;
+    }
+    if (source == 'race_start_request') {
+      return RaceEventType.raceStartRequest;
+    }
+    if (source == 'race_stop_request') {
+      return RaceEventType.raceStopRequest;
     }
     if (source == 'race_split') {
       return RaceEventType.raceSplit;

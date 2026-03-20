@@ -44,7 +44,7 @@ void main() {
     controller.dispose();
   });
 
-  testWidgets('split rows render stopwatch-formatted values', (tester) async {
+  testWidgets('finish row renders stopwatch-formatted value', (tester) async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final controller = MotionDetectionController(repository: LocalRepository());
 
@@ -72,8 +72,8 @@ void main() {
       const MotionTriggerEvent(
         triggerMicros: 1750000,
         score: 0.22,
-        type: MotionTriggerType.split,
-        splitIndex: 1,
+        type: MotionTriggerType.stop,
+        splitIndex: 0,
       ),
     );
     await tester.pump(const Duration(milliseconds: 10));
@@ -85,7 +85,7 @@ void main() {
     final currentSplit = tester.widget<Text>(
       find.byKey(const ValueKey<String>('current_split_1')),
     );
-    expect(currentSplit.data, 'Split 1: 0.75s');
+    expect(currentSplit.data, 'Finish: 0.75s');
 
     controller.dispose();
   });
@@ -147,7 +147,7 @@ void main() {
     final savedSplit = tester.widget<Text>(
       find.byKey(const ValueKey<String>('saved_split_1')),
     );
-    expect(savedSplit.data, 'Split 1: 0.50s');
+    expect(savedSplit.data, 'Finish: 0.50s');
 
     controller.dispose();
   });

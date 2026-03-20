@@ -40,7 +40,7 @@ void main() {
     controller.dispose();
   });
 
-  test('split trigger appends elapsed split and persists run', () async {
+  test('stop trigger freezes elapsed time and persists final run time', () async {
     final controller = MotionDetectionController(repository: LocalRepository());
     await Future<void>.delayed(const Duration(milliseconds: 1));
 
@@ -56,12 +56,17 @@ void main() {
       const MotionTriggerEvent(
         triggerMicros: 2750000,
         score: 0.24,
-        type: MotionTriggerType.split,
-        splitIndex: 1,
+        type: MotionTriggerType.stop,
+        splitIndex: 0,
       ),
     );
 
+    expect(controller.isRunActive, isFalse);
+    expect(controller.runStatusLabel, 'stopped');
     expect(controller.currentSplitMicros, <int>[750000]);
+    final frozenElapsed = controller.runSnapshot.elapsedMicros;
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    expect(controller.runSnapshot.elapsedMicros, frozenElapsed);
 
     await Future<void>.delayed(const Duration(milliseconds: 5));
     final savedRun = await LocalRepository().loadLastRun();
@@ -88,8 +93,8 @@ void main() {
       const MotionTriggerEvent(
         triggerMicros: 1500000,
         score: 0.21,
-        type: MotionTriggerType.split,
-        splitIndex: 1,
+        type: MotionTriggerType.stop,
+        splitIndex: 0,
       ),
     );
     expect(controller.triggerHistory, isNotEmpty);
@@ -120,6 +125,57 @@ void main() {
     expect(controller.lastRun, isNotNull);
     expect(controller.lastRun!.startedAtEpochMs, 12345);
     expect(controller.lastRun!.splitMicros, <int>[100000, 250000]);
+
+    controller.dispose();
+  });
+
+  test('detections are ignored after stop until reset', () async {
+    final controller = MotionDetectionController(repository: LocalRepository());
+    await Future<void>.delayed(const Duration(milliseconds: 1));
+
+    controller.ingestTrigger(
+      const MotionTriggerEvent(
+        triggerMicros: 1000000,
+        score: 0.20,
+        type: MotionTriggerType.start,
+        splitIndex: 0,
+      ),
+    );
+    controller.ingestTrigger(
+      const MotionTriggerEvent(
+        triggerMicros: 1500000,
+        score: 0.21,
+        type: MotionTriggerType.stop,
+        splitIndex: 0,
+      ),
+    );
+    final historyCountAfterStop = controller.triggerHistory.length;
+    final elapsedAfterStop = controller.runSnapshot.elapsedMicros;
+
+    controller.ingestTrigger(
+      const MotionTriggerEvent(
+        triggerMicros: 2100000,
+        score: 0.22,
+        type: MotionTriggerType.start,
+        splitIndex: 0,
+      ),
+    );
+
+    expect(controller.triggerHistory.length, historyCountAfterStop);
+    expect(controller.runStatusLabel, 'stopped');
+    expect(controller.runSnapshot.elapsedMicros, elapsedAfterStop);
+
+    controller.resetRace();
+    controller.ingestTrigger(
+      const MotionTriggerEvent(
+        triggerMicros: 2500000,
+        score: 0.23,
+        type: MotionTriggerType.start,
+        splitIndex: 0,
+      ),
+    );
+    expect(controller.runStatusLabel, 'running');
+    expect(controller.isRunActive, isTrue);
 
     controller.dispose();
   });

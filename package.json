@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "install:debug:devices": "node scripts/install-debug-apk.mjs",
-    "install:debug:devices:build": "flutter build apk --debug && node scripts/install-debug-apk.mjs"
+    "rebuild:debug:devices": "flutter build apk --debug && node scripts/install-debug-apk.mjs",
+    "install:debug:devices:build": "npm run rebuild:debug:devices"
   }
 }

@@ -163,9 +163,13 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
                     )
                   else
                     ...widget.controller.triggerHistory.map((event) {
-                      final label = event.type == MotionTriggerType.start
-                          ? 'START'
-                          : formatSplitLabel(event.splitIndex);
+                      final label = switch (event.type) {
+                        MotionTriggerType.start => 'START',
+                        MotionTriggerType.stop => 'STOP',
+                        MotionTriggerType.split => formatSplitLabel(
+                          event.splitIndex,
+                        ),
+                      };
                       return Align(
                         alignment: Alignment.centerLeft,
                         child: Text(
@@ -199,7 +203,7 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
               'Status: ${widget.controller.runStatusLabel}',
               key: const ValueKey<String>('run_status_text'),
             ),
-            Text('Splits: ${widget.controller.currentSplitMicros.length}'),
+            Text('Marks: ${widget.controller.currentSplitMicros.length}'),
             const SizedBox(height: 12),
             const Text('Timer'),
             Text(
@@ -282,20 +286,22 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Current Run Splits',
+              'Current Run Marks',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
             if (widget.controller.currentSplitMicros.isEmpty)
-              const Text('No splits yet.')
+              const Text('No finish mark yet.')
             else
               ...widget.controller.currentSplitMicros.asMap().entries.map((
                 entry,
               ) {
                 final splitIndex = entry.key + 1;
+                final label = splitIndex == 1
+                    ? 'Finish'
+                    : formatSplitLabel(splitIndex);
                 return Text(
-                  '${formatSplitLabel(splitIndex)}: '
-                  '${formatDurationMicros(entry.value)}',
+                  '$label: ${formatDurationMicros(entry.value)}',
                   key: ValueKey<String>('current_split_$splitIndex'),
                 );
               }),
@@ -324,13 +330,15 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
               Text(
                 'Started: ${DateTime.fromMillisecondsSinceEpoch(lastRun.startedAtEpochMs).toLocal()}',
               ),
-              Text('Splits: ${lastRun.splitMicros.length}'),
+              Text('Marks: ${lastRun.splitMicros.length}'),
               const SizedBox(height: 6),
               ...lastRun.splitMicros.asMap().entries.map((entry) {
                 final splitIndex = entry.key + 1;
+                final label = splitIndex == 1
+                    ? 'Finish'
+                    : formatSplitLabel(splitIndex);
                 return Text(
-                  '${formatSplitLabel(splitIndex)}: '
-                  '${formatDurationMicros(entry.value)}',
+                  '$label: ${formatDurationMicros(entry.value)}',
                   key: ValueKey<String>('saved_split_$splitIndex'),
                 );
               }),

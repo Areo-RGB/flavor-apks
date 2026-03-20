@@ -13,7 +13,7 @@ void main() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
   });
 
-  test('host replays start and splits to newly connected endpoint', () async {
+  test('host replays start and stop to newly connected endpoint', () async {
     final bridge = _FakeNearbyBridge();
     final controller = RaceSyncController(
       repository: LocalRepository(),
@@ -34,16 +34,8 @@ void main() {
       const MotionTriggerEvent(
         triggerMicros: 1500000,
         score: 0.22,
-        type: MotionTriggerType.split,
-        splitIndex: 1,
-      ),
-    );
-    await controller.onMotionTrigger(
-      const MotionTriggerEvent(
-        triggerMicros: 2100000,
-        score: 0.24,
-        type: MotionTriggerType.split,
-        splitIndex: 2,
+        type: MotionTriggerType.stop,
+        splitIndex: 0,
       ),
     );
 
@@ -58,18 +50,14 @@ void main() {
     });
     await _flushEvents();
 
-    expect(bridge.sentPayloads.length, 3);
+    expect(bridge.sentPayloads.length, 2);
     final parsed = bridge.sentPayloads
         .map((call) => RaceEventMessage.tryParse(call.messageJson))
         .toList();
     expect(parsed.every((message) => message != null), isTrue);
     expect(parsed[0]!.type, RaceEventType.raceStarted);
-    expect(parsed[1]!.type, RaceEventType.raceSplit);
-    expect(parsed[1]!.splitIndex, 1);
+    expect(parsed[1]!.type, RaceEventType.raceStopped);
     expect(parsed[1]!.elapsedMicros, 500000);
-    expect(parsed[2]!.type, RaceEventType.raceSplit);
-    expect(parsed[2]!.splitIndex, 2);
-    expect(parsed[2]!.elapsedMicros, 1100000);
     expect(
       bridge.sentPayloads.every((call) => call.endpointId == 'client-1'),
       isTrue,
@@ -79,7 +67,7 @@ void main() {
     await bridge.close();
   });
 
-  test('client forwards host payloads as motion triggers', () async {
+  test('client forwards host start/stop payloads as motion triggers', () async {
     final bridge = _FakeNearbyBridge();
     final mirroredTriggers = <MotionTriggerEvent>[];
     final controller = RaceSyncController(
@@ -101,9 +89,8 @@ void main() {
     bridge.emitEvent(<String, dynamic>{
       'type': 'payload_received',
       'message': const RaceEventMessage(
-        type: RaceEventType.raceSplit,
+        type: RaceEventType.raceStopped,
         sessionId: 'session-1',
-        splitIndex: 1,
         elapsedMicros: 700000,
       ).toJsonString(),
     });
@@ -112,9 +99,98 @@ void main() {
     expect(mirroredTriggers.length, 2);
     expect(mirroredTriggers[0].type, MotionTriggerType.start);
     expect(mirroredTriggers[0].triggerMicros, 1000000);
-    expect(mirroredTriggers[1].type, MotionTriggerType.split);
-    expect(mirroredTriggers[1].splitIndex, 1);
+    expect(mirroredTriggers[1].type, MotionTriggerType.stop);
     expect(mirroredTriggers[1].triggerMicros, 1700000);
+
+    controller.dispose();
+    await bridge.close();
+  });
+
+  test('host promotes client start request to canonical race_started', () async {
+    final bridge = _FakeNearbyBridge();
+    final controller = RaceSyncController(
+      repository: LocalRepository(),
+      nearbyBridge: bridge,
+    );
+
+    await controller.startHosting();
+    bridge.emitEvent(<String, dynamic>{
+      'type': 'connection_result',
+      'endpointId': 'client-1',
+      'connected': true,
+    });
+    await _flushEvents();
+    bridge.sentPayloads.clear();
+
+    bridge.emitEvent(<String, dynamic>{
+      'type': 'payload_received',
+      'endpointId': 'client-1',
+      'message': const RaceEventMessage(
+        type: RaceEventType.raceStartRequest,
+        sessionId: 'client-session',
+        startedAtEpochMs: 1234,
+      ).toJsonString(),
+    });
+    await _flushEvents();
+
+    final sent = bridge.sentPayloads
+        .map((payload) => RaceEventMessage.tryParse(payload.messageJson))
+        .whereType<RaceEventMessage>()
+        .toList();
+    expect(sent, isNotEmpty);
+    expect(sent.last.type, RaceEventType.raceStarted);
+    expect(sent.last.startedAtEpochMs, 1234);
+    expect(controller.sessionState.raceStarted, isTrue);
+    expect(controller.sessionState.startedAtEpochMs, 1234);
+
+    controller.dispose();
+    await bridge.close();
+  });
+
+  test('host promotes client stop request to canonical race_stopped', () async {
+    final bridge = _FakeNearbyBridge();
+    final controller = RaceSyncController(
+      repository: LocalRepository(),
+      nearbyBridge: bridge,
+    );
+
+    await controller.startHosting();
+    bridge.emitEvent(<String, dynamic>{
+      'type': 'connection_result',
+      'endpointId': 'client-1',
+      'connected': true,
+    });
+    await _flushEvents();
+
+    await controller.onMotionTrigger(
+      const MotionTriggerEvent(
+        triggerMicros: 1000000,
+        score: 0.20,
+        type: MotionTriggerType.start,
+        splitIndex: 0,
+      ),
+    );
+    bridge.sentPayloads.clear();
+
+    bridge.emitEvent(<String, dynamic>{
+      'type': 'payload_received',
+      'endpointId': 'client-1',
+      'message': const RaceEventMessage(
+        type: RaceEventType.raceStopRequest,
+        sessionId: 'client-session',
+        elapsedMicros: 640000,
+      ).toJsonString(),
+    });
+    await _flushEvents();
+
+    final sent = bridge.sentPayloads
+        .map((payload) => RaceEventMessage.tryParse(payload.messageJson))
+        .whereType<RaceEventMessage>()
+        .toList();
+    expect(sent, isNotEmpty);
+    expect(sent.last.type, RaceEventType.raceStopped);
+    expect(sent.last.elapsedMicros, 640000);
+    expect(controller.sessionState.splitMicros, <int>[640000]);
 
     controller.dispose();
     await bridge.close();

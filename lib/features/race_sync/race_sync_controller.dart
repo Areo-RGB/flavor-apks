@@ -214,11 +214,29 @@ class RaceSyncController extends ChangeNotifier {
   }
 
   Future<void> onMotionTrigger(MotionTriggerEvent trigger) async {
-    if (_role != RaceRole.host) {
+    final normalizedTrigger = trigger.type == MotionTriggerType.split
+        ? MotionTriggerEvent(
+            triggerMicros: trigger.triggerMicros,
+            score: trigger.score,
+            type: MotionTriggerType.stop,
+            splitIndex: 0,
+          )
+        : trigger;
+
+    if (_role == RaceRole.host) {
+      await _handleHostTrigger(normalizedTrigger);
       return;
     }
+    if (_role == RaceRole.client) {
+      await _handleClientTrigger(normalizedTrigger);
+    }
+  }
 
+  Future<void> _handleHostTrigger(MotionTriggerEvent trigger) async {
     if (trigger.type == MotionTriggerType.start) {
+      if (_sessionState.raceStarted) {
+        return;
+      }
       final startedAtEpochMs = trigger.triggerMicros ~/ 1000;
       final sessionId = _ensureSessionId();
       _sessionState = SessionState(
@@ -240,26 +258,80 @@ class RaceSyncController extends ChangeNotifier {
       return;
     }
 
-    if (!_sessionState.raceStarted || _sessionState.startedAtEpochMs == null) {
+    if (trigger.type != MotionTriggerType.stop ||
+        !_sessionState.raceStarted ||
+        _sessionState.startedAtEpochMs == null ||
+        _sessionState.splitMicros.isNotEmpty) {
       return;
     }
 
-    final elapsedMicros =
-        trigger.triggerMicros - (_sessionState.startedAtEpochMs! * 1000);
-    final splitMicros = List<int>.from(_sessionState.splitMicros)
-      ..add(elapsedMicros);
-    _sessionState = _sessionState.copyWith(splitMicros: splitMicros);
+    final elapsedMicros = math.max(
+      0,
+      trigger.triggerMicros - (_sessionState.startedAtEpochMs! * 1000),
+    );
+    _sessionState = _sessionState.copyWith(splitMicros: <int>[elapsedMicros]);
     await _persistRun();
 
-    _addLog('Split ${splitMicros.length}: ${elapsedMicros}us');
+    _addLog('Race stopped at ${elapsedMicros}us');
     notifyListeners();
 
     final sessionId = _ensureSessionId();
     await _broadcast(
       RaceEventMessage(
-        type: RaceEventType.raceSplit,
+        type: RaceEventType.raceStopped,
         sessionId: sessionId,
-        splitIndex: splitMicros.length,
+        elapsedMicros: elapsedMicros,
+      ),
+    );
+  }
+
+  Future<void> _handleClientTrigger(MotionTriggerEvent trigger) async {
+    if (_connectedEndpointIds.isEmpty) {
+      return;
+    }
+
+    if (trigger.type == MotionTriggerType.start) {
+      if (_sessionState.raceStarted && _sessionState.splitMicros.isNotEmpty) {
+        return;
+      }
+      final startedAtEpochMs = trigger.triggerMicros ~/ 1000;
+      _sessionState = SessionState(
+        raceStarted: true,
+        startedAtEpochMs: startedAtEpochMs,
+        splitMicros: const <int>[],
+      );
+      _addLog('Race start requested at $startedAtEpochMs ms.');
+      notifyListeners();
+
+      await _broadcast(
+        RaceEventMessage(
+          type: RaceEventType.raceStartRequest,
+          sessionId: _ensureSessionId(),
+          startedAtEpochMs: startedAtEpochMs,
+        ),
+      );
+      return;
+    }
+
+    if (trigger.type != MotionTriggerType.stop ||
+        !_sessionState.raceStarted ||
+        _sessionState.startedAtEpochMs == null ||
+        _sessionState.splitMicros.isNotEmpty) {
+      return;
+    }
+
+    final elapsedMicros = math.max(
+      0,
+      trigger.triggerMicros - (_sessionState.startedAtEpochMs! * 1000),
+    );
+    _sessionState = _sessionState.copyWith(splitMicros: <int>[elapsedMicros]);
+    _addLog('Race stop requested: ${elapsedMicros}us');
+    notifyListeners();
+
+    await _broadcast(
+      RaceEventMessage(
+        type: RaceEventType.raceStopRequest,
+        sessionId: _ensureSessionId(),
         elapsedMicros: elapsedMicros,
       ),
     );
@@ -420,6 +492,58 @@ class RaceSyncController extends ChangeNotifier {
     }
 
     switch (message.type) {
+      case RaceEventType.raceStartRequest:
+        if (_role != RaceRole.host || _sessionState.raceStarted) {
+          return;
+        }
+        final startedAtEpochMs =
+            message.startedAtEpochMs ?? DateTime.now().millisecondsSinceEpoch;
+        _sessionState = SessionState(
+          raceStarted: true,
+          startedAtEpochMs: startedAtEpochMs,
+          splitMicros: const <int>[],
+        );
+        _addLog('Race start requested by client.');
+        unawaited(_persistRun());
+        notifyListeners();
+        unawaited(
+          _broadcast(
+            RaceEventMessage(
+              type: RaceEventType.raceStarted,
+              sessionId: _ensureSessionId(),
+              startedAtEpochMs: startedAtEpochMs,
+            ),
+          ),
+        );
+        return;
+      case RaceEventType.raceStopRequest:
+        if (_role != RaceRole.host ||
+            !_sessionState.raceStarted ||
+            _sessionState.startedAtEpochMs == null ||
+            _sessionState.splitMicros.isNotEmpty) {
+          return;
+        }
+        final elapsedMicros = message.elapsedMicros;
+        if (elapsedMicros == null) {
+          return;
+        }
+        final safeElapsedMicros = math.max(0, elapsedMicros);
+        _sessionState = _sessionState.copyWith(
+          splitMicros: <int>[safeElapsedMicros],
+        );
+        _addLog('Race stop requested by client: ${safeElapsedMicros}us');
+        unawaited(_persistRun());
+        notifyListeners();
+        unawaited(
+          _broadcast(
+            RaceEventMessage(
+              type: RaceEventType.raceStopped,
+              sessionId: _ensureSessionId(),
+              elapsedMicros: safeElapsedMicros,
+            ),
+          ),
+        );
+        return;
       case RaceEventType.raceStarted:
         if (message.startedAtEpochMs == null) {
           return;
@@ -431,14 +555,16 @@ class RaceSyncController extends ChangeNotifier {
         );
         _addLog('Race started from host payload.');
         break;
+      case RaceEventType.raceStopped:
       case RaceEventType.raceSplit:
         if (message.elapsedMicros == null) {
           return;
         }
-        final splitMicros = List<int>.from(_sessionState.splitMicros)
-          ..add(message.elapsedMicros!);
-        _sessionState = _sessionState.copyWith(splitMicros: splitMicros);
-        _addLog('Split received: ${message.elapsedMicros}us');
+        _sessionState = _sessionState.copyWith(
+          raceStarted: true,
+          splitMicros: <int>[message.elapsedMicros!],
+        );
+        _addLog('Race stopped from host payload: ${message.elapsedMicros}us');
         break;
       case RaceEventType.latencyProbe:
       case RaceEventType.latencyPong:
@@ -470,6 +596,7 @@ class RaceSyncController extends ChangeNotifier {
           ),
         );
         break;
+      case RaceEventType.raceStopped:
       case RaceEventType.raceSplit:
         final elapsedMicros = message.elapsedMicros;
         final startedAtEpochMs = _sessionState.startedAtEpochMs;
@@ -480,11 +607,13 @@ class RaceSyncController extends ChangeNotifier {
           MotionTriggerEvent(
             triggerMicros: (startedAtEpochMs * 1000) + elapsedMicros,
             score: 0,
-            type: MotionTriggerType.split,
-            splitIndex: message.splitIndex ?? _sessionState.splitMicros.length,
+            type: MotionTriggerType.stop,
+            splitIndex: 0,
           ),
         );
         break;
+      case RaceEventType.raceStartRequest:
+      case RaceEventType.raceStopRequest:
       case RaceEventType.latencyProbe:
       case RaceEventType.latencyPong:
         return;
@@ -515,14 +644,13 @@ class RaceSyncController extends ChangeNotifier {
         startedAtEpochMs: _sessionState.startedAtEpochMs,
       ),
     );
-    for (final entry in _sessionState.splitMicros.asMap().entries) {
+    if (_sessionState.splitMicros.isNotEmpty) {
       await _sendEventToEndpoint(
         endpointId: endpointId,
         message: RaceEventMessage(
-          type: RaceEventType.raceSplit,
+          type: RaceEventType.raceStopped,
           sessionId: sessionId,
-          splitIndex: entry.key + 1,
-          elapsedMicros: entry.value,
+          elapsedMicros: _sessionState.splitMicros.first,
         ),
       );
     }

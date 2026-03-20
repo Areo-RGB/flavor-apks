@@ -5,7 +5,7 @@ import 'package:sprint_sync/core/models/app_models.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
 
 class LocalRepository {
-  static const _motionConfigKey = 'motion_detection_config_v1';
+  static const _motionConfigKey = 'motion_detection_config_v2';
   static const _lastRunKey = 'last_run_result_v1';
 
   Future<MotionDetectionConfig> loadMotionConfig() async {

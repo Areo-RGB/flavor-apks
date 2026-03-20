@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 
-enum MotionTriggerType { start, split }
+enum MotionTriggerType { start, stop, split }
 
 class MotionRunSnapshot {
   const MotionRunSnapshot({
@@ -59,11 +59,11 @@ class MotionDetectionConfig {
 
   factory MotionDetectionConfig.defaults() {
     return const MotionDetectionConfig(
-      threshold: 0.08,
+      threshold: 0.04,
       roiCenterX: 0.5,
       roiWidth: 0.12,
       cooldownMs: 900,
-      processEveryNFrames: 2,
+      processEveryNFrames: 1,
     );
   }
 
@@ -161,8 +161,8 @@ class MotionDetectionEngine {
   bool _armed = true;
   int? _belowSinceMicros;
   int? _lastTriggerMicros;
-  bool _raceStarted = false;
-  int _splitIndex = 0;
+  bool _runStarted = false;
+  bool _runStopped = false;
 
   MotionDetectionConfig get config => _config;
 
@@ -175,8 +175,8 @@ class MotionDetectionEngine {
     _armed = true;
     _belowSinceMicros = null;
     _lastTriggerMicros = null;
-    _raceStarted = false;
-    _splitIndex = 0;
+    _runStarted = false;
+    _runStopped = false;
   }
 
   MotionFrameStats process({
@@ -220,26 +220,26 @@ class MotionDetectionEngine {
         _lastTriggerMicros == null ||
         (timestampMicros - (_lastTriggerMicros ?? 0)) >= cooldownMicros;
 
-    if (_armed && cooldownPassed && _aboveCount >= 3) {
+    if (_armed && cooldownPassed && _aboveCount >= 2) {
       _lastTriggerMicros = timestampMicros;
       _aboveCount = 0;
       _armed = false;
       _belowSinceMicros = null;
 
-      if (_raceStarted) {
-        _splitIndex += 1;
-        trigger = MotionTriggerEvent(
-          triggerMicros: timestampMicros,
-          score: effectiveScore,
-          type: MotionTriggerType.split,
-          splitIndex: _splitIndex,
-        );
-      } else {
-        _raceStarted = true;
+      if (!_runStarted) {
+        _runStarted = true;
         trigger = MotionTriggerEvent(
           triggerMicros: timestampMicros,
           score: effectiveScore,
           type: MotionTriggerType.start,
+          splitIndex: 0,
+        );
+      } else if (!_runStopped) {
+        _runStopped = true;
+        trigger = MotionTriggerEvent(
+          triggerMicros: timestampMicros,
+          score: effectiveScore,
+          type: MotionTriggerType.stop,
           splitIndex: 0,
         );
       }
