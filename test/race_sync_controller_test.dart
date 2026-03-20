@@ -79,6 +79,47 @@ void main() {
     await bridge.close();
   });
 
+  test('client forwards host payloads as motion triggers', () async {
+    final bridge = _FakeNearbyBridge();
+    final mirroredTriggers = <MotionTriggerEvent>[];
+    final controller = RaceSyncController(
+      repository: LocalRepository(),
+      nearbyBridge: bridge,
+      onRemoteTrigger: mirroredTriggers.add,
+    );
+
+    await controller.startDiscovery();
+
+    bridge.emitEvent(<String, dynamic>{
+      'type': 'payload_received',
+      'message': const RaceEventMessage(
+        type: RaceEventType.raceStarted,
+        sessionId: 'session-1',
+        startedAtEpochMs: 1000,
+      ).toJsonString(),
+    });
+    bridge.emitEvent(<String, dynamic>{
+      'type': 'payload_received',
+      'message': const RaceEventMessage(
+        type: RaceEventType.raceSplit,
+        sessionId: 'session-1',
+        splitIndex: 1,
+        elapsedMicros: 700000,
+      ).toJsonString(),
+    });
+    await _flushEvents();
+
+    expect(mirroredTriggers.length, 2);
+    expect(mirroredTriggers[0].type, MotionTriggerType.start);
+    expect(mirroredTriggers[0].triggerMicros, 1000000);
+    expect(mirroredTriggers[1].type, MotionTriggerType.split);
+    expect(mirroredTriggers[1].splitIndex, 1);
+    expect(mirroredTriggers[1].triggerMicros, 1700000);
+
+    controller.dispose();
+    await bridge.close();
+  });
+
   test('role switch clears stale discovery and connection state', () async {
     final bridge = _FakeNearbyBridge();
     final controller = RaceSyncController(

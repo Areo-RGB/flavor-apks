@@ -30,18 +30,23 @@ class _SprintSyncAppState extends State<SprintSyncApp> {
     super.initState();
     _repository = LocalRepository();
     _nearbyBridge = NearbyBridge();
-    _raceSyncController = RaceSyncController(
-      repository: _repository,
-      nearbyBridge: _nearbyBridge,
-    );
     _motionDetectionController = MotionDetectionController(
       repository: _repository,
       onTrigger: _handleMotionTrigger,
+    );
+    _raceSyncController = RaceSyncController(
+      repository: _repository,
+      nearbyBridge: _nearbyBridge,
+      onRemoteTrigger: _handleRemoteTrigger,
     );
   }
 
   void _handleMotionTrigger(MotionTriggerEvent event) {
     _raceSyncController.onMotionTrigger(event);
+  }
+
+  void _handleRemoteTrigger(MotionTriggerEvent event) {
+    _motionDetectionController.ingestTrigger(event, forwardToSync: false);
   }
 
   @override

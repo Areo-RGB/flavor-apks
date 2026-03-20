@@ -11,8 +11,10 @@ class RaceSyncController extends ChangeNotifier {
   RaceSyncController({
     required LocalRepository repository,
     required NearbyBridge nearbyBridge,
+    void Function(MotionTriggerEvent trigger)? onRemoteTrigger,
   }) : _repository = repository,
-       _nearbyBridge = nearbyBridge {
+       _nearbyBridge = nearbyBridge,
+       _onRemoteTrigger = onRemoteTrigger {
     _eventsSubscription = _nearbyBridge.events.listen(_onNearbyEvent);
     unawaited(_loadLastRun());
   }
@@ -21,6 +23,7 @@ class RaceSyncController extends ChangeNotifier {
 
   final LocalRepository _repository;
   final NearbyBridge _nearbyBridge;
+  final void Function(MotionTriggerEvent trigger)? _onRemoteTrigger;
 
   StreamSubscription<Map<String, dynamic>>? _eventsSubscription;
 
@@ -351,8 +354,47 @@ class RaceSyncController extends ChangeNotifier {
         break;
     }
 
+    _emitRemoteTrigger(message);
     unawaited(_persistRun());
     notifyListeners();
+  }
+
+  void _emitRemoteTrigger(RaceEventMessage message) {
+    if (_role != RaceRole.client) {
+      return;
+    }
+
+    switch (message.type) {
+      case RaceEventType.raceStarted:
+        final startedAtEpochMs = message.startedAtEpochMs;
+        if (startedAtEpochMs == null) {
+          return;
+        }
+        _onRemoteTrigger?.call(
+          MotionTriggerEvent(
+            triggerMicros: startedAtEpochMs * 1000,
+            score: 0,
+            type: MotionTriggerType.start,
+            splitIndex: 0,
+          ),
+        );
+        break;
+      case RaceEventType.raceSplit:
+        final elapsedMicros = message.elapsedMicros;
+        final startedAtEpochMs = _sessionState.startedAtEpochMs;
+        if (elapsedMicros == null || startedAtEpochMs == null) {
+          return;
+        }
+        _onRemoteTrigger?.call(
+          MotionTriggerEvent(
+            triggerMicros: (startedAtEpochMs * 1000) + elapsedMicros,
+            score: 0,
+            type: MotionTriggerType.split,
+            splitIndex: message.splitIndex ?? _sessionState.splitMicros.length,
+          ),
+        );
+        break;
+    }
   }
 
   Future<void> _broadcast(RaceEventMessage message) async {

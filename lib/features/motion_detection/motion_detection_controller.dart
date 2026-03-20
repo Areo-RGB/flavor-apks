@@ -226,9 +226,11 @@ class MotionDetectionController extends ChangeNotifier {
     }
   }
 
-  void ingestTrigger(MotionTriggerEvent trigger) {
+  void ingestTrigger(MotionTriggerEvent trigger, {bool forwardToSync = true}) {
     _addTriggerToHistory(trigger);
-    _onTrigger?.call(trigger);
+    if (forwardToSync) {
+      _onTrigger?.call(trigger);
+    }
 
     if (trigger.type == MotionTriggerType.start) {
       _runSnapshot = MotionRunSnapshot(
@@ -249,8 +251,7 @@ class MotionDetectionController extends ChangeNotifier {
 
     final elapsedMicros = math.max(
       0,
-      trigger.triggerMicros -
-          (_runSnapshot.startedAtMicros ?? trigger.triggerMicros),
+      trigger.triggerMicros - _runSnapshot.startedAtMicros!,
     );
     final splitMicros = List<int>.from(_runSnapshot.splitMicros)
       ..add(elapsedMicros);
