@@ -219,7 +219,8 @@ class MotionDetectionEngine {
         _lastTriggerMicros == null ||
         (timestampMicros - (_lastTriggerMicros ?? 0)) >= cooldownMicros;
 
-    if (_armed && cooldownPassed && _aboveCount >= 2) {
+    // Trigger off a single frame crossing the threshold, as athletes move fast!
+    if (_armed && cooldownPassed && _aboveCount >= 1) {
       _lastTriggerMicros = timestampMicros;
       _aboveCount = 0;
       _armed = false;

@@ -67,11 +67,7 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
             if (widget.showPreview) const SizedBox(height: 12),
             _buildStopwatchCard(),
             const SizedBox(height: 12),
-            _buildControlCard(),
-            const SizedBox(height: 12),
             _buildCurrentSplitsCard(),
-            const SizedBox(height: 12),
-            _buildLastRunCard(),
             const SizedBox(height: 12),
             Card(
               child: ExpansionTile(
@@ -211,63 +207,6 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
     );
   }
 
-  Widget _buildControlCard() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Detection Controls',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Align athletes with the vertical detection line and allow a short run-up.',
-            ),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                FilledButton(
-                  onPressed: widget.controller.isLoading
-                      ? null
-                      : widget.controller.initializeCamera,
-                  child: const Text('Init Camera'),
-                ),
-                FilledButton(
-                  onPressed: widget.controller.isStreaming
-                      ? null
-                      : widget.controller.startDetection,
-                  child: const Text('Start Detection'),
-                ),
-                OutlinedButton(
-                  onPressed: widget.controller.isStreaming
-                      ? widget.controller.stopDetection
-                      : null,
-                  child: const Text('Stop Detection'),
-                ),
-                OutlinedButton(
-                  onPressed: widget.controller.resetRace,
-                  child: const Text('Reset Run'),
-                ),
-              ],
-            ),
-            if (widget.controller.errorText != null) ...[
-              const SizedBox(height: 8),
-              Text(
-                widget.controller.errorText!,
-                style: const TextStyle(color: Colors.red),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildCurrentSplitsCard() {
     return Card(
       child: Padding(
@@ -304,51 +243,16 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
     );
   }
 
-  Widget _buildLastRunCard() {
-    final lastRun = widget.controller.lastRun;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Last Saved Run',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            if (lastRun == null)
-              const Text('No saved run yet.')
-            else ...[
-              Text(
-                'Started: ${DateTime.fromMillisecondsSinceEpoch(lastRun.startedAtEpochMs).toLocal()}',
-              ),
-              Text('Marks: ${lastRun.splitMicros.length}'),
-              const SizedBox(height: 6),
-              ...lastRun.splitMicros.asMap().entries.map((entry) {
-                final splitIndex = entry.key + 1;
-                final isFinish = splitIndex == lastRun.splitMicros.length;
-                final label = isFinish ? 'Finish' : formatSplitLabel(splitIndex);
-                return Text(
-                  '$label: ${formatDurationMicros(entry.value)}',
-                  key: ValueKey<String>('saved_split_$splitIndex'),
-                );
-              }),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildPreviewCard(
     CameraController? controller, {
     required double roiCenterX,
   }) {
     final statusColor = const Color(0xFF005A8D);
     final tripwireAlignmentX = _tripwireAlignmentForRoiCenter(roiCenterX);
+
     late final Widget previewChild;
     late final double previewAspectRatio;
+
     if (controller != null && controller.value.isInitialized) {
       previewChild = CameraPreview(controller);
       previewAspectRatio = controller.value.aspectRatio;

@@ -6,6 +6,7 @@ import 'package:sprint_sync/core/services/nearby_bridge.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_controller.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
 import 'package:sprint_sync/features/race_session/race_session_models.dart';
+
 class RaceSessionController extends ChangeNotifier {
   RaceSessionController({
     required NearbyBridge nearbyBridge,
@@ -17,7 +18,12 @@ class RaceSessionController extends ChangeNotifier {
        _startMonitoringAction = startMonitoringAction,
        _stopMonitoringAction = stopMonitoringAction {
     _eventsSubscription = _nearbyBridge.events.listen(_onNearbyEvent);
-    _devices[_localHostDeviceId] = const SessionDevice(id: _localHostDeviceId, name: 'This device', role: SessionDeviceRole.unassigned, isLocal: true);
+    _devices[_localHostDeviceId] = const SessionDevice(
+      id: _localHostDeviceId,
+      name: 'This device',
+      role: SessionDeviceRole.unassigned,
+      isLocal: true,
+    );
   }
   static const String _serviceId = 'com.paul.sprintsync.nearby';
   static const String _localHostDeviceId = 'local-device';
@@ -54,6 +60,7 @@ class RaceSessionController extends ChangeNotifier {
     }
     return _devices.length;
   }
+
   bool get canGoToLobby => totalDeviceCount >= 2;
   bool get canShowSplitControls => totalDeviceCount > 2;
   bool get canStartMonitoring =>
@@ -78,6 +85,7 @@ class RaceSessionController extends ChangeNotifier {
       notifyListeners();
     }
   }
+
   Future<void> createLobby() async {
     await _ensurePermissions();
     if (!_permissionsGranted) return;
@@ -86,7 +94,10 @@ class RaceSessionController extends ChangeNotifier {
     try {
       await _nearbyBridge.stopAll();
       _resetSession(SessionNetworkRole.host);
-      await _nearbyBridge.startHosting(serviceId: _serviceId, endpointName: 'SprintSyncHost');
+      await _nearbyBridge.startHosting(
+        serviceId: _serviceId,
+        endpointName: 'SprintSyncHost',
+      );
     } catch (error) {
       _errorText = 'Create lobby failed: $error';
     } finally {
@@ -94,6 +105,7 @@ class RaceSessionController extends ChangeNotifier {
       notifyListeners();
     }
   }
+
   Future<void> joinLobby() async {
     await _ensurePermissions();
     if (!_permissionsGranted) return;
@@ -102,7 +114,10 @@ class RaceSessionController extends ChangeNotifier {
     try {
       await _nearbyBridge.stopAll();
       _resetSession(SessionNetworkRole.client);
-      await _nearbyBridge.startDiscovery(serviceId: _serviceId, endpointName: 'SprintSyncClient');
+      await _nearbyBridge.startDiscovery(
+        serviceId: _serviceId,
+        endpointName: 'SprintSyncClient',
+      );
     } catch (error) {
       _errorText = 'Join lobby failed: $error';
     } finally {
@@ -110,20 +125,26 @@ class RaceSessionController extends ChangeNotifier {
       notifyListeners();
     }
   }
+
   Future<void> connect(String endpointId) async {
     try {
-      await _nearbyBridge.requestConnection(endpointId: endpointId, endpointName: 'SprintSyncClient');
+      await _nearbyBridge.requestConnection(
+        endpointId: endpointId,
+        endpointName: 'SprintSyncClient',
+      );
     } catch (error) {
       _errorText = 'Connect failed: $error';
       notifyListeners();
     }
   }
+
   void goToLobby() {
     if (!canGoToLobby) return;
     _stage = SessionStage.lobby;
     notifyListeners();
     if (isHost) unawaited(_broadcastSnapshot());
   }
+
   void assignRole(String deviceId, SessionDeviceRole role) {
     if (!isHost || _monitoringActive) return;
     if (!_devices.containsKey(deviceId)) return;
@@ -142,6 +163,7 @@ class RaceSessionController extends ChangeNotifier {
     notifyListeners();
     unawaited(_broadcastSnapshot());
   }
+
   Future<void> startMonitoring() async {
     if (!canStartMonitoring) return;
     _monitoringActive = true;
@@ -157,6 +179,7 @@ class RaceSessionController extends ChangeNotifier {
     }
     await _broadcastSnapshot();
   }
+
   Future<void> stopMonitoring() async {
     if (!isHost || !_monitoringActive) return;
     if (_stopMonitoringAction != null) {
@@ -169,11 +192,24 @@ class RaceSessionController extends ChangeNotifier {
     notifyListeners();
     await _broadcastSnapshot();
   }
+
+  Future<void> resetRun() async {
+    if (!isHost) return;
+    _timeline = SessionRaceTimeline.idle();
+    _motionController.resetRace();
+    notifyListeners();
+    await _broadcastSnapshot();
+  }
+
   Future<void> triggerManualEvent(SessionDeviceRole role) async {
     if (!isHost || _stage != SessionStage.lobby) return;
     if (role == SessionDeviceRole.split && !canShowSplitControls) return;
-    await _applyRoleEvent(role: role, triggerMicros: DateTime.now().microsecondsSinceEpoch);
+    await _applyRoleEvent(
+      role: role,
+      triggerMicros: DateTime.now().microsecondsSinceEpoch,
+    );
   }
+
   Future<void> onLocalMotionPulse(MotionTriggerEvent trigger) async {
     if (!_monitoringActive) return;
     if (localRole == SessionDeviceRole.unassigned) {
@@ -187,10 +223,19 @@ class RaceSessionController extends ChangeNotifier {
       );
       return;
     }
-    if (isClient && _connectedEndpointIds.isNotEmpty && localRole != SessionDeviceRole.unassigned) {
-      await _nearbyBridge.sendBytes(endpointId: _connectedEndpointIds.first, messageJson: SessionTriggerRequestMessage(role: localRole, triggerMicros: trigger.triggerMicros).toJsonString());
+    if (isClient &&
+        _connectedEndpointIds.isNotEmpty &&
+        localRole != SessionDeviceRole.unassigned) {
+      await _nearbyBridge.sendBytes(
+        endpointId: _connectedEndpointIds.first,
+        messageJson: SessionTriggerRequestMessage(
+          role: localRole,
+          triggerMicros: trigger.triggerMicros,
+        ).toJsonString(),
+      );
     }
   }
+
   Future<void> _applyRoleEvent({
     required SessionDeviceRole role,
     required int triggerMicros,
@@ -205,23 +250,48 @@ class RaceSessionController extends ChangeNotifier {
         splitMicros: <int>[],
         clearStopElapsed: true,
       );
-      _motionController.ingestTrigger(MotionTriggerEvent(triggerMicros: triggerMicros, score: 0, type: MotionTriggerType.start, splitIndex: 0), forwardToSync: false);
+      _motionController.ingestTrigger(
+        MotionTriggerEvent(
+          triggerMicros: triggerMicros,
+          score: 0,
+          type: MotionTriggerType.start,
+          splitIndex: 0,
+        ),
+        forwardToSync: false,
+      );
     } else if (role == SessionDeviceRole.split) {
       if (!_timeline.isRunning || startedAt == null) return;
       final elapsedMicros = math.max(0, triggerMicros - (startedAt * 1000));
       _timeline = _timeline.copyWith(
         splitMicros: <int>[..._timeline.splitMicros, elapsedMicros],
       );
-      _motionController.ingestTrigger(MotionTriggerEvent(triggerMicros: triggerMicros, score: 0, type: MotionTriggerType.split, splitIndex: _timeline.splitMicros.length), forwardToSync: false);
+      _motionController.ingestTrigger(
+        MotionTriggerEvent(
+          triggerMicros: triggerMicros,
+          score: 0,
+          type: MotionTriggerType.split,
+          splitIndex: _timeline.splitMicros.length,
+        ),
+        forwardToSync: false,
+      );
     } else if (role == SessionDeviceRole.stop) {
       if (!_timeline.isRunning || startedAt == null) return;
       final elapsedMicros = math.max(0, triggerMicros - (startedAt * 1000));
       _timeline = _timeline.copyWith(stopElapsedMicros: elapsedMicros);
-      _motionController.ingestTrigger(MotionTriggerEvent(triggerMicros: triggerMicros, score: 0, type: MotionTriggerType.stop, splitIndex: 0), forwardToSync: false);
+      _motionController.ingestTrigger(
+        MotionTriggerEvent(
+          triggerMicros: triggerMicros,
+          score: 0,
+          type: MotionTriggerType.stop,
+          splitIndex: 0,
+        ),
+        forwardToSync: false,
+      );
     }
     notifyListeners();
     if (isHost) await _broadcastSnapshot();
   }
+
   void _onNearbyEvent(Map<String, dynamic> event) {
     final type = event['type']?.toString();
     if (type == null) return;
@@ -278,7 +348,9 @@ class RaceSessionController extends ChangeNotifier {
     if (type == 'payload_received') {
       final message = event['message']?.toString();
       if (message != null) {
-        unawaited(_onPayload(message, endpointId: event['endpointId']?.toString()));
+        unawaited(
+          _onPayload(message, endpointId: event['endpointId']?.toString()),
+        );
       }
       return;
     }
@@ -287,6 +359,7 @@ class RaceSessionController extends ChangeNotifier {
       notifyListeners();
     }
   }
+
   Future<void> _onPayload(String raw, {required String? endpointId}) async {
     final snapshot = SessionSnapshotMessage.tryParse(raw);
     if (snapshot != null && isClient) {
@@ -296,7 +369,14 @@ class RaceSessionController extends ChangeNotifier {
       _monitoringActive = snapshot.monitoringActive;
       _timeline = snapshot.timeline;
       _localDeviceId = snapshot.selfDeviceId ?? _localDeviceId;
-      _devices..clear()..addEntries(snapshot.devices.map((device) { final isLocal = device.id == _localDeviceId; return MapEntry(device.id, device.copyWith(isLocal: isLocal)); }));
+      _devices
+        ..clear()
+        ..addEntries(
+          snapshot.devices.map((device) {
+            final isLocal = device.id == _localDeviceId;
+            return MapEntry(device.id, device.copyWith(isLocal: isLocal));
+          }),
+        );
       if (!wasMonitoring && _monitoringActive) {
         if (_startMonitoringAction != null) {
           await _startMonitoringAction();
@@ -325,10 +405,14 @@ class RaceSessionController extends ChangeNotifier {
     if (triggerRequest != null && isHost && endpointId != null) {
       final role = _devices[endpointId]?.role ?? SessionDeviceRole.unassigned;
       if (role == triggerRequest.role) {
-        await _applyRoleEvent(role: role, triggerMicros: triggerRequest.triggerMicros);
+        await _applyRoleEvent(
+          role: role,
+          triggerMicros: triggerRequest.triggerMicros,
+        );
       }
     }
   }
+
   Future<void> _broadcastSnapshot() async {
     if (!isHost) return;
     final deviceSnapshot = _devices.values.toList();
@@ -345,9 +429,11 @@ class RaceSessionController extends ChangeNotifier {
       );
     }
   }
+
   Future<void> _ensurePermissions() async {
     if (!_permissionsGranted) await requestPermissions();
   }
+
   bool _hasRequiredRoles() {
     int starts = 0;
     int stops = 0;
@@ -361,6 +447,7 @@ class RaceSessionController extends ChangeNotifier {
     if (totalDeviceCount <= 2) return splits == 0;
     return true;
   }
+
   void _resetSession(SessionNetworkRole networkRole) {
     _networkRole = networkRole;
     _stage = SessionStage.setup;
@@ -379,6 +466,7 @@ class RaceSessionController extends ChangeNotifier {
     _localDeviceId = _localHostDeviceId;
     _motionController.resetRace();
   }
+
   @override
   void dispose() {
     _eventsSubscription?.cancel();

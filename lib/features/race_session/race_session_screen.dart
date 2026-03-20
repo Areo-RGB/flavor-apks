@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_controller.dart';
+import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_screen.dart';
 import 'package:sprint_sync/features/race_session/race_session_controller.dart';
 import 'package:sprint_sync/features/race_session/race_session_models.dart';
@@ -33,7 +34,7 @@ class RaceSessionScreen extends StatelessWidget {
 
   Widget _buildSetupScaffold(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Setup: Connection')),
+      appBar: AppBar(title: const Text('Setup Session')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -44,13 +45,9 @@ class RaceSessionScreen extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Session',
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                    'Network Connection',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                   ),
-                  const SizedBox(height: 8),
-                  Text('Network role: ${controller.networkRole.name}'),
-                  Text('Devices connected: ${controller.totalDeviceCount}'),
-                  Text('Permissions granted: ${controller.permissionsGranted}'),
                   if (controller.errorText != null) ...[
                     const SizedBox(height: 8),
                     Text(
@@ -63,47 +60,56 @@ class RaceSessionScreen extends StatelessWidget {
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      FilledButton(
+                      if (!controller.permissionsGranted)
+                        FilledButton.icon(
+                          onPressed: controller.busy
+                              ? null
+                              : controller.requestPermissions,
+                          icon: const Icon(Icons.security, size: 18),
+                          label: const Text('Permissions'),
+                        ),
+                      FilledButton.icon(
                         onPressed: controller.busy
                             ? null
-                            : controller.requestPermissions,
-                        child: const Text('Request Permissions'),
+                            : controller.createLobby,
+                        icon: const Icon(Icons.cell_wifi, size: 18),
+                        label: const Text('Host'),
                       ),
-                      FilledButton(
-                        onPressed: controller.busy ? null : controller.createLobby,
-                        child: const Text('Create Lobby'),
+                      FilledButton.icon(
+                        onPressed: controller.busy
+                            ? null
+                            : controller.joinLobby,
+                        icon: const Icon(Icons.search, size: 18),
+                        label: const Text('Join'),
                       ),
-                      FilledButton(
-                        onPressed: controller.busy ? null : controller.joinLobby,
-                        child: const Text('Join Lobby'),
-                      ),
-                      FilledButton(
-                        onPressed: controller.canGoToLobby
-                            ? controller.goToLobby
-                            : null,
-                        child: const Text('Next'),
-                      ),
+                      if (controller.canGoToLobby)
+                        FilledButton.icon(
+                          onPressed: controller.goToLobby,
+                          icon: const Icon(Icons.arrow_forward, size: 18),
+                          label: const Text('Next'),
+                        ),
                     ],
                   ),
                 ],
               ),
             ),
           ),
-          const SizedBox(height: 12),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Discovered Devices',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  if (controller.discoveredEndpoints.isEmpty)
-                    const Text('No discovered devices yet.')
-                  else
+          if (controller.discoveredEndpoints.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Discovered Devices',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
                     ...controller.discoveredEndpoints.map((endpoint) {
                       return ListTile(
                         dense: true,
@@ -116,10 +122,11 @@ class RaceSessionScreen extends StatelessWidget {
                         ),
                       );
                     }),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
+          ],
           const SizedBox(height: 12),
           Card(
             child: Padding(
@@ -129,7 +136,7 @@ class RaceSessionScreen extends StatelessWidget {
                 children: [
                   const Text(
                     'Connected Devices',
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                   ),
                   const SizedBox(height: 8),
                   ...controller.devices.map((device) {
@@ -153,7 +160,7 @@ class RaceSessionScreen extends StatelessWidget {
 
   Widget _buildLobbyScaffold(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Lobby')),
+      appBar: AppBar(title: const Text('Race Lobby')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -165,12 +172,16 @@ class RaceSessionScreen extends StatelessWidget {
                 children: [
                   const Text(
                     'Device Roles',
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                   ),
+                  if (controller.isHost) ...[
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Assign roles to connected devices.',
+                      style: TextStyle(color: Colors.grey, fontSize: 13),
+                    ),
+                  ],
                   const SizedBox(height: 8),
-                  Text('Host controls role assignments and race actions.'),
-                  Text('Devices connected: ${controller.totalDeviceCount}'),
-                  const SizedBox(height: 12),
                   ...controller.devices.map((device) {
                     return _buildRoleRow(device);
                   }),
@@ -186,48 +197,28 @@ class RaceSessionScreen extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Race Controls',
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                    'Session Actions',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 12),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      FilledButton(
-                        onPressed: controller.isHost
-                            ? () => controller.triggerManualEvent(
-                                SessionDeviceRole.start,
-                              )
+                      FilledButton.icon(
+                        onPressed: controller.canStartMonitoring
+                            ? controller.startMonitoring
                             : null,
-                        child: const Text('Start'),
+                        icon: const Icon(Icons.videocam),
+                        label: const Text('Start Monitoring'),
                       ),
-                      if (controller.canShowSplitControls)
-                        FilledButton(
-                          onPressed: controller.isHost
-                              ? () => controller.triggerManualEvent(
-                                  SessionDeviceRole.split,
-                                )
-                              : null,
-                          child: const Text('Split'),
+                      if (controller.isHost && controller.timeline.hasStarted)
+                        FilledButton.icon(
+                          onPressed: controller.resetRun,
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('Reset Run'),
                         ),
-                      FilledButton(
-                        onPressed: controller.isHost
-                            ? () => controller.triggerManualEvent(
-                                SessionDeviceRole.stop,
-                              )
-                            : null,
-                        child: const Text('Stop'),
-                      ),
                     ],
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton.icon(
-                    onPressed: controller.canStartMonitoring
-                        ? controller.startMonitoring
-                        : null,
-                    icon: const Icon(Icons.videocam),
-                    label: const Text('Start Monitoring'),
                   ),
                 ],
               ),
@@ -245,30 +236,45 @@ class RaceSessionScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Monitoring'),
         actions: [
-          TextButton(
-            onPressed: controller.isHost ? controller.stopMonitoring : null,
-            child: const Text('Stop Monitoring'),
-          ),
+          if (controller.isHost)
+            TextButton(
+              onPressed: controller.stopMonitoring,
+              child: const Text('Stop'),
+            ),
         ],
       ),
       body: Column(
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Local role: ${sessionDeviceRoleLabel(controller.localRole)}'),
-                    const SizedBox(height: 4),
-                    const Text('Roles are locked while monitoring is active.'),
-                    if (!controller.isHost)
-                      const Text('Waiting for host to stop monitoring.'),
-                  ],
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Role: ${sessionDeviceRoleLabel(controller.localRole)}',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-              ),
+                if (!controller.isHost)
+                  const Text(
+                    'Waiting for host...',
+                    style: TextStyle(
+                      color: Colors.grey,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  )
+                else
+                  FilledButton.icon(
+                    onPressed: controller.resetRun,
+                    icon: const Icon(Icons.refresh, size: 16),
+                    label: const Text('Reset Run'),
+                    style: FilledButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+              ],
             ),
           ),
           Expanded(
@@ -319,19 +325,39 @@ class RaceSessionScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Timeline', style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text(
+              'Race Timeline',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
             const SizedBox(height: 8),
-            Text('Started: ${timeline.startedAtEpochMs ?? '-'}'),
-            Text('Splits: ${timeline.splitMicros.length}'),
-            if (timeline.splitMicros.isNotEmpty)
-              ...timeline.splitMicros.asMap().entries.map((entry) {
-                return Text('Split ${entry.key + 1}: ${entry.value}us');
-              }),
-            Text('Stopped: ${timeline.stopElapsedMicros ?? '-'}'),
+            if (!timeline.hasStarted)
+              const Text(
+                'Ready to start.',
+                style: TextStyle(color: Colors.grey),
+              )
+            else ...[
+              Text(
+                'Started: ${DateTime.fromMillisecondsSinceEpoch(timeline.startedAtEpochMs!).toLocal().toString().split('.').first}',
+              ),
+              if (timeline.splitMicros.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                ...timeline.splitMicros.asMap().entries.map((entry) {
+                  return Text(
+                    'Split ${entry.key + 1}: ${formatDurationMicros(entry.value)}',
+                  );
+                }),
+              ],
+              if (timeline.hasStopped) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'Finished: ${formatDurationMicros(timeline.stopElapsedMicros!)}',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ],
+            ],
           ],
         ),
       ),
     );
   }
-
 }

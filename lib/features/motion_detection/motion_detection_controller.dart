@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:math' as math;
+
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sprint_sync/core/models/app_models.dart';
 import 'package:sprint_sync/core/repositories/local_repository.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
+
 class MotionDetectionController extends ChangeNotifier {
   MotionDetectionController({
     required LocalRepository repository,
@@ -14,17 +16,24 @@ class MotionDetectionController extends ChangeNotifier {
     _engine = MotionDetectionEngine(config: _config);
     unawaited(_loadInitialState());
   }
+
   final LocalRepository _repository;
   final void Function(MotionTriggerEvent event)? _onTrigger;
+
   MotionDetectionConfig _config = MotionDetectionConfig.defaults();
   late MotionDetectionEngine _engine;
   CameraController? _cameraController;
+
   MotionFrameStats? _latestStats;
   final List<MotionTriggerEvent> _triggerHistory = <MotionTriggerEvent>[];
+
   MotionRunSnapshot _runSnapshot = MotionRunSnapshot.ready();
   LastRunResult? _lastRun;
   Timer? _runTicker;
+
   Uint8List? _previousYPlane;
+
+  bool _isInitializing = false;
   bool _isStreaming = false;
   bool _isProcessingFrame = false;
   bool _isLoading = false;
@@ -33,17 +42,20 @@ class MotionDetectionController extends ChangeNotifier {
   int _processedFrameCount = 0;
   String? _errorText;
   bool _isDisposed = false;
+
   MotionDetectionConfig get config => _config;
   CameraController? get cameraController => _cameraController;
   MotionFrameStats? get latestStats => _latestStats;
   List<MotionTriggerEvent> get triggerHistory =>
       List.unmodifiable(_triggerHistory);
+
   MotionRunSnapshot get runSnapshot => _runSnapshot;
   LastRunResult? get lastRun => _lastRun;
   bool get isRunActive => _runSnapshot.isActive;
   String get elapsedDisplay => formatDurationMicros(_runSnapshot.elapsedMicros);
   List<int> get currentSplitMicros =>
       List.unmodifiable(_runSnapshot.splitMicros);
+
   String get runStatusLabel {
     if (_runSnapshot.isActive) {
       return 'running';
@@ -53,10 +65,13 @@ class MotionDetectionController extends ChangeNotifier {
     }
     return 'ready';
   }
+
   bool get isStreaming => _isStreaming;
-  int get streamFrameCount => _streamFrameCount; int get processedFrameCount => _processedFrameCount;
+  int get streamFrameCount => _streamFrameCount;
+  int get processedFrameCount => _processedFrameCount;
   bool get isLoading => _isLoading;
   String? get errorText => _errorText;
+
   Future<void> _loadInitialState() async {
     final loadedConfig = await _repository.loadMotionConfig();
     final loadedRun = await _repository.loadLastRun();
@@ -67,13 +82,17 @@ class MotionDetectionController extends ChangeNotifier {
       notifyListeners();
     }
   }
+
   Future<void> initializeCamera() async {
-    if (_cameraController?.value.isInitialized == true) {
+    if (_cameraController?.value.isInitialized == true || _isInitializing) {
       return;
     }
+
+    _isInitializing = true;
     _isLoading = true;
     _errorText = null;
     notifyListeners();
+
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
@@ -93,21 +112,26 @@ class MotionDetectionController extends ChangeNotifier {
       }
     } catch (error) {
       _errorText = 'Camera initialization failed: $error';
+    } finally {
+      _isInitializing = false;
+      _isLoading = false;
+      notifyListeners();
     }
-    _isLoading = false;
-    notifyListeners();
   }
+
   Future<void> disposeCamera() async {
     await stopDetection();
     await _cameraController?.dispose();
     _cameraController = null;
     notifyListeners();
   }
+
   Future<void> startDetection() async {
     if (_cameraController == null ||
         _cameraController?.value.isInitialized != true) {
       await initializeCamera();
     }
+
     final controller = _cameraController;
     if (controller == null || _isStreaming) {
       return;
@@ -117,6 +141,7 @@ class MotionDetectionController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+
     _errorText = null;
     _latestStats = null;
     _previousYPlane = null;
@@ -124,6 +149,7 @@ class MotionDetectionController extends ChangeNotifier {
     _streamFrameCount = 0;
     _processedFrameCount = 0;
     _engine.updateConfig(_config);
+
     try {
       await controller.startImageStream(_processImage);
       _isStreaming = controller.value.isStreamingImages;
@@ -133,9 +159,11 @@ class MotionDetectionController extends ChangeNotifier {
     }
     notifyListeners();
   }
+
   Future<void> stopDetection() async {
     try {
-      if (_cameraController?.value.isStreamingImages == true) {
+      if (_cameraController?.value.isInitialized == true &&
+          _cameraController?.value.isStreamingImages == true) {
         await _cameraController?.stopImageStream();
       }
     } catch (error) {
@@ -147,6 +175,7 @@ class MotionDetectionController extends ChangeNotifier {
     _frameCounter = 0;
     notifyListeners();
   }
+
   void resetRace() {
     _engine.resetRace();
     _triggerHistory.clear();
@@ -154,36 +183,42 @@ class MotionDetectionController extends ChangeNotifier {
     _stopRunTicker();
     notifyListeners();
   }
+
   Future<void> updateThreshold(double value) async {
     _config = _config.copyWith(threshold: value.clamp(0.001, 0.08));
     _engine.updateConfig(_config);
     await _repository.saveMotionConfig(_config);
     notifyListeners();
   }
+
   Future<void> updateRoiCenter(double value) async {
     _config = _config.copyWith(roiCenterX: value.clamp(0.20, 0.80));
     _engine.updateConfig(_config);
     await _repository.saveMotionConfig(_config);
     notifyListeners();
   }
+
   Future<void> updateRoiWidth(double value) async {
     _config = _config.copyWith(roiWidth: value.clamp(0.05, 0.40));
     _engine.updateConfig(_config);
     await _repository.saveMotionConfig(_config);
     notifyListeners();
   }
+
   Future<void> updateCooldown(int value) async {
     _config = _config.copyWith(cooldownMs: value.clamp(300, 2000));
     _engine.updateConfig(_config);
     await _repository.saveMotionConfig(_config);
     notifyListeners();
   }
+
   void _processImage(CameraImage image) {
     if (_isProcessingFrame) {
       return;
     }
     _isProcessingFrame = true;
     _streamFrameCount += 1;
+
     try {
       _frameCounter += 1;
       if (_frameCounter % _config.processEveryNFrames != 0) {
@@ -192,13 +227,17 @@ class MotionDetectionController extends ChangeNotifier {
       if (image.planes.isEmpty) {
         return;
       }
+
       final plane = image.planes.first;
       final currentBytes = plane.bytes;
       final previousBytes = _previousYPlane;
+
       _previousYPlane = Uint8List.fromList(currentBytes);
+
       if (previousBytes == null) {
         return;
       }
+
       final rawScore = _computeNormalizedDelta(
         current: currentBytes,
         previous: previousBytes,
@@ -208,6 +247,7 @@ class MotionDetectionController extends ChangeNotifier {
         roiCenterX: _config.roiCenterX,
         roiWidth: _config.roiWidth,
       );
+
       final timestampMicros = DateTime.now().microsecondsSinceEpoch;
       final stats = _engine.process(
         rawScore: rawScore,
@@ -215,6 +255,7 @@ class MotionDetectionController extends ChangeNotifier {
       );
       _processedFrameCount += 1;
       _latestStats = stats;
+
       final trigger = stats.triggerEvent;
       if (trigger != null) {
         ingestTrigger(trigger);
@@ -227,8 +268,10 @@ class MotionDetectionController extends ChangeNotifier {
       _isProcessingFrame = false;
     }
   }
+
   void ingestTrigger(MotionTriggerEvent trigger, {bool forwardToSync = true}) {
     _addTriggerToHistory(trigger);
+
     if (forwardToSync && _onTrigger != null) {
       final snapshotBefore = _runSnapshot;
       _onTrigger!(trigger);
@@ -236,6 +279,7 @@ class MotionDetectionController extends ChangeNotifier {
         return;
       }
     }
+
     if (trigger.type == MotionTriggerType.start) {
       _runSnapshot = MotionRunSnapshot(
         isActive: true,
@@ -248,13 +292,16 @@ class MotionDetectionController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+
     if (!_runSnapshot.isActive || _runSnapshot.startedAtMicros == null) {
       return;
     }
+
     final elapsedMicros = math.max(
       0,
       trigger.triggerMicros - _runSnapshot.startedAtMicros!,
     );
+
     if (trigger.type == MotionTriggerType.split) {
       _runSnapshot = _runSnapshot.copyWith(
         elapsedMicros: elapsedMicros,
@@ -264,6 +311,7 @@ class MotionDetectionController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+
     if (trigger.type == MotionTriggerType.stop) {
       _runSnapshot = _runSnapshot.copyWith(
         isActive: false,
@@ -275,12 +323,14 @@ class MotionDetectionController extends ChangeNotifier {
     unawaited(_persistCurrentRun());
     notifyListeners();
   }
+
   void _addTriggerToHistory(MotionTriggerEvent trigger) {
     _triggerHistory.insert(0, trigger);
     if (_triggerHistory.length > 20) {
       _triggerHistory.removeLast();
     }
   }
+
   void _startRunTicker() {
     _runTicker?.cancel();
     _runTicker = Timer.periodic(const Duration(milliseconds: 50), (_) {
@@ -291,17 +341,21 @@ class MotionDetectionController extends ChangeNotifier {
       final elapsedMicros =
           DateTime.now().microsecondsSinceEpoch - startedAtMicros;
       final safeElapsed = math.max(0, elapsedMicros);
+
       if (safeElapsed == _runSnapshot.elapsedMicros) {
         return;
       }
+
       _runSnapshot = _runSnapshot.copyWith(elapsedMicros: safeElapsed);
       notifyListeners();
     });
   }
+
   void _stopRunTicker() {
     _runTicker?.cancel();
     _runTicker = null;
   }
+
   Future<void> _persistCurrentRun() async {
     final startedAtMicros = _runSnapshot.startedAtMicros;
     if (startedAtMicros == null) {
@@ -317,6 +371,7 @@ class MotionDetectionController extends ChangeNotifier {
     }
     await _repository.saveLastRun(run);
   }
+
   @override
   void dispose() {
     _isDisposed = true;
@@ -325,6 +380,7 @@ class MotionDetectionController extends ChangeNotifier {
     super.dispose();
   }
 }
+
 double _computeNormalizedDelta({
   required Uint8List current,
   required Uint8List previous,
@@ -338,6 +394,7 @@ double _computeNormalizedDelta({
   final verticalHalf = (width * roiWidth / 2).round();
   final verticalStart = (verticalCenter - verticalHalf).clamp(0, width - 1);
   final verticalEnd = (verticalCenter + verticalHalf).clamp(0, width - 1);
+
   final horizontalCenter = (height * roiCenterX).round();
   final horizontalHalf = (height * roiWidth / 2).round();
   final horizontalStart = (horizontalCenter - horizontalHalf).clamp(
@@ -348,6 +405,7 @@ double _computeNormalizedDelta({
     0,
     height - 1,
   );
+
   final verticalScore = _averageNormalizedAbsDelta(
     current: current,
     previous: previous,
@@ -358,6 +416,7 @@ double _computeNormalizedDelta({
     endPrimary: verticalEnd,
     primaryIsXAxis: true,
   );
+
   final horizontalScore = _averageNormalizedAbsDelta(
     current: current,
     previous: previous,
@@ -368,8 +427,10 @@ double _computeNormalizedDelta({
     endPrimary: horizontalEnd,
     primaryIsXAxis: false,
   );
+
   return math.max(verticalScore, horizontalScore);
 }
+
 double _averageNormalizedAbsDelta({
   required Uint8List current,
   required Uint8List previous,
