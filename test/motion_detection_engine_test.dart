@@ -108,5 +108,36 @@ void main() {
       expect(afterStop.triggerEvent!.type, MotionTriggerType.split);
       expect(afterStop.triggerEvent!.splitIndex, 3);
     });
+
+    test('resetRace clears baseline so next session detects motion immediately', () {
+      final engine = MotionDetectionEngine(
+        config: MotionDetectionConfig.defaults(),
+      );
+
+      for (int i = 0; i < 20; i++) {
+        engine.process(rawScore: 0.04, timestampMicros: i * 100000);
+      }
+      final baselineBefore = engine.process(
+        rawScore: 0.04,
+        timestampMicros: 2100000,
+      ).baseline;
+      expect(baselineBefore, greaterThan(0.03));
+
+      engine.resetRace();
+
+      final afterReset = engine.process(rawScore: 0.001, timestampMicros: 3000000);
+      expect(afterReset.baseline, 0.001);
+
+      MotionFrameStats? triggerFrame;
+      for (int i = 0; i < 2; i++) {
+        triggerFrame = engine.process(
+          rawScore: 0.22,
+          timestampMicros: 3200000 + (i * 100000),
+        );
+      }
+
+      expect(triggerFrame!.triggerEvent, isNotNull,
+          reason: 'Motion should be detected immediately after resetRace');
+    });
   });
 }

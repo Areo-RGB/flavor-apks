@@ -199,4 +199,83 @@ void main() {
 
     controller.dispose();
   });
+
+  test('onTrigger callback that starts run prevents duplicate split at time 0', () async {
+    late MotionDetectionController controller;
+    controller = MotionDetectionController(
+      repository: LocalRepository(),
+      onTrigger: (event) {
+        controller.ingestTrigger(
+          MotionTriggerEvent(
+            triggerMicros: event.triggerMicros,
+            score: 0,
+            type: MotionTriggerType.start,
+            splitIndex: 0,
+          ),
+          forwardToSync: false,
+        );
+      },
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 1));
+
+    controller.ingestTrigger(
+      const MotionTriggerEvent(
+        triggerMicros: 5000000,
+        score: 0.03,
+        type: MotionTriggerType.split,
+        splitIndex: 1,
+      ),
+    );
+
+    expect(controller.isRunActive, isTrue);
+    expect(controller.runSnapshot.startedAtMicros, 5000000);
+    expect(controller.currentSplitMicros, isEmpty,
+        reason: 'Should not have a spurious split at time 0');
+
+    controller.dispose();
+  });
+
+  test('onTrigger callback that adds split prevents duplicate split', () async {
+    late MotionDetectionController controller;
+    controller = MotionDetectionController(
+      repository: LocalRepository(),
+      onTrigger: (event) {
+        if (!controller.isRunActive) return;
+        controller.ingestTrigger(
+          MotionTriggerEvent(
+            triggerMicros: event.triggerMicros,
+            score: 0,
+            type: MotionTriggerType.split,
+            splitIndex: controller.currentSplitMicros.length + 1,
+          ),
+          forwardToSync: false,
+        );
+      },
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 1));
+
+    controller.ingestTrigger(
+      const MotionTriggerEvent(
+        triggerMicros: 1000000,
+        score: 0.20,
+        type: MotionTriggerType.start,
+        splitIndex: 0,
+      ),
+      forwardToSync: false,
+    );
+
+    controller.ingestTrigger(
+      const MotionTriggerEvent(
+        triggerMicros: 1500000,
+        score: 0.03,
+        type: MotionTriggerType.split,
+        splitIndex: 1,
+      ),
+    );
+
+    expect(controller.currentSplitMicros, <int>[500000],
+        reason: 'Should have exactly one split, not a duplicate');
+
+    controller.dispose();
+  });
 }

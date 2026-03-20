@@ -170,6 +170,7 @@ class MotionDetectionEngine {
   }
 
   void resetRace() {
+    _baseline = 0;
     _aboveCount = 0;
     _armed = true;
     _belowSinceMicros = null;
