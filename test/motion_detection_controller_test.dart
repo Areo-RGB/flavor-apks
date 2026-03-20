@@ -15,10 +15,11 @@ void main() {
   test('start trigger initializes run and elapsed ticker', () async {
     final controller = MotionDetectionController(repository: LocalRepository());
     await Future<void>.delayed(const Duration(milliseconds: 1));
+    final startMicros = DateTime.now().microsecondsSinceEpoch;
 
     controller.ingestTrigger(
-      const MotionTriggerEvent(
-        triggerMicros: 1000000,
+      MotionTriggerEvent(
+        triggerMicros: startMicros,
         score: 0.20,
         type: MotionTriggerType.start,
         splitIndex: 0,
@@ -36,7 +37,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 5));
     final savedRun = await LocalRepository().loadLastRun();
     expect(savedRun, isNotNull);
-    expect(savedRun!.startedAtEpochMs, 1000);
+    expect(savedRun!.startedAtEpochMs, startMicros ~/ 1000);
 
     controller.dispose();
   });
@@ -48,18 +49,20 @@ void main() {
         repository: LocalRepository(),
       );
       await Future<void>.delayed(const Duration(milliseconds: 1));
+      final startMicros = DateTime.now().microsecondsSinceEpoch;
+      final stopMicros = startMicros + 750000;
 
       controller.ingestTrigger(
-        const MotionTriggerEvent(
-          triggerMicros: 2000000,
+        MotionTriggerEvent(
+          triggerMicros: startMicros,
           score: 0.22,
           type: MotionTriggerType.start,
           splitIndex: 0,
         ),
       );
       controller.ingestTrigger(
-        const MotionTriggerEvent(
-          triggerMicros: 2750000,
+        MotionTriggerEvent(
+          triggerMicros: stopMicros,
           score: 0.24,
           type: MotionTriggerType.stop,
           splitIndex: 0,
@@ -76,7 +79,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 5));
       final savedRun = await LocalRepository().loadLastRun();
       expect(savedRun, isNotNull);
-      expect(savedRun!.startedAtEpochMs, 2000);
+      expect(savedRun!.startedAtEpochMs, startMicros ~/ 1000);
       expect(savedRun.splitMicros, <int>[750000]);
 
       controller.dispose();
@@ -90,26 +93,27 @@ void main() {
         repository: LocalRepository(),
       );
       await Future<void>.delayed(const Duration(milliseconds: 1));
+      final startMicros = DateTime.now().microsecondsSinceEpoch;
 
       controller.ingestTrigger(
-        const MotionTriggerEvent(
-          triggerMicros: 1000000,
+        MotionTriggerEvent(
+          triggerMicros: startMicros,
           score: 0.20,
           type: MotionTriggerType.start,
           splitIndex: 0,
         ),
       );
       controller.ingestTrigger(
-        const MotionTriggerEvent(
-          triggerMicros: 1300000,
+        MotionTriggerEvent(
+          triggerMicros: startMicros + 300000,
           score: 0.21,
           type: MotionTriggerType.split,
           splitIndex: 1,
         ),
       );
       controller.ingestTrigger(
-        const MotionTriggerEvent(
-          triggerMicros: 1650000,
+        MotionTriggerEvent(
+          triggerMicros: startMicros + 650000,
           score: 0.22,
           type: MotionTriggerType.split,
           splitIndex: 2,
@@ -126,18 +130,19 @@ void main() {
   test('manual reset clears active run, splits, and trigger history', () async {
     final controller = MotionDetectionController(repository: LocalRepository());
     await Future<void>.delayed(const Duration(milliseconds: 1));
+    final startMicros = DateTime.now().microsecondsSinceEpoch;
 
     controller.ingestTrigger(
-      const MotionTriggerEvent(
-        triggerMicros: 1000000,
+      MotionTriggerEvent(
+        triggerMicros: startMicros,
         score: 0.20,
         type: MotionTriggerType.start,
         splitIndex: 0,
       ),
     );
     controller.ingestTrigger(
-      const MotionTriggerEvent(
-        triggerMicros: 1500000,
+      MotionTriggerEvent(
+        triggerMicros: startMicros + 500000,
         score: 0.21,
         type: MotionTriggerType.stop,
         splitIndex: 0,
@@ -178,26 +183,28 @@ void main() {
   test('new START after STOP begins a fresh run', () async {
     final controller = MotionDetectionController(repository: LocalRepository());
     await Future<void>.delayed(const Duration(milliseconds: 1));
+    final firstStartMicros = DateTime.now().microsecondsSinceEpoch;
+    final secondStartMicros = firstStartMicros + 1100000;
 
     controller.ingestTrigger(
-      const MotionTriggerEvent(
-        triggerMicros: 1000000,
+      MotionTriggerEvent(
+        triggerMicros: firstStartMicros,
         score: 0.20,
         type: MotionTriggerType.start,
         splitIndex: 0,
       ),
     );
     controller.ingestTrigger(
-      const MotionTriggerEvent(
-        triggerMicros: 1500000,
+      MotionTriggerEvent(
+        triggerMicros: firstStartMicros + 500000,
         score: 0.21,
         type: MotionTriggerType.stop,
         splitIndex: 0,
       ),
     );
     controller.ingestTrigger(
-      const MotionTriggerEvent(
-        triggerMicros: 2100000,
+      MotionTriggerEvent(
+        triggerMicros: secondStartMicros,
         score: 0.22,
         type: MotionTriggerType.start,
         splitIndex: 0,
@@ -206,7 +213,7 @@ void main() {
     expect(controller.runStatusLabel, 'running');
     expect(controller.isRunActive, isTrue);
     expect(controller.currentSplitMicros, isEmpty);
-    expect(controller.runSnapshot.startedAtMicros, 2100000);
+    expect(controller.runSnapshot.startedAtMicros, secondStartMicros);
 
     controller.dispose();
   });
@@ -214,18 +221,19 @@ void main() {
   test('detected pulses start a run and then append splits', () async {
     final controller = MotionDetectionController(repository: LocalRepository());
     await Future<void>.delayed(const Duration(milliseconds: 1));
+    final startMicros = DateTime.now().microsecondsSinceEpoch;
 
     controller.ingestDetectedPulse(
-      const MotionTriggerEvent(
-        triggerMicros: 5000000,
+      MotionTriggerEvent(
+        triggerMicros: startMicros,
         score: 0.03,
         type: MotionTriggerType.split,
         splitIndex: 1,
       ),
     );
     controller.ingestDetectedPulse(
-      const MotionTriggerEvent(
-        triggerMicros: 5600000,
+      MotionTriggerEvent(
+        triggerMicros: startMicros + 600000,
         score: 0.04,
         type: MotionTriggerType.split,
         splitIndex: 2,
@@ -233,7 +241,7 @@ void main() {
     );
 
     expect(controller.isRunActive, isTrue);
-    expect(controller.runSnapshot.startedAtMicros, 5000000);
+    expect(controller.runSnapshot.startedAtMicros, startMicros);
     expect(controller.currentSplitMicros, <int>[600000]);
 
     controller.dispose();

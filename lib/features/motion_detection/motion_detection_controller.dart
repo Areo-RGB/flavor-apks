@@ -263,7 +263,7 @@ class MotionDetectionController extends ChangeNotifier {
       final trigger = stats.triggerEvent;
       if (trigger != null) {
         if (_onTrigger != null) {
-          _onTrigger!(trigger);
+          _onTrigger(trigger);
         } else {
           ingestDetectedPulse(trigger);
         }

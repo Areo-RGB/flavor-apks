@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sprint_sync/core/repositories/local_repository.dart';
 import 'package:sprint_sync/core/services/nearby_bridge.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_controller.dart';
+import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
 import 'package:sprint_sync/features/race_session/race_session_controller.dart';
 import 'package:sprint_sync/features/race_session/race_session_models.dart';
 
