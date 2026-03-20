@@ -78,7 +78,10 @@ class _SprintSyncAppState extends State<SprintSyncApp> {
           ),
           body: TabBarView(
             children: [
-              MotionDetectionScreen(controller: _motionDetectionController),
+              MotionDetectionScreen(
+                controller: _motionDetectionController,
+                raceSyncController: _raceSyncController,
+              ),
               RaceSyncScreen(controller: _raceSyncController),
             ],
           ),

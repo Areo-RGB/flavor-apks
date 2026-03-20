@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:sprint_sync/core/models/app_models.dart';
@@ -12,9 +13,11 @@ class RaceSyncController extends ChangeNotifier {
     required LocalRepository repository,
     required NearbyBridge nearbyBridge,
     void Function(MotionTriggerEvent trigger)? onRemoteTrigger,
+    Duration latencyProbeInterval = const Duration(seconds: 1),
   }) : _repository = repository,
        _nearbyBridge = nearbyBridge,
-       _onRemoteTrigger = onRemoteTrigger {
+       _onRemoteTrigger = onRemoteTrigger,
+       _latencyProbeInterval = latencyProbeInterval {
     _eventsSubscription = _nearbyBridge.events.listen(_onNearbyEvent);
     unawaited(_loadLastRun());
   }
@@ -24,16 +27,21 @@ class RaceSyncController extends ChangeNotifier {
   final LocalRepository _repository;
   final NearbyBridge _nearbyBridge;
   final void Function(MotionTriggerEvent trigger)? _onRemoteTrigger;
+  final Duration _latencyProbeInterval;
 
   StreamSubscription<Map<String, dynamic>>? _eventsSubscription;
+  Timer? _latencyProbeTimer;
 
   RaceRole _role = RaceRole.none;
   SessionState _sessionState = SessionState.initial();
   LastRunResult? _lastRun;
   String _sessionId = '';
+  int _probeCounter = 0;
 
   final Map<String, NearbyEndpoint> _discovered = <String, NearbyEndpoint>{};
   final Set<String> _connectedEndpointIds = <String>{};
+  final Map<String, int> _latencyByEndpointMs = <String, int>{};
+  final Map<String, int> _pendingProbeSentAtMicrosByKey = <String, int>{};
   final List<String> _logs = <String>[];
 
   bool _busy = false;
@@ -51,6 +59,36 @@ class RaceSyncController extends ChangeNotifier {
   bool get permissionsGranted => _permissionsGranted;
   String? get errorText => _errorText;
   String? get lastConnectionStatus => _lastConnectionStatus;
+  bool get hasConnectedPeers => _connectedEndpointIds.isNotEmpty;
+  int? get worstPeerLatencyMs {
+    if (_connectedEndpointIds.isEmpty) {
+      return null;
+    }
+    final latencies = _connectedEndpointIds
+        .map((endpointId) => _latencyByEndpointMs[endpointId])
+        .whereType<int>();
+    if (latencies.isEmpty) {
+      return null;
+    }
+    return latencies.reduce(math.max);
+  }
+
+  ConnectionQuality get connectionQuality {
+    if (!hasConnectedPeers) {
+      return ConnectionQuality.offline;
+    }
+    final worstLatencyMs = worstPeerLatencyMs;
+    if (worstLatencyMs == null) {
+      return ConnectionQuality.warning;
+    }
+    if (worstLatencyMs < 100) {
+      return ConnectionQuality.good;
+    }
+    if (worstLatencyMs > 250) {
+      return ConnectionQuality.bad;
+    }
+    return ConnectionQuality.warning;
+  }
 
   Future<void> _loadLastRun() async {
     _lastRun = await _repository.loadLastRun();
@@ -147,6 +185,8 @@ class RaceSyncController extends ChangeNotifier {
     try {
       await _nearbyBridge.disconnect(endpointId: endpointId);
       _connectedEndpointIds.remove(endpointId);
+      _clearEndpointLatency(endpointId);
+      _refreshLatencyProbeLoop();
       _addLog('Disconnected: $endpointId');
       notifyListeners();
     } catch (error) {
@@ -161,6 +201,8 @@ class RaceSyncController extends ChangeNotifier {
       await _nearbyBridge.stopAll();
       _connectedEndpointIds.clear();
       _discovered.clear();
+      _resetLatencyState();
+      _stopLatencyProbeLoop();
       _role = RaceRole.none;
       _addLog('Stopped all Nearby operations.');
       notifyListeners();
@@ -256,6 +298,8 @@ class RaceSyncController extends ChangeNotifier {
         if (id != null) {
           _discovered.remove(id);
           _connectedEndpointIds.remove(id);
+          _clearEndpointLatency(id);
+          _refreshLatencyProbeLoop();
           _addLog('Endpoint lost: $id');
           _lastConnectionStatus = 'Endpoint lost: $id';
           notifyListeners();
@@ -271,6 +315,7 @@ class RaceSyncController extends ChangeNotifier {
         if (connection.connected) {
           final wasNew = _connectedEndpointIds.add(endpointId);
           _discovered.remove(endpointId);
+          _refreshLatencyProbeLoop();
           _lastConnectionStatus = 'Connected: $endpointId';
           _addLog(
             'Connection success: $endpointId'
@@ -282,6 +327,8 @@ class RaceSyncController extends ChangeNotifier {
         } else {
           _connectedEndpointIds.remove(endpointId);
           _discovered.remove(endpointId);
+          _clearEndpointLatency(endpointId);
+          _refreshLatencyProbeLoop();
           final status = _statusSuffix(
             connection.statusCode,
             connection.statusMessage,
@@ -295,6 +342,8 @@ class RaceSyncController extends ChangeNotifier {
         final endpointId = event['endpointId']?.toString();
         if (endpointId != null) {
           _connectedEndpointIds.remove(endpointId);
+          _clearEndpointLatency(endpointId);
+          _refreshLatencyProbeLoop();
           _addLog('Endpoint disconnected: $endpointId');
           _lastConnectionStatus = 'Endpoint disconnected: $endpointId';
           notifyListeners();
@@ -306,9 +355,10 @@ class RaceSyncController extends ChangeNotifier {
         notifyListeners();
         break;
       case 'payload_received':
+        final endpointId = event['endpointId']?.toString();
         final message = event['message']?.toString();
         if (message != null) {
-          _handlePayload(message);
+          _handlePayload(message, endpointId: endpointId);
         }
         break;
       case 'error':
@@ -320,10 +370,48 @@ class RaceSyncController extends ChangeNotifier {
     }
   }
 
-  void _handlePayload(String raw) {
+  void _handlePayload(String raw, {required String? endpointId}) {
     final message = RaceEventMessage.tryParse(raw);
     if (message == null) {
       _addLog('Ignored malformed payload: $raw');
+      return;
+    }
+
+    if (message.type == RaceEventType.latencyProbe) {
+      if (endpointId != null &&
+          endpointId.isNotEmpty &&
+          message.probeId != null) {
+        unawaited(
+          _sendPayload(
+            endpointId: endpointId,
+            payload: RaceEventMessage(
+              type: RaceEventType.latencyPong,
+              sessionId: _ensureSessionId(),
+              probeId: message.probeId,
+            ).toJsonString(),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (message.type == RaceEventType.latencyPong) {
+      if (endpointId != null &&
+          endpointId.isNotEmpty &&
+          message.probeId != null) {
+        final key = _probeKey(
+          endpointId: endpointId,
+          probeId: message.probeId!,
+        );
+        final sentAtMicros = _pendingProbeSentAtMicrosByKey.remove(key);
+        if (sentAtMicros != null) {
+          final elapsedMicros =
+              DateTime.now().microsecondsSinceEpoch - sentAtMicros;
+          final latencyMs = math.max(0, (elapsedMicros / 1000).round());
+          _latencyByEndpointMs[endpointId] = latencyMs;
+          notifyListeners();
+        }
+      }
       return;
     }
 
@@ -352,6 +440,9 @@ class RaceSyncController extends ChangeNotifier {
         _sessionState = _sessionState.copyWith(splitMicros: splitMicros);
         _addLog('Split received: ${message.elapsedMicros}us');
         break;
+      case RaceEventType.latencyProbe:
+      case RaceEventType.latencyPong:
+        return;
     }
 
     _emitRemoteTrigger(message);
@@ -394,6 +485,9 @@ class RaceSyncController extends ChangeNotifier {
           ),
         );
         break;
+      case RaceEventType.latencyProbe:
+      case RaceEventType.latencyPong:
+        return;
     }
   }
 
@@ -454,6 +548,77 @@ class RaceSyncController extends ChangeNotifier {
     );
   }
 
+  Future<void> _sendLatencyProbe(String endpointId) async {
+    if (!_connectedEndpointIds.contains(endpointId)) {
+      return;
+    }
+    final probeId = 'probe-${_probeCounter++}';
+    final key = _probeKey(endpointId: endpointId, probeId: probeId);
+    _pendingProbeSentAtMicrosByKey[key] = DateTime.now().microsecondsSinceEpoch;
+
+    try {
+      await _sendPayload(
+        endpointId: endpointId,
+        payload: RaceEventMessage(
+          type: RaceEventType.latencyProbe,
+          sessionId: _ensureSessionId(),
+          probeId: probeId,
+        ).toJsonString(),
+      );
+    } catch (_) {
+      _pendingProbeSentAtMicrosByKey.remove(key);
+    }
+  }
+
+  void _refreshLatencyProbeLoop() {
+    if (_connectedEndpointIds.isEmpty) {
+      _stopLatencyProbeLoop();
+      return;
+    }
+    _startLatencyProbeLoop();
+  }
+
+  void _startLatencyProbeLoop() {
+    if (_latencyProbeTimer != null) {
+      return;
+    }
+    _latencyProbeTimer = Timer.periodic(_latencyProbeInterval, (_) {
+      _probeConnectedEndpoints();
+    });
+  }
+
+  void _stopLatencyProbeLoop() {
+    _latencyProbeTimer?.cancel();
+    _latencyProbeTimer = null;
+  }
+
+  void _probeConnectedEndpoints() {
+    for (final endpointId in _connectedEndpointIds.toList()) {
+      unawaited(_sendLatencyProbe(endpointId));
+    }
+  }
+
+  void _clearEndpointLatency(String endpointId) {
+    _latencyByEndpointMs.remove(endpointId);
+    final prefix = '$endpointId::';
+    final staleKeys = _pendingProbeSentAtMicrosByKey.keys
+        .where((key) => key.startsWith(prefix))
+        .toList();
+    for (final key in staleKeys) {
+      _pendingProbeSentAtMicrosByKey.remove(key);
+    }
+  }
+
+  void _resetLatencyState() {
+    _latencyByEndpointMs.clear();
+    _pendingProbeSentAtMicrosByKey.clear();
+    _probeCounter = 0;
+  }
+
+  String _probeKey({required String endpointId, required String probeId}) {
+    return '$endpointId::$probeId';
+  }
+
   String _ensureSessionId() {
     if (_sessionId.isEmpty) {
       _sessionId = 'session-${DateTime.now().millisecondsSinceEpoch}';
@@ -465,6 +630,8 @@ class RaceSyncController extends ChangeNotifier {
     _role = role;
     _discovered.clear();
     _connectedEndpointIds.clear();
+    _resetLatencyState();
+    _stopLatencyProbeLoop();
     _errorText = null;
     _lastConnectionStatus = null;
   }
@@ -505,6 +672,7 @@ class RaceSyncController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _stopLatencyProbeLoop();
     _eventsSubscription?.cancel();
     super.dispose();
   }

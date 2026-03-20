@@ -4,9 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sprint_sync/core/repositories/local_repository.dart';
+import 'package:sprint_sync/core/services/nearby_bridge.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_controller.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_screen.dart';
+import 'package:sprint_sync/features/race_sync/race_sync_controller.dart';
+import 'package:sprint_sync/features/race_sync/race_sync_models.dart';
 
 void main() {
   testWidgets('default stopwatch shows ready status and 0.00s timer', (
@@ -148,4 +151,136 @@ void main() {
 
     controller.dispose();
   });
+
+  testWidgets('preview overlay tracks tripwire and latency border colors', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final motionController = MotionDetectionController(
+      repository: LocalRepository(),
+    );
+    final raceController = _StubRaceSyncController();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MotionDetectionScreen(
+            controller: motionController,
+            raceSyncController: raceController,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(_previewBorderColor(tester), Colors.grey);
+    expect(_tripwireColor(tester), Colors.grey);
+    expect(_tripwireAlignmentX(tester), closeTo(0, 0.001));
+
+    await motionController.updateRoiCenter(0.2);
+    await tester.pumpAndSettle();
+    expect(_tripwireAlignmentX(tester), closeTo(-0.6, 0.001));
+
+    raceController.setConnectionQuality(ConnectionQuality.good);
+    await tester.pump();
+    expect(_previewBorderColor(tester), Colors.green);
+    expect(_tripwireColor(tester), Colors.green);
+
+    raceController.setConnectionQuality(ConnectionQuality.warning);
+    await tester.pump();
+    expect(_previewBorderColor(tester), Colors.orange);
+    expect(_tripwireColor(tester), Colors.orange);
+
+    raceController.setConnectionQuality(ConnectionQuality.bad);
+    await tester.pump();
+    expect(_previewBorderColor(tester), Colors.red);
+    expect(_tripwireColor(tester), Colors.red);
+
+    raceController.setConnectionQuality(ConnectionQuality.offline);
+    await tester.pump();
+    expect(_previewBorderColor(tester), Colors.grey);
+    expect(_tripwireColor(tester), Colors.grey);
+
+    motionController.dispose();
+    raceController.dispose();
+  });
+}
+
+Color _previewBorderColor(WidgetTester tester) {
+  final decoratedBox = tester.widget<DecoratedBox>(
+    find.byKey(const ValueKey<String>('preview_status_border')),
+  );
+  final decoration = decoratedBox.decoration as BoxDecoration;
+  final border = decoration.border as Border;
+  return border.top.color;
+}
+
+Color? _tripwireColor(WidgetTester tester) {
+  final tripwire = tester.widget<Container>(
+    find.byKey(const ValueKey<String>('preview_tripwire_line')),
+  );
+  return tripwire.color;
+}
+
+double _tripwireAlignmentX(WidgetTester tester) {
+  final tripwireAlignment = tester.widget<Align>(
+    find.byKey(const ValueKey<String>('preview_tripwire_alignment')),
+  );
+  return (tripwireAlignment.alignment as Alignment).x;
+}
+
+class _StubRaceSyncController extends RaceSyncController {
+  _StubRaceSyncController()
+    : super(repository: LocalRepository(), nearbyBridge: _NoopNearbyBridge());
+
+  ConnectionQuality _connectionQuality = ConnectionQuality.offline;
+
+  @override
+  ConnectionQuality get connectionQuality => _connectionQuality;
+
+  void setConnectionQuality(ConnectionQuality quality) {
+    _connectionQuality = quality;
+    notifyListeners();
+  }
+}
+
+class _NoopNearbyBridge extends NearbyBridge {
+  @override
+  Stream<Map<String, dynamic>> get events =>
+      const Stream<Map<String, dynamic>>.empty();
+
+  @override
+  Future<Map<String, dynamic>> requestPermissions() async {
+    return <String, dynamic>{'granted': true, 'denied': <String>[]};
+  }
+
+  @override
+  Future<void> startHosting({
+    required String serviceId,
+    required String endpointName,
+  }) async {}
+
+  @override
+  Future<void> startDiscovery({
+    required String serviceId,
+    required String endpointName,
+  }) async {}
+
+  @override
+  Future<void> requestConnection({
+    required String endpointId,
+    required String endpointName,
+  }) async {}
+
+  @override
+  Future<void> sendBytes({
+    required String endpointId,
+    required String messageJson,
+  }) async {}
+
+  @override
+  Future<void> disconnect({required String endpointId}) async {}
+
+  @override
+  Future<void> stopAll() async {}
 }

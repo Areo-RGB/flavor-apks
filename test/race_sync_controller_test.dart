@@ -201,6 +201,143 @@ void main() {
     },
   );
 
+  test(
+    'latency probe payload gets pong response without malformed log',
+    () async {
+      final bridge = _FakeNearbyBridge();
+      final controller = RaceSyncController(
+        repository: LocalRepository(),
+        nearbyBridge: bridge,
+      );
+
+      await controller.startDiscovery();
+      bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'host-a',
+        'connected': true,
+      });
+      await _flushEvents();
+
+      bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'host-a',
+        'message': const RaceEventMessage(
+          type: RaceEventType.latencyProbe,
+          sessionId: 'session-1',
+          probeId: 'probe-1',
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      final pongPayload = bridge.sentPayloads
+          .map((payload) => RaceEventMessage.tryParse(payload.messageJson))
+          .whereType<RaceEventMessage>()
+          .firstWhere((message) => message.type == RaceEventType.latencyPong);
+      expect(pongPayload.probeId, 'probe-1');
+      expect(
+        controller.logs.any(
+          (line) => line.contains('Ignored malformed payload'),
+        ),
+        isFalse,
+      );
+
+      controller.dispose();
+      await bridge.close();
+    },
+  );
+
+  test('latency pong updates quality thresholds and worst latency', () async {
+    final bridge = _FakeNearbyBridge();
+    final controller = RaceSyncController(
+      repository: LocalRepository(),
+      nearbyBridge: bridge,
+      latencyProbeInterval: const Duration(milliseconds: 40),
+    );
+
+    expect(controller.hasConnectedPeers, isFalse);
+    expect(controller.worstPeerLatencyMs, isNull);
+    expect(controller.connectionQuality, ConnectionQuality.offline);
+
+    await controller.startDiscovery();
+    bridge.emitEvent(<String, dynamic>{
+      'type': 'connection_result',
+      'endpointId': 'host-a',
+      'connected': true,
+    });
+    await _flushEvents();
+
+    final respondedProbeIds = <String>{};
+
+    final goodProbe = await _waitForProbe(
+      bridge: bridge,
+      endpointId: 'host-a',
+      respondedProbeIds: respondedProbeIds,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    bridge.emitEvent(<String, dynamic>{
+      'type': 'payload_received',
+      'endpointId': 'host-a',
+      'message': RaceEventMessage(
+        type: RaceEventType.latencyPong,
+        sessionId: 'session-1',
+        probeId: goodProbe.probeId,
+      ).toJsonString(),
+    });
+    await _flushEvents();
+    expect(controller.connectionQuality, ConnectionQuality.good);
+    expect(controller.worstPeerLatencyMs, lessThan(100));
+
+    final warningProbe = await _waitForProbe(
+      bridge: bridge,
+      endpointId: 'host-a',
+      respondedProbeIds: respondedProbeIds,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 140));
+    bridge.emitEvent(<String, dynamic>{
+      'type': 'payload_received',
+      'endpointId': 'host-a',
+      'message': RaceEventMessage(
+        type: RaceEventType.latencyPong,
+        sessionId: 'session-1',
+        probeId: warningProbe.probeId,
+      ).toJsonString(),
+    });
+    await _flushEvents();
+    expect(controller.connectionQuality, ConnectionQuality.warning);
+    expect(controller.worstPeerLatencyMs, inInclusiveRange(100, 250));
+
+    final badProbe = await _waitForProbe(
+      bridge: bridge,
+      endpointId: 'host-a',
+      respondedProbeIds: respondedProbeIds,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    bridge.emitEvent(<String, dynamic>{
+      'type': 'payload_received',
+      'endpointId': 'host-a',
+      'message': RaceEventMessage(
+        type: RaceEventType.latencyPong,
+        sessionId: 'session-1',
+        probeId: badProbe.probeId,
+      ).toJsonString(),
+    });
+    await _flushEvents();
+    expect(controller.connectionQuality, ConnectionQuality.bad);
+    expect(controller.worstPeerLatencyMs, greaterThan(250));
+
+    bridge.emitEvent(<String, dynamic>{
+      'type': 'endpoint_disconnected',
+      'endpointId': 'host-a',
+    });
+    await _flushEvents();
+    expect(controller.hasConnectedPeers, isFalse);
+    expect(controller.worstPeerLatencyMs, isNull);
+    expect(controller.connectionQuality, ConnectionQuality.offline);
+
+    controller.dispose();
+    await bridge.close();
+  });
+
   test('malformed connection_result event is ignored safely', () async {
     final bridge = _FakeNearbyBridge();
     final controller = RaceSyncController(
@@ -223,6 +360,32 @@ void main() {
 
 Future<void> _flushEvents() async {
   await Future<void>.delayed(const Duration(milliseconds: 1));
+}
+
+Future<RaceEventMessage> _waitForProbe({
+  required _FakeNearbyBridge bridge,
+  required String endpointId,
+  required Set<String> respondedProbeIds,
+}) async {
+  for (int attempt = 0; attempt < 200; attempt += 1) {
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    for (final payload in bridge.sentPayloads) {
+      if (payload.endpointId != endpointId) {
+        continue;
+      }
+      final message = RaceEventMessage.tryParse(payload.messageJson);
+      if (message == null || message.type != RaceEventType.latencyProbe) {
+        continue;
+      }
+      final probeId = message.probeId;
+      if (probeId == null || respondedProbeIds.contains(probeId)) {
+        continue;
+      }
+      respondedProbeIds.add(probeId);
+      return message;
+    }
+  }
+  throw StateError('Timed out waiting for latency probe payload.');
 }
 
 class _FakeNearbyBridge extends NearbyBridge {

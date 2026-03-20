@@ -2,15 +2,19 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_controller.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
+import 'package:sprint_sync/features/race_sync/race_sync_controller.dart';
+import 'package:sprint_sync/features/race_sync/race_sync_models.dart';
 
 class MotionDetectionScreen extends StatefulWidget {
   const MotionDetectionScreen({
     super.key,
     required this.controller,
+    this.raceSyncController,
     this.showPreview = true,
   });
 
   final MotionDetectionController controller;
+  final RaceSyncController? raceSyncController;
   final bool showPreview;
 
   @override
@@ -50,17 +54,30 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
 
   @override
   Widget build(BuildContext context) {
+    final animation = widget.raceSyncController == null
+        ? widget.controller
+        : Listenable.merge(<Listenable>[
+            widget.controller,
+            widget.raceSyncController!,
+          ]);
     return AnimatedBuilder(
-      animation: widget.controller,
+      animation: animation,
       builder: (context, child) {
         final config = widget.controller.config;
         final stats = widget.controller.latestStats;
+        final connectionQuality =
+            widget.raceSyncController?.connectionQuality ??
+            ConnectionQuality.offline;
 
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
             if (widget.showPreview)
-              _buildPreviewCard(widget.controller.cameraController),
+              _buildPreviewCard(
+                widget.controller.cameraController,
+                roiCenterX: config.roiCenterX,
+                connectionQuality: connectionQuality,
+              ),
             if (widget.showPreview) const SizedBox(height: 12),
             _buildStopwatchCard(),
             const SizedBox(height: 12),
@@ -324,21 +341,72 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
     );
   }
 
-  Widget _buildPreviewCard(CameraController? controller) {
-    if (controller == null || !controller.value.isInitialized) {
-      return const Card(
-        child: SizedBox(
-          height: 200,
-          child: Center(child: Text('Camera preview unavailable')),
-        ),
-      );
+  Widget _buildPreviewCard(
+    CameraController? controller, {
+    required double roiCenterX,
+    required ConnectionQuality connectionQuality,
+  }) {
+    final statusColor = _colorForConnectionQuality(connectionQuality);
+    final tripwireAlignmentX = _tripwireAlignmentForRoiCenter(roiCenterX);
+    late final Widget previewChild;
+    late final double previewAspectRatio;
+    if (controller != null && controller.value.isInitialized) {
+      previewChild = CameraPreview(controller);
+      previewAspectRatio = controller.value.aspectRatio;
+    } else {
+      previewChild = const Center(child: Text('Camera preview unavailable'));
+      previewAspectRatio = 9 / 16;
     }
+
     return Card(
       clipBehavior: Clip.antiAlias,
       child: AspectRatio(
-        aspectRatio: controller.value.aspectRatio,
-        child: CameraPreview(controller),
+        aspectRatio: previewAspectRatio,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            ColoredBox(color: Colors.black12, child: previewChild),
+            Align(
+              key: const ValueKey<String>('preview_tripwire_alignment'),
+              alignment: Alignment(tripwireAlignmentX, 0),
+              child: IgnorePointer(
+                child: Container(
+                  key: const ValueKey<String>('preview_tripwire_line'),
+                  width: 2,
+                  height: double.infinity,
+                  color: statusColor,
+                ),
+              ),
+            ),
+            IgnorePointer(
+              child: DecoratedBox(
+                key: const ValueKey<String>('preview_status_border'),
+                decoration: BoxDecoration(
+                  border: Border.all(color: statusColor, width: 3),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
+  }
+
+  double _tripwireAlignmentForRoiCenter(double roiCenterX) {
+    final clamped = roiCenterX.clamp(0.0, 1.0);
+    return (clamped * 2.0) - 1.0;
+  }
+
+  Color _colorForConnectionQuality(ConnectionQuality connectionQuality) {
+    switch (connectionQuality) {
+      case ConnectionQuality.offline:
+        return Colors.grey;
+      case ConnectionQuality.good:
+        return Colors.green;
+      case ConnectionQuality.warning:
+        return Colors.orange;
+      case ConnectionQuality.bad:
+        return Colors.red;
+    }
   }
 }

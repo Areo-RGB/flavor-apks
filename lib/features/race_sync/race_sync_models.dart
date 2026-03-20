@@ -2,7 +2,9 @@ import 'dart:convert';
 
 enum RaceRole { none, host, client }
 
-enum RaceEventType { raceStarted, raceSplit }
+enum RaceEventType { raceStarted, raceSplit, latencyProbe, latencyPong }
+
+enum ConnectionQuality { offline, good, warning, bad }
 
 class SessionState {
   const SessionState({
@@ -42,6 +44,7 @@ class RaceEventMessage {
     this.startedAtEpochMs,
     this.splitIndex,
     this.elapsedMicros,
+    this.probeId,
   });
 
   final RaceEventType type;
@@ -49,6 +52,7 @@ class RaceEventMessage {
   final int? startedAtEpochMs;
   final int? splitIndex;
   final int? elapsedMicros;
+  final String? probeId;
 
   Map<String, dynamic> toJsonMap() {
     return {
@@ -57,6 +61,7 @@ class RaceEventMessage {
       'startedAtEpochMs': startedAtEpochMs,
       'splitIndex': splitIndex,
       'elapsedMicros': elapsedMicros,
+      'probeId': probeId,
     };
   }
 
@@ -79,6 +84,7 @@ class RaceEventMessage {
         startedAtEpochMs: (decoded['startedAtEpochMs'] as num?)?.toInt(),
         splitIndex: (decoded['splitIndex'] as num?)?.toInt(),
         elapsedMicros: (decoded['elapsedMicros'] as num?)?.toInt(),
+        probeId: decoded['probeId']?.toString(),
       );
     } catch (_) {
       return null;
@@ -91,6 +97,10 @@ class RaceEventMessage {
         return 'race_started';
       case RaceEventType.raceSplit:
         return 'race_split';
+      case RaceEventType.latencyProbe:
+        return 'latency_probe';
+      case RaceEventType.latencyPong:
+        return 'latency_pong';
     }
   }
 
@@ -100,6 +110,12 @@ class RaceEventMessage {
     }
     if (source == 'race_split') {
       return RaceEventType.raceSplit;
+    }
+    if (source == 'latency_probe') {
+      return RaceEventType.latencyProbe;
+    }
+    if (source == 'latency_pong') {
+      return RaceEventType.latencyPong;
     }
     return null;
   }
