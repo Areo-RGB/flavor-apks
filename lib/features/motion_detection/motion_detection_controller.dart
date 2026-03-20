@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
+import 'package:sprint_sync/core/models/app_models.dart';
 import 'package:sprint_sync/core/repositories/local_repository.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
 
@@ -12,7 +14,7 @@ class MotionDetectionController extends ChangeNotifier {
   }) : _repository = repository,
        _onTrigger = onTrigger {
     _engine = MotionDetectionEngine(config: _config);
-    unawaited(_loadConfig());
+    unawaited(_loadInitialState());
   }
 
   final LocalRepository _repository;
@@ -24,6 +26,9 @@ class MotionDetectionController extends ChangeNotifier {
   CameraController? _cameraController;
   MotionFrameStats? _latestStats;
   final List<MotionTriggerEvent> _triggerHistory = <MotionTriggerEvent>[];
+  MotionRunSnapshot _runSnapshot = MotionRunSnapshot.ready();
+  LastRunResult? _lastRun;
+  Timer? _runTicker;
 
   Uint8List? _previousYPlane;
   bool _isStreaming = false;
@@ -31,20 +36,33 @@ class MotionDetectionController extends ChangeNotifier {
   bool _isLoading = false;
   int _frameCounter = 0;
   String? _errorText;
+  bool _isDisposed = false;
 
   MotionDetectionConfig get config => _config;
   CameraController? get cameraController => _cameraController;
   MotionFrameStats? get latestStats => _latestStats;
   List<MotionTriggerEvent> get triggerHistory =>
       List.unmodifiable(_triggerHistory);
+  MotionRunSnapshot get runSnapshot => _runSnapshot;
+  LastRunResult? get lastRun => _lastRun;
+  bool get isRunActive => _runSnapshot.isActive;
+  String get elapsedDisplay => formatDurationMicros(_runSnapshot.elapsedMicros);
+  List<int> get currentSplitMicros =>
+      List.unmodifiable(_runSnapshot.splitMicros);
+  String get runStatusLabel => _runSnapshot.isActive ? 'running' : 'ready';
   bool get isStreaming => _isStreaming;
   bool get isLoading => _isLoading;
   String? get errorText => _errorText;
 
-  Future<void> _loadConfig() async {
-    _config = await _repository.loadMotionConfig();
+  Future<void> _loadInitialState() async {
+    final loadedConfig = await _repository.loadMotionConfig();
+    final loadedRun = await _repository.loadLastRun();
+    _config = loadedConfig;
+    _lastRun = loadedRun;
     _engine.updateConfig(_config);
-    notifyListeners();
+    if (!_isDisposed) {
+      notifyListeners();
+    }
   }
 
   Future<void> initializeCamera() async {
@@ -120,6 +138,8 @@ class MotionDetectionController extends ChangeNotifier {
   void resetRace() {
     _engine.resetRace();
     _triggerHistory.clear();
+    _runSnapshot = MotionRunSnapshot.ready();
+    _stopRunTicker();
     notifyListeners();
   }
 
@@ -195,11 +215,7 @@ class MotionDetectionController extends ChangeNotifier {
 
       final trigger = stats.triggerEvent;
       if (trigger != null) {
-        _triggerHistory.insert(0, trigger);
-        if (_triggerHistory.length > 20) {
-          _triggerHistory.removeLast();
-        }
-        _onTrigger?.call(trigger);
+        ingestTrigger(trigger);
       }
       notifyListeners();
     } catch (error) {
@@ -210,8 +226,92 @@ class MotionDetectionController extends ChangeNotifier {
     }
   }
 
+  void ingestTrigger(MotionTriggerEvent trigger) {
+    _addTriggerToHistory(trigger);
+    _onTrigger?.call(trigger);
+
+    if (trigger.type == MotionTriggerType.start) {
+      _runSnapshot = MotionRunSnapshot(
+        isActive: true,
+        startedAtMicros: trigger.triggerMicros,
+        elapsedMicros: 0,
+        splitMicros: const <int>[],
+      );
+      _startRunTicker();
+      unawaited(_persistCurrentRun());
+      notifyListeners();
+      return;
+    }
+
+    if (!_runSnapshot.isActive || _runSnapshot.startedAtMicros == null) {
+      return;
+    }
+
+    final elapsedMicros = math.max(
+      0,
+      trigger.triggerMicros -
+          (_runSnapshot.startedAtMicros ?? trigger.triggerMicros),
+    );
+    final splitMicros = List<int>.from(_runSnapshot.splitMicros)
+      ..add(elapsedMicros);
+    _runSnapshot = _runSnapshot.copyWith(
+      elapsedMicros: elapsedMicros,
+      splitMicros: splitMicros,
+    );
+    unawaited(_persistCurrentRun());
+    notifyListeners();
+  }
+
+  void _addTriggerToHistory(MotionTriggerEvent trigger) {
+    _triggerHistory.insert(0, trigger);
+    if (_triggerHistory.length > 20) {
+      _triggerHistory.removeLast();
+    }
+  }
+
+  void _startRunTicker() {
+    _runTicker?.cancel();
+    _runTicker = Timer.periodic(const Duration(milliseconds: 50), (_) {
+      final startedAtMicros = _runSnapshot.startedAtMicros;
+      if (!_runSnapshot.isActive || startedAtMicros == null) {
+        return;
+      }
+      final elapsedMicros =
+          DateTime.now().microsecondsSinceEpoch - startedAtMicros;
+      final safeElapsed = math.max(0, elapsedMicros);
+      if (safeElapsed == _runSnapshot.elapsedMicros) {
+        return;
+      }
+      _runSnapshot = _runSnapshot.copyWith(elapsedMicros: safeElapsed);
+      notifyListeners();
+    });
+  }
+
+  void _stopRunTicker() {
+    _runTicker?.cancel();
+    _runTicker = null;
+  }
+
+  Future<void> _persistCurrentRun() async {
+    final startedAtMicros = _runSnapshot.startedAtMicros;
+    if (startedAtMicros == null) {
+      return;
+    }
+    final run = LastRunResult(
+      startedAtEpochMs: startedAtMicros ~/ 1000,
+      splitMicros: List<int>.from(_runSnapshot.splitMicros),
+    );
+    _lastRun = run;
+    if (!_isDisposed) {
+      notifyListeners();
+    }
+    await _repository.saveLastRun(run);
+  }
+
   @override
   void dispose() {
+    _isDisposed = true;
+    _stopRunTicker();
     _cameraController?.dispose();
     super.dispose();
   }

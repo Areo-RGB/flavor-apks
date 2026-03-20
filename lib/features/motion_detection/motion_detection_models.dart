@@ -2,6 +2,46 @@ import 'dart:math' as math;
 
 enum MotionTriggerType { start, split }
 
+class MotionRunSnapshot {
+  const MotionRunSnapshot({
+    required this.isActive,
+    this.startedAtMicros,
+    required this.elapsedMicros,
+    required this.splitMicros,
+  });
+
+  final bool isActive;
+  final int? startedAtMicros;
+  final int elapsedMicros;
+  final List<int> splitMicros;
+
+  factory MotionRunSnapshot.ready() {
+    return const MotionRunSnapshot(
+      isActive: false,
+      startedAtMicros: null,
+      elapsedMicros: 0,
+      splitMicros: <int>[],
+    );
+  }
+
+  MotionRunSnapshot copyWith({
+    bool? isActive,
+    int? startedAtMicros,
+    int? elapsedMicros,
+    List<int>? splitMicros,
+    bool clearStartedAt = false,
+  }) {
+    return MotionRunSnapshot(
+      isActive: isActive ?? this.isActive,
+      startedAtMicros: clearStartedAt
+          ? null
+          : (startedAtMicros ?? this.startedAtMicros),
+      elapsedMicros: elapsedMicros ?? this.elapsedMicros,
+      splitMicros: splitMicros ?? this.splitMicros,
+    );
+  }
+}
+
 class MotionDetectionConfig {
   const MotionDetectionConfig({
     required this.threshold,
@@ -223,4 +263,13 @@ double _clampDouble(double value, double min, double max) {
     return max;
   }
   return value;
+}
+
+String formatDurationMicros(int micros) {
+  final seconds = micros / Duration.microsecondsPerSecond;
+  return '${seconds.toStringAsFixed(2)}s';
+}
+
+String formatSplitLabel(int splitIndex) {
+  return 'Split $splitIndex';
 }

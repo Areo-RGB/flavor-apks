@@ -344,7 +344,10 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
     }
 
     private fun requiredPermissions(): List<String> {
-        val permissions = mutableListOf<String>()
+        val permissions = mutableListOf(
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions += Manifest.permission.NEARBY_WIFI_DEVICES
         }
@@ -352,9 +355,6 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
             permissions += Manifest.permission.BLUETOOTH_ADVERTISE
             permissions += Manifest.permission.BLUETOOTH_CONNECT
             permissions += Manifest.permission.BLUETOOTH_SCAN
-        } else {
-            permissions += Manifest.permission.ACCESS_COARSE_LOCATION
-            permissions += Manifest.permission.ACCESS_FINE_LOCATION
         }
         return permissions.distinct()
     }
