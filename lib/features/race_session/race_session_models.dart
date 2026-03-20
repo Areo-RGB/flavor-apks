@@ -66,24 +66,48 @@ class SessionRaceTimeline {
     this.startedAtEpochMs,
     required this.splitMicros,
     this.stopElapsedMicros,
+    required this.revision,
   });
 
   final int? startedAtEpochMs;
   final List<int> splitMicros;
   final int? stopElapsedMicros;
+  final int revision;
 
-  factory SessionRaceTimeline.idle() {
-    return const SessionRaceTimeline(splitMicros: <int>[]);
+  factory SessionRaceTimeline.idle({int revision = 0}) {
+    return SessionRaceTimeline(splitMicros: const <int>[], revision: revision);
   }
 
   bool get hasStarted => startedAtEpochMs != null;
   bool get hasStopped => stopElapsedMicros != null;
   bool get isRunning => hasStarted && !hasStopped;
 
+  int elapsedMicrosAt(int nowMicros) {
+    final startedAt = startedAtEpochMs;
+    if (startedAt == null) {
+      return 0;
+    }
+    final stoppedAt = stopElapsedMicros;
+    if (stoppedAt != null) {
+      return stoppedAt;
+    }
+    final elapsed = nowMicros - (startedAt * 1000);
+    return elapsed < 0 ? 0 : elapsed;
+  }
+
+  List<int> get displaySplitMicros {
+    final stoppedAt = stopElapsedMicros;
+    if (stoppedAt == null) {
+      return List<int>.unmodifiable(splitMicros);
+    }
+    return List<int>.unmodifiable(<int>[...splitMicros, stoppedAt]);
+  }
+
   SessionRaceTimeline copyWith({
     int? startedAtEpochMs,
     List<int>? splitMicros,
     int? stopElapsedMicros,
+    int? revision,
     bool clearStartedAt = false,
     bool clearStopElapsed = false,
   }) {
@@ -95,6 +119,7 @@ class SessionRaceTimeline {
       stopElapsedMicros: clearStopElapsed
           ? null
           : (stopElapsedMicros ?? this.stopElapsedMicros),
+      revision: revision ?? this.revision,
     );
   }
 
@@ -103,6 +128,7 @@ class SessionRaceTimeline {
       'startedAtEpochMs': startedAtEpochMs,
       'splitMicros': splitMicros,
       'stopElapsedMicros': stopElapsedMicros,
+      'revision': revision,
     };
   }
 
@@ -127,10 +153,13 @@ class SessionRaceTimeline {
     final stopElapsedMicros = stopElapsedRaw is num
         ? stopElapsedRaw.toInt()
         : null;
+    final revisionRaw = source['revision'];
+    final revision = revisionRaw is num ? revisionRaw.toInt() : 0;
     return SessionRaceTimeline(
       startedAtEpochMs: startedAtEpochMs,
       splitMicros: splitMicros,
       stopElapsedMicros: stopElapsedMicros,
+      revision: revision,
     );
   }
 }
@@ -204,18 +233,24 @@ class SessionSnapshotMessage {
 class SessionTriggerRequestMessage {
   const SessionTriggerRequestMessage({
     required this.role,
-    required this.triggerMicros,
+    required this.deviceTriggerMicros,
+    this.hostTriggerMicros,
   });
 
   final SessionDeviceRole role;
-  final int triggerMicros;
+  final int deviceTriggerMicros;
+  final int? hostTriggerMicros;
 
   Map<String, dynamic> toJson() {
-    return <String, dynamic>{
+    final payload = <String, dynamic>{
       'type': 'trigger_request',
       'role': role.name,
-      'triggerMicros': triggerMicros,
+      'deviceTriggerMicros': deviceTriggerMicros,
     };
+    if (hostTriggerMicros != null) {
+      payload['hostTriggerMicros'] = hostTriggerMicros;
+    }
+    return payload;
   }
 
   String toJsonString() => jsonEncode(toJson());
@@ -228,13 +263,130 @@ class SessionTriggerRequestMessage {
         return null;
       }
       final role = sessionDeviceRoleFromName(decoded['role']?.toString());
-      final triggerMicrosRaw = decoded['triggerMicros'];
-      if (role == null || triggerMicrosRaw is! num) {
+      final deviceTriggerMicrosRaw =
+          decoded['deviceTriggerMicros'] ?? decoded['triggerMicros'];
+      if (role == null || deviceTriggerMicrosRaw is! num) {
         return null;
       }
+      final hostTriggerMicrosRaw = decoded['hostTriggerMicros'];
       return SessionTriggerRequestMessage(
         role: role,
-        triggerMicros: triggerMicrosRaw.toInt(),
+        deviceTriggerMicros: deviceTriggerMicrosRaw.toInt(),
+        hostTriggerMicros: hostTriggerMicrosRaw is num
+            ? hostTriggerMicrosRaw.toInt()
+            : null,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+class SessionTimelineUpdateMessage {
+  const SessionTimelineUpdateMessage({required this.timeline});
+
+  final SessionRaceTimeline timeline;
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      'type': 'timeline_update',
+      'timeline': timeline.toJson(),
+    };
+  }
+
+  String toJsonString() => jsonEncode(toJson());
+
+  static SessionTimelineUpdateMessage? tryParse(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic> ||
+          decoded['type'] != 'timeline_update') {
+        return null;
+      }
+      return SessionTimelineUpdateMessage(
+        timeline: SessionRaceTimeline.fromJson(decoded['timeline']),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+class SessionClockSyncRequestMessage {
+  const SessionClockSyncRequestMessage({required this.clientSentAtMicros});
+
+  final int clientSentAtMicros;
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      'type': 'clock_sync_request',
+      'clientSentAtMicros': clientSentAtMicros,
+    };
+  }
+
+  String toJsonString() => jsonEncode(toJson());
+
+  static SessionClockSyncRequestMessage? tryParse(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic> ||
+          decoded['type'] != 'clock_sync_request') {
+        return null;
+      }
+      final clientSentAtMicros = decoded['clientSentAtMicros'];
+      if (clientSentAtMicros is! num) {
+        return null;
+      }
+      return SessionClockSyncRequestMessage(
+        clientSentAtMicros: clientSentAtMicros.toInt(),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+class SessionClockSyncResponseMessage {
+  const SessionClockSyncResponseMessage({
+    required this.clientSentAtMicros,
+    required this.hostReceivedAtMicros,
+    required this.hostSentAtMicros,
+  });
+
+  final int clientSentAtMicros;
+  final int hostReceivedAtMicros;
+  final int hostSentAtMicros;
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      'type': 'clock_sync_response',
+      'clientSentAtMicros': clientSentAtMicros,
+      'hostReceivedAtMicros': hostReceivedAtMicros,
+      'hostSentAtMicros': hostSentAtMicros,
+    };
+  }
+
+  String toJsonString() => jsonEncode(toJson());
+
+  static SessionClockSyncResponseMessage? tryParse(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic> ||
+          decoded['type'] != 'clock_sync_response') {
+        return null;
+      }
+      final clientSentAtMicros = decoded['clientSentAtMicros'];
+      final hostReceivedAtMicros = decoded['hostReceivedAtMicros'];
+      final hostSentAtMicros = decoded['hostSentAtMicros'];
+      if (clientSentAtMicros is! num ||
+          hostReceivedAtMicros is! num ||
+          hostSentAtMicros is! num) {
+        return null;
+      }
+      return SessionClockSyncResponseMessage(
+        clientSentAtMicros: clientSentAtMicros.toInt(),
+        hostReceivedAtMicros: hostReceivedAtMicros.toInt(),
+        hostSentAtMicros: hostSentAtMicros.toInt(),
       );
     } catch (_) {
       return null;

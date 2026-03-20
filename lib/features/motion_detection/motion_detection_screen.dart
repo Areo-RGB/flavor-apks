@@ -69,6 +69,8 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
             const SizedBox(height: 12),
             _buildCurrentSplitsCard(),
             const SizedBox(height: 12),
+            _buildLastRunCard(),
+            const SizedBox(height: 12),
             Card(
               child: ExpansionTile(
                 title: const Text('Advanced Detection'),
@@ -235,6 +237,39 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
                 return Text(
                   '$label: ${formatDurationMicros(entry.value)}',
                   key: ValueKey<String>('current_split_$splitIndex'),
+                );
+              }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLastRunCard() {
+    final lastRun = widget.controller.lastRun;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Last Saved Run',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            if (lastRun == null || lastRun.splitMicros.isEmpty)
+              const Text('No saved run yet.')
+            else
+              ...lastRun.splitMicros.asMap().entries.map((entry) {
+                final splitIndex = entry.key + 1;
+                final isFinish = splitIndex == lastRun.splitMicros.length;
+                final label = isFinish
+                    ? 'Finish'
+                    : formatSplitLabel(splitIndex);
+                return Text(
+                  '$label: ${formatDurationMicros(entry.value)}',
+                  key: ValueKey<String>('saved_split_$splitIndex'),
                 );
               }),
           ],

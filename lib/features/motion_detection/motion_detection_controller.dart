@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:sprint_sync/core/models/app_models.dart';
 import 'package:sprint_sync/core/repositories/local_repository.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
+import 'package:sprint_sync/features/race_session/race_session_models.dart';
 
 class MotionDetectionController extends ChangeNotifier {
   MotionDetectionController({
@@ -27,9 +28,10 @@ class MotionDetectionController extends ChangeNotifier {
   MotionFrameStats? _latestStats;
   final List<MotionTriggerEvent> _triggerHistory = <MotionTriggerEvent>[];
 
-  MotionRunSnapshot _runSnapshot = MotionRunSnapshot.ready();
+  SessionRaceTimeline _timeline = SessionRaceTimeline.idle();
   LastRunResult? _lastRun;
   Timer? _runTicker;
+  int _lastTickElapsedMicros = 0;
 
   Uint8List? _previousYPlane;
 
@@ -49,18 +51,19 @@ class MotionDetectionController extends ChangeNotifier {
   List<MotionTriggerEvent> get triggerHistory =>
       List.unmodifiable(_triggerHistory);
 
-  MotionRunSnapshot get runSnapshot => _runSnapshot;
+  SessionRaceTimeline get timeline => _timeline;
+  MotionRunSnapshot get runSnapshot =>
+      _snapshotFromTimeline(_timeline, nowMicros: _nowMicros());
   LastRunResult? get lastRun => _lastRun;
-  bool get isRunActive => _runSnapshot.isActive;
-  String get elapsedDisplay => formatDurationMicros(_runSnapshot.elapsedMicros);
-  List<int> get currentSplitMicros =>
-      List.unmodifiable(_runSnapshot.splitMicros);
+  bool get isRunActive => _timeline.isRunning;
+  String get elapsedDisplay => formatDurationMicros(runSnapshot.elapsedMicros);
+  List<int> get currentSplitMicros => runSnapshot.splitMicros;
 
   String get runStatusLabel {
-    if (_runSnapshot.isActive) {
+    if (_timeline.isRunning) {
       return 'running';
     }
-    if (_runSnapshot.startedAtMicros != null) {
+    if (_timeline.hasStarted) {
       return 'stopped';
     }
     return 'ready';
@@ -176,12 +179,13 @@ class MotionDetectionController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void resetRace() {
+  void resetRace({int? revision}) {
     _engine.resetRace();
-    _triggerHistory.clear();
-    _runSnapshot = MotionRunSnapshot.ready();
-    _stopRunTicker();
-    notifyListeners();
+    _applyTimelineState(
+      SessionRaceTimeline.idle(revision: revision ?? (_timeline.revision + 1)),
+      rebuildHistory: false,
+      clearHistory: true,
+    );
   }
 
   Future<void> updateThreshold(double value) async {
@@ -258,7 +262,11 @@ class MotionDetectionController extends ChangeNotifier {
 
       final trigger = stats.triggerEvent;
       if (trigger != null) {
-        ingestTrigger(trigger);
+        if (_onTrigger != null) {
+          _onTrigger(trigger);
+        } else {
+          ingestDetectedPulse(trigger);
+        }
       }
       notifyListeners();
     } catch (error) {
@@ -269,59 +277,33 @@ class MotionDetectionController extends ChangeNotifier {
     }
   }
 
-  void ingestTrigger(MotionTriggerEvent trigger, {bool forwardToSync = true}) {
-    _addTriggerToHistory(trigger);
-
-    if (forwardToSync && _onTrigger != null) {
-      final snapshotBefore = _runSnapshot;
-      _onTrigger!(trigger);
-      if (!identical(snapshotBefore, _runSnapshot)) {
-        return;
-      }
-    }
-
-    if (trigger.type == MotionTriggerType.start) {
-      _runSnapshot = MotionRunSnapshot(
-        isActive: true,
-        startedAtMicros: trigger.triggerMicros,
-        elapsedMicros: 0,
-        splitMicros: const <int>[],
-      );
-      _startRunTicker();
-      unawaited(_persistCurrentRun());
-      notifyListeners();
-      return;
-    }
-
-    if (!_runSnapshot.isActive || _runSnapshot.startedAtMicros == null) {
-      return;
-    }
-
-    final elapsedMicros = math.max(
-      0,
-      trigger.triggerMicros - _runSnapshot.startedAtMicros!,
+  void ingestDetectedPulse(MotionTriggerEvent trigger) {
+    final type = _timeline.isRunning
+        ? MotionTriggerType.split
+        : MotionTriggerType.start;
+    ingestTrigger(
+      MotionTriggerEvent(
+        triggerMicros: trigger.triggerMicros,
+        score: trigger.score,
+        type: type,
+        splitIndex: type == MotionTriggerType.split
+            ? _timeline.splitMicros.length + 1
+            : 0,
+      ),
     );
+  }
 
-    if (trigger.type == MotionTriggerType.split) {
-      _runSnapshot = _runSnapshot.copyWith(
-        elapsedMicros: elapsedMicros,
-        splitMicros: <int>[..._runSnapshot.splitMicros, elapsedMicros],
-      );
-      unawaited(_persistCurrentRun());
-      notifyListeners();
+  void ingestTrigger(MotionTriggerEvent trigger) {
+    final nextTimeline = _timelineForTrigger(_timeline, trigger);
+    if (_isSameTimeline(_timeline, nextTimeline)) {
       return;
     }
+    _addTriggerToHistory(trigger);
+    _applyTimelineState(nextTimeline, rebuildHistory: false);
+  }
 
-    if (trigger.type == MotionTriggerType.stop) {
-      _runSnapshot = _runSnapshot.copyWith(
-        isActive: false,
-        elapsedMicros: elapsedMicros,
-        splitMicros: <int>[..._runSnapshot.splitMicros, elapsedMicros],
-      );
-      _stopRunTicker();
-    }
-    unawaited(_persistCurrentRun());
-    notifyListeners();
+  void applyTimeline(SessionRaceTimeline timeline) {
+    _applyTimelineState(timeline, rebuildHistory: true);
   }
 
   void _addTriggerToHistory(MotionTriggerEvent trigger) {
@@ -332,21 +314,20 @@ class MotionDetectionController extends ChangeNotifier {
   }
 
   void _startRunTicker() {
+    if (_runTicker != null && _timeline.isRunning) {
+      return;
+    }
     _runTicker?.cancel();
-    _runTicker = Timer.periodic(const Duration(milliseconds: 50), (_) {
-      final startedAtMicros = _runSnapshot.startedAtMicros;
-      if (!_runSnapshot.isActive || startedAtMicros == null) {
+    _lastTickElapsedMicros = _timeline.elapsedMicrosAt(_nowMicros());
+    _runTicker = Timer.periodic(const Duration(milliseconds: 33), (_) {
+      if (!_timeline.isRunning) {
         return;
       }
-      final elapsedMicros =
-          DateTime.now().microsecondsSinceEpoch - startedAtMicros;
-      final safeElapsed = math.max(0, elapsedMicros);
-
-      if (safeElapsed == _runSnapshot.elapsedMicros) {
+      final elapsedMicros = _timeline.elapsedMicrosAt(_nowMicros());
+      if (elapsedMicros == _lastTickElapsedMicros) {
         return;
       }
-
-      _runSnapshot = _runSnapshot.copyWith(elapsedMicros: safeElapsed);
+      _lastTickElapsedMicros = elapsedMicros;
       notifyListeners();
     });
   }
@@ -354,16 +335,17 @@ class MotionDetectionController extends ChangeNotifier {
   void _stopRunTicker() {
     _runTicker?.cancel();
     _runTicker = null;
+    _lastTickElapsedMicros = _timeline.elapsedMicrosAt(_nowMicros());
   }
 
   Future<void> _persistCurrentRun() async {
-    final startedAtMicros = _runSnapshot.startedAtMicros;
-    if (startedAtMicros == null) {
+    final startedAtEpochMs = _timeline.startedAtEpochMs;
+    if (startedAtEpochMs == null) {
       return;
     }
     final run = LastRunResult(
-      startedAtEpochMs: startedAtMicros ~/ 1000,
-      splitMicros: List<int>.from(_runSnapshot.splitMicros),
+      startedAtEpochMs: startedAtEpochMs,
+      splitMicros: List<int>.from(_timeline.displaySplitMicros),
     );
     _lastRun = run;
     if (!_isDisposed) {
@@ -379,6 +361,139 @@ class MotionDetectionController extends ChangeNotifier {
     _cameraController?.dispose();
     super.dispose();
   }
+
+  void _applyTimelineState(
+    SessionRaceTimeline timeline, {
+    required bool rebuildHistory,
+    bool clearHistory = false,
+  }) {
+    final shouldNotify =
+        !_isSameTimeline(_timeline, timeline) ||
+        (clearHistory && _triggerHistory.isNotEmpty);
+    if (!shouldNotify) {
+      _syncTickerWithTimeline();
+      return;
+    }
+    _timeline = timeline;
+    if (clearHistory) {
+      _triggerHistory.clear();
+    }
+    if (rebuildHistory) {
+      _rebuildTriggerHistoryFromTimeline(timeline);
+    }
+    _syncTickerWithTimeline();
+    unawaited(_persistCurrentRun());
+    notifyListeners();
+  }
+
+  void _syncTickerWithTimeline() {
+    _lastTickElapsedMicros = _timeline.elapsedMicrosAt(_nowMicros());
+    if (_timeline.isRunning) {
+      _startRunTicker();
+      return;
+    }
+    _stopRunTicker();
+  }
+
+  void _rebuildTriggerHistoryFromTimeline(SessionRaceTimeline timeline) {
+    _triggerHistory.clear();
+    final startedAtEpochMs = timeline.startedAtEpochMs;
+    if (startedAtEpochMs == null) {
+      return;
+    }
+    final startedAtMicros = startedAtEpochMs * 1000;
+    _addTriggerToHistory(
+      MotionTriggerEvent(
+        triggerMicros: startedAtMicros,
+        score: 0,
+        type: MotionTriggerType.start,
+        splitIndex: 0,
+      ),
+    );
+    for (int i = 0; i < timeline.splitMicros.length; i += 1) {
+      _addTriggerToHistory(
+        MotionTriggerEvent(
+          triggerMicros: startedAtMicros + timeline.splitMicros[i],
+          score: 0,
+          type: MotionTriggerType.split,
+          splitIndex: i + 1,
+        ),
+      );
+    }
+    final stoppedAt = timeline.stopElapsedMicros;
+    if (stoppedAt == null) {
+      return;
+    }
+    _addTriggerToHistory(
+      MotionTriggerEvent(
+        triggerMicros: startedAtMicros + stoppedAt,
+        score: 0,
+        type: MotionTriggerType.stop,
+        splitIndex: 0,
+      ),
+    );
+  }
+
+  SessionRaceTimeline _timelineForTrigger(
+    SessionRaceTimeline timeline,
+    MotionTriggerEvent trigger,
+  ) {
+    if (trigger.type == MotionTriggerType.start) {
+      return SessionRaceTimeline(
+        startedAtEpochMs: trigger.triggerMicros ~/ 1000,
+        splitMicros: const <int>[],
+        revision: timeline.revision + 1,
+      );
+    }
+
+    final startedAtEpochMs = timeline.startedAtEpochMs;
+    if (!timeline.isRunning || startedAtEpochMs == null) {
+      return timeline;
+    }
+
+    final elapsedMicros = math.max(
+      0,
+      trigger.triggerMicros - (startedAtEpochMs * 1000),
+    );
+    if (trigger.type == MotionTriggerType.split) {
+      return timeline.copyWith(
+        splitMicros: <int>[...timeline.splitMicros, elapsedMicros],
+        revision: timeline.revision + 1,
+      );
+    }
+    if (trigger.type == MotionTriggerType.stop) {
+      return timeline.copyWith(
+        stopElapsedMicros: elapsedMicros,
+        revision: timeline.revision + 1,
+      );
+    }
+    return timeline;
+  }
+
+  bool _isSameTimeline(SessionRaceTimeline left, SessionRaceTimeline right) {
+    return left.startedAtEpochMs == right.startedAtEpochMs &&
+        left.stopElapsedMicros == right.stopElapsedMicros &&
+        left.revision == right.revision &&
+        listEquals(left.splitMicros, right.splitMicros);
+  }
+
+  MotionRunSnapshot _snapshotFromTimeline(
+    SessionRaceTimeline timeline, {
+    required int nowMicros,
+  }) {
+    final startedAtEpochMs = timeline.startedAtEpochMs;
+    if (startedAtEpochMs == null) {
+      return MotionRunSnapshot.ready();
+    }
+    return MotionRunSnapshot(
+      isActive: timeline.isRunning,
+      startedAtMicros: startedAtEpochMs * 1000,
+      elapsedMicros: timeline.elapsedMicrosAt(nowMicros),
+      splitMicros: timeline.displaySplitMicros,
+    );
+  }
+
+  int _nowMicros() => DateTime.now().microsecondsSinceEpoch;
 }
 
 double _computeNormalizedDelta({
