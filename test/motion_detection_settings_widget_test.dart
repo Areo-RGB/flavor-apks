@@ -164,6 +164,10 @@ void main() {
       find.byKey(const ValueKey<String>('preview_tripwire_line')),
       findsOneWidget,
     );
+    final compactPreviewContainer = tester.widget<FractionallySizedBox>(
+      find.byType(FractionallySizedBox),
+    );
+    expect(compactPreviewContainer.widthFactor, closeTo(0.34, 0.001));
 
     final alignFinder = find.byKey(
       const ValueKey<String>('preview_tripwire_alignment'),

@@ -172,28 +172,34 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
 
   Widget _buildPreviewCard({required double roiCenterX}) {
     final tripwireAlignmentX = _tripwireAlignmentForRoiCenter(roiCenterX);
-    return Card(
-      key: const ValueKey<String>('native_preview_card'),
-      clipBehavior: Clip.antiAlias,
-      child: AspectRatio(
-        aspectRatio: 9 / 16,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            _buildPreviewSurface(),
-            Align(
-              key: const ValueKey<String>('preview_tripwire_alignment'),
-              alignment: Alignment(tripwireAlignmentX, 0),
-              child: IgnorePointer(
-                child: Container(
-                  key: const ValueKey<String>('preview_tripwire_line'),
-                  width: 2,
-                  height: double.infinity,
-                  color: const Color(0xFF005A8D),
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: FractionallySizedBox(
+        widthFactor: 0.34,
+        child: Card(
+          key: const ValueKey<String>('native_preview_card'),
+          clipBehavior: Clip.antiAlias,
+          child: AspectRatio(
+            aspectRatio: 9 / 16,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                _buildPreviewSurface(),
+                Align(
+                  key: const ValueKey<String>('preview_tripwire_alignment'),
+                  alignment: Alignment(tripwireAlignmentX, 0),
+                  child: IgnorePointer(
+                    child: Container(
+                      key: const ValueKey<String>('preview_tripwire_line'),
+                      width: 2,
+                      height: double.infinity,
+                      color: const Color(0xFF005A8D),
+                    ),
+                  ),
                 ),
-              ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );

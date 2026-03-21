@@ -4,6 +4,7 @@ import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -20,6 +21,9 @@ class SensorNativeController(
     private val activity: FlutterActivity,
 ) : EventChannel.StreamHandler, ImageAnalysis.Analyzer {
     companion object {
+        private const val TAG = "SensorNativeController"
+        private const val PREVIEW_REBIND_RETRY_DELAY_MS = 200L
+        private const val PREVIEW_REBIND_MAX_ATTEMPTS = 3
         const val METHOD_CHANNEL_NAME = "com.paul.sprintsync/sensor_native_methods"
         const val EVENT_CHANNEL_NAME = "com.paul.sprintsync/sensor_native_events"
         const val PREVIEW_VIEW_TYPE = "com.paul.sprintsync/sensor_native_preview"
@@ -42,6 +46,8 @@ class SensorNativeController(
     private var hostSensorMinusElapsedNanos: Long? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private var previewView: PreviewView? = null
+    private var pendingPreviewRebindRunnable: Runnable? = null
+    private var previewRebindAttemptCount = 0
     private val detectionMath = NativeDetectionMath(config)
     private val cameraSession: SensorNativeCameraSession by lazy {
         SensorNativeCameraSession(
@@ -62,6 +68,7 @@ class SensorNativeController(
         }
     }
     fun dispose() {
+        cancelPreviewRebindRetries()
         stopNativeMonitoringInternal()
         analyzerExecutor.shutdown()
     }
@@ -69,6 +76,7 @@ class SensorNativeController(
         mainHandler.post {
             previewView = targetPreviewView
             rebindCameraUseCasesIfMonitoring()
+            schedulePreviewRebindRetriesIfMonitoring()
         }
     }
     fun detachPreviewSurface(targetPreviewView: PreviewView) {
@@ -77,6 +85,7 @@ class SensorNativeController(
                 return@post
             }
             previewView = null
+            cancelPreviewRebindRetries()
             rebindCameraUseCasesIfMonitoring()
         }
     }
@@ -174,6 +183,7 @@ class SensorNativeController(
                         includePreview = true,
                     )
                     monitoring = true
+                    schedulePreviewRebindRetriesIfMonitoring()
                     emitState("monitoring")
                     result.success(null)
                 } catch (error: Exception) {
@@ -186,6 +196,7 @@ class SensorNativeController(
         )
     }
     private fun stopNativeMonitoringInternal() {
+        cancelPreviewRebindRetries()
         monitoring = false
         cameraSession.stop(cameraProvider)
         cameraProvider = null
@@ -210,19 +221,61 @@ class SensorNativeController(
         emitState(if (monitoring) "monitoring" else "idle")
     }
     private fun rebindCameraUseCasesIfMonitoring() {
-        val provider = cameraProvider ?: return
         if (!monitoring) {
             return
         }
-        try {
+        if (!attemptPreviewRebind()) {
+            schedulePreviewRebindRetriesIfMonitoring()
+        }
+    }
+
+    private fun attemptPreviewRebind(): Boolean {
+        val provider = cameraProvider ?: return false
+        return try {
             cameraSession.bindAndConfigure(
                 provider = provider,
                 previewView = previewView,
                 includePreview = true,
             )
+            true
         } catch (error: Exception) {
             emitError("Failed to bind preview surface: ${error.localizedMessage ?: "unknown"}")
+            false
         }
+    }
+
+    private fun schedulePreviewRebindRetriesIfMonitoring() {
+        if (!monitoring || previewView == null || cameraProvider == null) {
+            return
+        }
+        cancelPreviewRebindRetries()
+        previewRebindAttemptCount = 0
+        val runnable = object : Runnable {
+            override fun run() {
+                if (!monitoring || previewView == null || cameraProvider == null) {
+                    cancelPreviewRebindRetries()
+                    return
+                }
+                previewRebindAttemptCount += 1
+                val success = attemptPreviewRebind()
+                if (!success) {
+                    Log.w(TAG, "Preview rebind attempt $previewRebindAttemptCount failed.")
+                }
+                if (previewRebindAttemptCount >= PREVIEW_REBIND_MAX_ATTEMPTS) {
+                    cancelPreviewRebindRetries()
+                    return
+                }
+                mainHandler.postDelayed(this, PREVIEW_REBIND_RETRY_DELAY_MS)
+            }
+        }
+        pendingPreviewRebindRunnable = runnable
+        mainHandler.postDelayed(runnable, PREVIEW_REBIND_RETRY_DELAY_MS)
+    }
+
+    private fun cancelPreviewRebindRetries() {
+        pendingPreviewRebindRunnable?.let(mainHandler::removeCallbacks)
+        pendingPreviewRebindRunnable = null
+        previewRebindAttemptCount = 0
     }
     private fun emitFrameStats(stats: NativeFrameStats, sensorMinusElapsedNanos: Long?) {
         emitEvent(

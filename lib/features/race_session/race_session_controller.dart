@@ -8,7 +8,7 @@ import 'package:sprint_sync/features/motion_detection/motion_detection_models.da
 import 'package:sprint_sync/features/race_session/race_session_models.dart';
 
 class RaceSessionController extends ChangeNotifier {
-  static const int _maxClockSyncRttNanos = 20000000;
+  static const int _maxClockSyncRttNanos = 400000000;
   static const int _clockSyncBurstCount = 10;
   static const int _clockSyncBurstTimeoutNanos = 500000000;
   static const int _clockSyncStaleAfterNanos = 5000000000;

@@ -41,12 +41,7 @@ internal class SensorNativeCameraSession(
         includePreview: Boolean,
     ) {
         val binding = bindCameraUseCases(provider, previewView, includePreview)
-        applyUnlockedPolicy(
-            provider = provider,
-            previewView = previewView,
-            binding = binding,
-            allowPreviewFallback = binding.previewBound && includePreview,
-        )
+        applyUnlockedPolicy(binding)
     }
 
     private fun bindCameraUseCases(
@@ -97,12 +92,7 @@ internal class SensorNativeCameraSession(
         )
     }
 
-    private fun applyUnlockedPolicy(
-        provider: ProcessCameraProvider,
-        previewView: PreviewView?,
-        binding: CameraBinding,
-        allowPreviewFallback: Boolean,
-    ) {
+    private fun applyUnlockedPolicy(binding: CameraBinding) {
         val fpsRange = SensorNativeCameraPolicy.selectHighestFrameRateRange(
             binding.camera.cameraInfo.supportedFrameRateRanges,
         )
@@ -117,46 +107,15 @@ internal class SensorNativeCameraSession(
             lockAeAwb = false,
         ) { success, error ->
             if (!success) {
-                handleUnlockedPolicyFailure(
-                    provider = provider,
-                    previewView = previewView,
-                    binding = binding,
-                    allowPreviewFallback = allowPreviewFallback,
-                    reason = error ?: "unknown",
-                )
+                handleUnlockedPolicyFailure(error ?: "unknown")
                 return@applyCamera2Options
             }
             scheduleAeAwbLock(binding, fpsRange)
         }
     }
 
-    private fun handleUnlockedPolicyFailure(
-        provider: ProcessCameraProvider,
-        previewView: PreviewView?,
-        binding: CameraBinding,
-        allowPreviewFallback: Boolean,
-        reason: String,
-    ) {
-        if (allowPreviewFallback) {
-            emitError("Preview dropped to prioritize max FPS controls: $reason")
-            try {
-                val fallbackBinding = bindCameraUseCases(
-                    provider = provider,
-                    previewView = previewView,
-                    includePreview = false,
-                )
-                applyUnlockedPolicy(
-                    provider = provider,
-                    previewView = previewView,
-                    binding = fallbackBinding,
-                    allowPreviewFallback = false,
-                )
-            } catch (error: Exception) {
-                emitError("Failed preview fallback rebind: ${error.localizedMessage ?: "unknown"}")
-            }
-            return
-        }
-        emitError("Failed to apply max FPS controls; continuing with defaults: $reason")
+    private fun handleUnlockedPolicyFailure(reason: String) {
+        emitError("Failed to apply max FPS controls; keeping preview with camera defaults: $reason")
     }
 
     private fun scheduleAeAwbLock(
