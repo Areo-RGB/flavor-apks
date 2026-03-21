@@ -4,6 +4,8 @@
   "scripts": {
     "install:debug:devices": "node scripts/install-debug-apk.mjs",
     "rebuild:debug:devices": "flutter build apk --debug && node scripts/install-debug-apk.mjs",
-    "install:debug:devices:build": "npm run rebuild:debug:devices"
+    "install:debug:devices:build": "npm run rebuild:debug:devices",
+    "test:maestro:navigation": "maestro test new-workspace/.maestro/flows/navigation/navigation_core.yaml",
+    "test:maestro:navigation:continuous": "maestro test --continuous new-workspace/.maestro/flows/navigation/navigation_core.yaml"
   }
 }

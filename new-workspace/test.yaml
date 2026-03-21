@@ -1,4 +1,3 @@
 appId: com.paul.sprintsync
 ---
-- launchApp:
-    clearState: true
+- runFlow: .maestro/flows/navigation/navigation_core.yaml

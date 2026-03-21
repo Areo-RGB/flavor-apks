@@ -1,0 +1,1 @@
+Issue: Serena MCP symbol tools failed in photo-finish because Kotlin LS initialization repeatedly returned cancelled (-32800), which caused language server manager initialization to abort.

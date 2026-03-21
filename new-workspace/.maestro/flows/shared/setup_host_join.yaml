@@ -1,0 +1,18 @@
+name: Shared Setup Host/Join
+tags:
+  - navigation
+  - shared
+env:
+  SETUP_TITLE: Setup Session
+---
+- assertVisible: ${SETUP_TITLE}
+- runFlow:
+    when:
+      visible: Permissions
+    commands:
+      - tapOn: Permissions
+- tapOn:
+    text: Host
+    retryTapIfNoChange: true
+- assertVisible: ${SETUP_TITLE}
+- assertVisible: Connected Devices

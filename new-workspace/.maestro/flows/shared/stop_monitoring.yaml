@@ -1,0 +1,13 @@
+name: Shared Stop Monitoring
+tags:
+  - navigation
+  - shared
+env:
+  LOBBY_TITLE: Race Lobby
+  MONITORING_TITLE: Monitoring
+---
+- assertVisible: ${MONITORING_TITLE}
+- tapOn:
+    text: Stop
+    retryTapIfNoChange: true
+- assertVisible: ${LOBBY_TITLE}

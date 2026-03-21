@@ -1,0 +1,17 @@
+name: Shared Go To Lobby
+tags:
+  - navigation
+  - shared
+env:
+  SETUP_TITLE: Setup Session
+  LOBBY_TITLE: Race Lobby
+---
+- assertVisible: ${SETUP_TITLE}
+- extendedWaitUntil:
+    visible:
+      text: Next
+    timeout: 120000
+- tapOn:
+    text: Next
+    retryTapIfNoChange: true
+- assertVisible: ${LOBBY_TITLE}

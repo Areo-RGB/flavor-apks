@@ -28,6 +28,7 @@ class RaceSessionController extends ChangeNotifier {
        _stopMonitoringAction = stopMonitoringAction,
        _nowElapsedNanos = nowElapsedNanos ?? _defaultElapsedNanos {
     _eventsSubscription = _nearbyBridge.events.listen(_onNearbyEvent);
+    _motionController.addListener(_onMotionControllerChanged);
     _devices[_localHostDeviceId] = const SessionDevice(
       id: _localHostDeviceId,
       name: 'This device',
@@ -57,6 +58,7 @@ class RaceSessionController extends ChangeNotifier {
   int? _hostClockRoundTripNanos;
   int? _lastClockSyncElapsedNanos;
   int? _hostSensorMinusElapsedNanos;
+  int? _lastClockSyncRequestNanos;
   String? _errorText;
   SessionStage get stage => _stage;
   SessionNetworkRole get networkRole => _networkRole;
@@ -261,6 +263,21 @@ class RaceSessionController extends ChangeNotifier {
     }
   }
 
+  void _onMotionControllerChanged() {
+    if (!isClient || !_monitoringActive) {
+      return;
+    }
+    final now = _nowElapsedNanos();
+    final lastReq = _lastClockSyncRequestNanos ?? 0;
+
+    final needsSync = !_isClockLockValid() || (now - lastReq > 2000000000);
+
+    if (needsSync && (now - lastReq > 1000000000)) {
+      _lastClockSyncRequestNanos = now;
+      unawaited(_requestClockSync());
+    }
+  }
+
   Future<void> _applyRoleEvent({
     required SessionDeviceRole role,
     required int triggerSensorNanos,
@@ -363,9 +380,7 @@ class RaceSessionController extends ChangeNotifier {
         _connectedEndpointIds.remove(connection.endpointId);
         _devices.remove(connection.endpointId);
         if (_connectedEndpointIds.isEmpty) {
-          _hostMinusClientElapsedNanos = null;
-          _hostClockRoundTripNanos = null;
-          _lastClockSyncElapsedNanos = null;
+          _clearClockSyncLock();
           _hostSensorMinusElapsedNanos = null;
         }
       }
@@ -414,6 +429,7 @@ class RaceSessionController extends ChangeNotifier {
           }),
         );
       if (!wasMonitoring && _monitoringActive) {
+        _clearClockSyncLock();
         if (_startMonitoringAction != null) {
           await _startMonitoringAction();
         } else {
@@ -440,13 +456,26 @@ class RaceSessionController extends ChangeNotifier {
       if (timelineChanged || hostOffsetChanged) {
         _syncMotionControllerFromTimeline();
       }
+      if (_monitoringActive && !_isClockLockValid()) {
+        unawaited(_requestClockSync());
+      }
       notifyListeners();
       return;
     }
     final clockSyncRequest = SessionClockSyncRequestMessage.tryParse(raw);
     if (clockSyncRequest != null && isHost && endpointId != null) {
-      final hostReceiveElapsedNanos = _nowElapsedNanos();
-      final hostSendElapsedNanos = _nowElapsedNanos();
+      final hostReceiveElapsedNanos = _nowClockSyncElapsedNanos(
+        requireSensorDomainIfMonitoring: true,
+      );
+      if (hostReceiveElapsedNanos == null) {
+        return;
+      }
+      final hostSendElapsedNanos = _nowClockSyncElapsedNanos(
+        requireSensorDomainIfMonitoring: true,
+      );
+      if (hostSendElapsedNanos == null) {
+        return;
+      }
       await _nearbyBridge.sendBytes(
         endpointId: endpointId,
         messageJson: SessionClockSyncResponseMessage(
@@ -459,7 +488,12 @@ class RaceSessionController extends ChangeNotifier {
     }
     final clockSyncResponse = SessionClockSyncResponseMessage.tryParse(raw);
     if (clockSyncResponse != null && isClient) {
-      final clientReceiveElapsedNanos = _nowElapsedNanos();
+      final clientReceiveElapsedNanos = _nowClockSyncElapsedNanos(
+        requireSensorDomainIfMonitoring: true,
+      );
+      if (clientReceiveElapsedNanos == null) {
+        return;
+      }
       _updateHostClockOffset(
         clientSendElapsedNanos: clockSyncResponse.clientSendElapsedNanos,
         hostReceiveElapsedNanos: clockSyncResponse.hostReceiveElapsedNanos,
@@ -491,11 +525,17 @@ class RaceSessionController extends ChangeNotifier {
     if (!isClient || _connectedEndpointIds.isEmpty) {
       return;
     }
+    final clientSendElapsedNanos = _nowClockSyncElapsedNanos(
+      requireSensorDomainIfMonitoring: true,
+    );
+    if (clientSendElapsedNanos == null) {
+      return;
+    }
     final endpointId = _connectedEndpointIds.first;
     await _nearbyBridge.sendBytes(
       endpointId: endpointId,
       messageJson: SessionClockSyncRequestMessage(
-        clientSendElapsedNanos: _nowElapsedNanos(),
+        clientSendElapsedNanos: clientSendElapsedNanos,
       ).toJsonString(),
     );
   }
@@ -505,6 +545,12 @@ class RaceSessionController extends ChangeNotifier {
     required int hostReceiveElapsedNanos,
     required int clientReceiveElapsedNanos,
   }) {
+    if (clientReceiveElapsedNanos < clientSendElapsedNanos) {
+      _clearClockSyncLock();
+      _errorText = 'Clock sync rejected: receive time moved backwards.';
+      notifyListeners();
+      return;
+    }
     final roundTripNanos = math.max(
       0,
       clientReceiveElapsedNanos - clientSendElapsedNanos,
@@ -608,7 +654,16 @@ class RaceSessionController extends ChangeNotifier {
     if (roundTripNanos > _maxClockSyncRttNanos) {
       return false;
     }
-    final ageNanos = _nowElapsedNanos() - lastSyncElapsedNanos;
+    final nowElapsedNanos = _nowClockSyncElapsedNanos(
+      requireSensorDomainIfMonitoring: _monitoringActive,
+    );
+    if (nowElapsedNanos == null) {
+      return false;
+    }
+    final ageNanos = nowElapsedNanos - lastSyncElapsedNanos;
+    if (ageNanos < 0) {
+      return false;
+    }
     if (ageNanos > _clockSyncStaleAfterNanos) {
       return false;
     }
@@ -625,6 +680,29 @@ class RaceSessionController extends ChangeNotifier {
       return nowElapsedNanos;
     }
     return nowElapsedNanos + sensorMinusElapsedNanos;
+  }
+
+  int? _sensorDerivedElapsedNanos() {
+    final sensorMinusElapsedNanos = _motionController.sensorMinusElapsedNanos;
+    final latestFrameSensorNanos =
+        _motionController.latestStats?.frameSensorNanos;
+    if (sensorMinusElapsedNanos == null || latestFrameSensorNanos == null) {
+      return null;
+    }
+    return latestFrameSensorNanos - sensorMinusElapsedNanos;
+  }
+
+  int? _nowClockSyncElapsedNanos({
+    bool requireSensorDomainIfMonitoring = false,
+  }) {
+    final sensorElapsedNanos = _sensorDerivedElapsedNanos();
+    if (sensorElapsedNanos != null) {
+      return sensorElapsedNanos;
+    }
+    if (requireSensorDomainIfMonitoring && _monitoringActive) {
+      return null;
+    }
+    return _nowElapsedNanos();
   }
 
   Future<void> _broadcastSnapshot() async {
@@ -670,9 +748,8 @@ class RaceSessionController extends ChangeNotifier {
     _stage = SessionStage.setup;
     _timeline = SessionRaceTimeline.idle();
     _monitoringActive = false;
-    _hostMinusClientElapsedNanos = null;
-    _hostClockRoundTripNanos = null;
-    _lastClockSyncElapsedNanos = null;
+    _clearClockSyncLock();
+    _lastClockSyncRequestNanos = null;
     _hostSensorMinusElapsedNanos = null;
     _discovered.clear();
     _connectedEndpointIds.clear();
@@ -688,8 +765,15 @@ class RaceSessionController extends ChangeNotifier {
     _motionController.resetRace();
   }
 
+  void _clearClockSyncLock() {
+    _hostMinusClientElapsedNanos = null;
+    _hostClockRoundTripNanos = null;
+    _lastClockSyncElapsedNanos = null;
+  }
+
   @override
   void dispose() {
+    _motionController.removeListener(_onMotionControllerChanged);
     _eventsSubscription?.cancel();
     super.dispose();
   }

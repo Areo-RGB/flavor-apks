@@ -34,7 +34,12 @@ class RaceSessionScreen extends StatelessWidget {
 
   Widget _buildSetupScaffold(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Setup Session')),
+      appBar: AppBar(
+        title: const Text(
+          'Setup Session',
+          key: ValueKey<String>('setup_stage_title'),
+        ),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -62,6 +67,7 @@ class RaceSessionScreen extends StatelessWidget {
                     children: [
                       if (!controller.permissionsGranted)
                         FilledButton.icon(
+                          key: const ValueKey<String>('permissions_button'),
                           onPressed: controller.busy
                               ? null
                               : controller.requestPermissions,
@@ -69,6 +75,7 @@ class RaceSessionScreen extends StatelessWidget {
                           label: const Text('Permissions'),
                         ),
                       FilledButton.icon(
+                        key: const ValueKey<String>('host_button'),
                         onPressed: controller.busy
                             ? null
                             : controller.createLobby,
@@ -76,6 +83,7 @@ class RaceSessionScreen extends StatelessWidget {
                         label: const Text('Host'),
                       ),
                       FilledButton.icon(
+                        key: const ValueKey<String>('join_button'),
                         onPressed: controller.busy
                             ? null
                             : controller.joinLobby,
@@ -84,6 +92,7 @@ class RaceSessionScreen extends StatelessWidget {
                       ),
                       if (controller.canGoToLobby)
                         FilledButton.icon(
+                          key: const ValueKey<String>('next_button'),
                           onPressed: controller.goToLobby,
                           icon: const Icon(Icons.arrow_forward, size: 18),
                           label: const Text('Next'),
@@ -160,7 +169,12 @@ class RaceSessionScreen extends StatelessWidget {
 
   Widget _buildLobbyScaffold(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Race Lobby')),
+      appBar: AppBar(
+        title: const Text(
+          'Race Lobby',
+          key: ValueKey<String>('lobby_stage_title'),
+        ),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -206,6 +220,7 @@ class RaceSessionScreen extends StatelessWidget {
                     runSpacing: 8,
                     children: [
                       FilledButton.icon(
+                        key: const ValueKey<String>('start_monitoring_button'),
                         onPressed: controller.canStartMonitoring
                             ? controller.startMonitoring
                             : null,
@@ -234,10 +249,14 @@ class RaceSessionScreen extends StatelessWidget {
   Widget _buildMonitoringScaffold(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Monitoring'),
+        title: const Text(
+          'Monitoring',
+          key: ValueKey<String>('monitoring_stage_title'),
+        ),
         actions: [
           if (controller.isHost)
             TextButton(
+              key: const ValueKey<String>('stop_monitoring_button'),
               onPressed: controller.stopMonitoring,
               child: const Text('Stop'),
             ),

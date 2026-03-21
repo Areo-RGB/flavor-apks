@@ -84,20 +84,16 @@ void main() {
         'type': 'native_state',
         'hostSensorMinusElapsedNanos': 700000000,
       });
-      await _flushEvents();
-
-      nowElapsedNanos = 1300000000;
-      fixture.bridge.emitEvent(<String, dynamic>{
-        'type': 'payload_received',
-        'endpointId': 'host-1',
-        'message': const SessionClockSyncResponseMessage(
-          clientSendElapsedNanos: 1200000000,
-          hostReceiveElapsedNanos: 5000000000,
-          hostSendElapsedNanos: 5000000010,
-        ).toJsonString(),
+      fixture.nativeBridge.emitEvent(<String, dynamic>{
+        'type': 'native_frame_stats',
+        'frameSensorNanos': 2000000000,
+        'rawScore': 0.01,
+        'baseline': 0.01,
+        'effectiveScore': 0.0,
       });
       await _flushEvents();
 
+      fixture.bridge.sentPayloads.clear();
       fixture.bridge.emitEvent(<String, dynamic>{
         'type': 'payload_received',
         'endpointId': 'host-1',
@@ -121,6 +117,26 @@ void main() {
           timeline: SessionRaceTimeline.idle(),
           hostSensorMinusElapsedNanos: 120000000,
           selfDeviceId: 'local-device',
+        ).toJsonString(),
+      });
+      await _flushEvents();
+      final syncRequests = fixture.bridge.sentPayloads
+          .map(
+            (payload) =>
+                SessionClockSyncRequestMessage.tryParse(payload.messageJson),
+          )
+          .whereType<SessionClockSyncRequestMessage>()
+          .toList();
+      expect(syncRequests, isNotEmpty);
+      final syncRequest = syncRequests.last;
+      nowElapsedNanos = 1300000000;
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'host-1',
+        'message': SessionClockSyncResponseMessage(
+          clientSendElapsedNanos: syncRequest.clientSendElapsedNanos,
+          hostReceiveElapsedNanos: 5050000000,
+          hostSendElapsedNanos: 5050000010,
         ).toJsonString(),
       });
       await _flushEvents();
@@ -234,20 +250,62 @@ void main() {
         'type': 'native_state',
         'hostSensorMinusElapsedNanos': 700000000,
       });
+      fixture.nativeBridge.emitEvent(<String, dynamic>{
+        'type': 'native_frame_stats',
+        'frameSensorNanos': 2000000000,
+        'rawScore': 0.01,
+        'baseline': 0.01,
+        'effectiveScore': 0.0,
+      });
       await _flushEvents();
 
+      fixture.bridge.sentPayloads.clear();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'host-1',
+        'message': SessionSnapshotMessage(
+          stage: SessionStage.monitoring,
+          monitoringActive: true,
+          devices: const <SessionDevice>[
+            SessionDevice(
+              id: 'local-device',
+              name: 'Client',
+              role: SessionDeviceRole.stop,
+              isLocal: false,
+            ),
+            SessionDevice(
+              id: 'host-1',
+              name: 'Host',
+              role: SessionDeviceRole.start,
+              isLocal: false,
+            ),
+          ],
+          timeline: SessionRaceTimeline.idle(),
+          hostSensorMinusElapsedNanos: 120000000,
+          selfDeviceId: 'local-device',
+        ).toJsonString(),
+      });
+      await _flushEvents();
+      final syncRequests = fixture.bridge.sentPayloads
+          .map(
+            (payload) =>
+                SessionClockSyncRequestMessage.tryParse(payload.messageJson),
+          )
+          .whereType<SessionClockSyncRequestMessage>()
+          .toList();
+      expect(syncRequests, isNotEmpty);
+      final syncRequest = syncRequests.last;
       nowElapsedNanos = 1300000000;
       fixture.bridge.emitEvent(<String, dynamic>{
         'type': 'payload_received',
         'endpointId': 'host-1',
-        'message': const SessionClockSyncResponseMessage(
-          clientSendElapsedNanos: 1200000000,
-          hostReceiveElapsedNanos: 5000000000,
-          hostSendElapsedNanos: 5000000010,
+        'message': SessionClockSyncResponseMessage(
+          clientSendElapsedNanos: syncRequest.clientSendElapsedNanos,
+          hostReceiveElapsedNanos: 5050000000,
+          hostSendElapsedNanos: 5050000010,
         ).toJsonString(),
       });
       await _flushEvents();
-
       fixture.bridge.emitEvent(<String, dynamic>{
         'type': 'payload_received',
         'endpointId': 'host-1',
@@ -294,6 +352,131 @@ void main() {
       expect(
         fixture.motionController.runSnapshot.elapsedNanos,
         inInclusiveRange(60000000, 80000000),
+      );
+      fixture.dispose();
+    },
+  );
+
+  test(
+    'client keeps stopwatch elapsed sane when host/client uptimes differ',
+    () async {
+      int nowElapsedNanos = 1000000000;
+      final fixture = _ControllerFixture.create(
+        nowElapsedNanos: () => nowElapsedNanos,
+      );
+      await fixture.controller.joinLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'host-1',
+        'connected': true,
+      });
+      await _flushEvents();
+      fixture.bridge.sentPayloads.clear();
+
+      fixture.nativeBridge.emitEvent(<String, dynamic>{
+        'type': 'native_state',
+        'hostSensorMinusElapsedNanos': 100000000,
+      });
+      fixture.nativeBridge.emitEvent(<String, dynamic>{
+        'type': 'native_frame_stats',
+        'frameSensorNanos': 391037540000000,
+        'rawScore': 0.01,
+        'baseline': 0.01,
+        'effectiveScore': 0.0,
+      });
+      await _flushEvents();
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'host-1',
+        'message': SessionSnapshotMessage(
+          stage: SessionStage.monitoring,
+          monitoringActive: true,
+          devices: const <SessionDevice>[
+            SessionDevice(
+              id: 'local-device',
+              name: 'Client',
+              role: SessionDeviceRole.stop,
+              isLocal: false,
+            ),
+            SessionDevice(
+              id: 'host-1',
+              name: 'Host',
+              role: SessionDeviceRole.start,
+              isLocal: false,
+            ),
+          ],
+          timeline: SessionRaceTimeline.idle(),
+          hostSensorMinusElapsedNanos: 100000000,
+          selfDeviceId: 'local-device',
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      final syncRequests = fixture.bridge.sentPayloads
+          .map(
+            (payload) =>
+                SessionClockSyncRequestMessage.tryParse(payload.messageJson),
+          )
+          .whereType<SessionClockSyncRequestMessage>()
+          .toList();
+      expect(syncRequests, isNotEmpty);
+      final syncRequest = syncRequests.last;
+      nowElapsedNanos = 1100000000;
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'host-1',
+        'message': SessionClockSyncResponseMessage(
+          clientSendElapsedNanos: syncRequest.clientSendElapsedNanos,
+          hostReceiveElapsedNanos: 7050000000,
+          hostSendElapsedNanos: 7050000010,
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'host-1',
+        'message': SessionSnapshotMessage(
+          stage: SessionStage.monitoring,
+          monitoringActive: true,
+          devices: const <SessionDevice>[
+            SessionDevice(
+              id: 'local-device',
+              name: 'Client',
+              role: SessionDeviceRole.stop,
+              isLocal: false,
+            ),
+            SessionDevice(
+              id: 'host-1',
+              name: 'Host',
+              role: SessionDeviceRole.start,
+              isLocal: false,
+            ),
+          ],
+          timeline: const SessionRaceTimeline(
+            startedSensorNanos: 7050000000,
+            splitElapsedNanos: <int>[],
+            stopElapsedNanos: null,
+          ),
+          hostSensorMinusElapsedNanos: 100000000,
+          selfDeviceId: 'local-device',
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      fixture.nativeBridge.emitEvent(<String, dynamic>{
+        'type': 'native_frame_stats',
+        'frameSensorNanos': 391044490000000,
+        'rawScore': 0.01,
+        'baseline': 0.01,
+        'effectiveScore': 0.0,
+      });
+      await _flushEvents();
+
+      expect(
+        fixture.motionController.runSnapshot.elapsedNanos,
+        inInclusiveRange(6000000000, 8000000000),
       );
       fixture.dispose();
     },
