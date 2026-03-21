@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sprint_sync/core/repositories/local_repository.dart';
@@ -8,9 +9,13 @@ import 'package:sprint_sync/core/services/native_sensor_bridge.dart';
 import 'package:sprint_sync/core/services/nearby_bridge.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_controller.dart';
 import 'package:sprint_sync/features/race_session/race_session_controller.dart';
+import 'package:sprint_sync/features/race_session/race_session_models.dart';
 import 'package:sprint_sync/features/race_session/race_session_screen.dart';
 
 void main() {
+  setUpAll(_setUpPlatformViewsMock);
+  tearDownAll(_clearPlatformViewsMock);
+
   setUp(() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
   });
@@ -63,6 +68,48 @@ void main() {
     await tester.tap(find.text('Next'));
     await tester.pump(const Duration(milliseconds: 20));
     expect(find.text('Race Lobby'), findsOneWidget);
+
+    fixture.dispose();
+  });
+
+  testWidgets('monitoring stage shows preview marker overlay', (tester) async {
+    final fixture = _ScreenFixture.create();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RaceSessionScreen(
+          controller: fixture.controller,
+          motionController: fixture.motionController,
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 20));
+
+    await tester.tap(find.text('Host'));
+    await tester.pump(const Duration(milliseconds: 20));
+
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'connection_result',
+      'endpointId': 'peer-1',
+      'connected': true,
+    });
+    await tester.pump(const Duration(milliseconds: 20));
+
+    await tester.tap(find.text('Next'));
+    await tester.pump(const Duration(milliseconds: 20));
+
+    fixture.controller.assignRole('local-device', SessionDeviceRole.start);
+    fixture.controller.assignRole('peer-1', SessionDeviceRole.stop);
+    await tester.pump(const Duration(milliseconds: 20));
+
+    await tester.tap(find.text('Start Monitoring'));
+    await tester.pump(const Duration(milliseconds: 20));
+
+    expect(find.text('Monitoring'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('preview_tripwire_line')),
+      findsOneWidget,
+    );
 
     fixture.dispose();
   });
@@ -187,4 +234,30 @@ class _FakeNearbyBridge extends NearbyBridge {
   void dispose() {
     _eventsController.close();
   }
+}
+
+Future<void> _setUpPlatformViewsMock() async {
+  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .setMockMethodCallHandler(SystemChannels.platform_views, (
+        MethodCall call,
+      ) async {
+        switch (call.method) {
+          case 'create':
+            return 1;
+          case 'dispose':
+          case 'resize':
+          case 'offset':
+          case 'setDirection':
+          case 'clearFocus':
+          case 'synchronizeToNativeViewHierarchy':
+            return null;
+          default:
+            return null;
+        }
+      });
+}
+
+Future<void> _clearPlatformViewsMock() async {
+  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .setMockMethodCallHandler(SystemChannels.platform_views, null);
 }

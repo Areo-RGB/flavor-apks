@@ -1,6 +1,8 @@
 import 'package:flutter/services.dart';
 
 class NativeSensorBridge {
+  static const String previewViewType =
+      'com.paul.sprintsync/sensor_native_preview';
   static const _methodChannel = MethodChannel(
     'com.paul.sprintsync/sensor_native_methods',
   );
@@ -20,9 +22,7 @@ class NativeSensorBridge {
     });
   }
 
-  Future<void> startNativeMonitoring({
-    required Map<String, dynamic> config,
-  }) {
+  Future<void> startNativeMonitoring({required Map<String, dynamic> config}) {
     return _methodChannel.invokeMethod<void>('startNativeMonitoring', {
       'config': config,
     });
@@ -32,9 +32,7 @@ class NativeSensorBridge {
     return _methodChannel.invokeMethod<void>('stopNativeMonitoring');
   }
 
-  Future<void> updateNativeConfig({
-    required Map<String, dynamic> config,
-  }) {
+  Future<void> updateNativeConfig({required Map<String, dynamic> config}) {
     return _methodChannel.invokeMethod<void>('updateNativeConfig', {
       'config': config,
     });

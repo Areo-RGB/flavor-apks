@@ -1,8 +1,10 @@
 package com.paul.sprintsync.sensor_native
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SensorNativeMathTest {
@@ -55,5 +57,35 @@ class SensorNativeMathTest {
 
         val mappedBack = SensorTimeMath.elapsedToSensorNanos(elapsed, sensorMinusElapsedNanos)
         assertEquals(sensorNanos, mappedBack)
+    }
+
+    @Test
+    fun `selectHighestFrameRateBounds prefers highest upper then lower`() {
+        val bounds = setOf(
+            24 to 30,
+            30 to 30,
+            30 to 60,
+            45 to 60,
+            15 to 24,
+        )
+
+        val selected = SensorNativeCameraPolicy.selectHighestFrameRateBounds(bounds)
+
+        assertEquals(45, selected?.first)
+        assertEquals(60, selected?.second)
+    }
+
+    @Test
+    fun `selectHighestFrameRateBounds returns null for null or empty`() {
+        assertNull(SensorNativeCameraPolicy.selectHighestFrameRateBounds(null))
+        assertNull(SensorNativeCameraPolicy.selectHighestFrameRateBounds(emptySet()))
+    }
+
+    @Test
+    fun `shouldLockAeAwb returns true only at and after warmup`() {
+        assertFalse(SensorNativeCameraPolicy.shouldLockAeAwb(0))
+        assertFalse(SensorNativeCameraPolicy.shouldLockAeAwb(399))
+        assertTrue(SensorNativeCameraPolicy.shouldLockAeAwb(400))
+        assertTrue(SensorNativeCameraPolicy.shouldLockAeAwb(401))
     }
 }

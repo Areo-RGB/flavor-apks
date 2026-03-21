@@ -299,7 +299,7 @@ class RaceSessionScreen extends StatelessWidget {
           Expanded(
             child: MotionDetectionScreen(
               controller: motionController,
-              showPreview: false,
+              showPreview: true,
             ),
           ),
         ],

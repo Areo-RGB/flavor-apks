@@ -1,4 +1,7 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:sprint_sync/core/services/native_sensor_bridge.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_controller.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
 
@@ -22,7 +25,10 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    widget.controller.initializeCamera();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      widget.controller.initializeCamera();
+    });
   }
 
   @override
@@ -54,14 +60,7 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
           padding: const EdgeInsets.all(16),
           children: [
             if (widget.showPreview)
-              const Card(
-                child: Padding(
-                  padding: EdgeInsets.all(12),
-                  child: Text(
-                    'Camera preview is disabled in native monitoring mode.',
-                  ),
-                ),
-              ),
+              _buildPreviewCard(roiCenterX: config.roiCenterX),
             if (widget.showPreview) const SizedBox(height: 12),
             _buildStopwatchCard(),
             const SizedBox(height: 12),
@@ -169,6 +168,57 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
         );
       },
     );
+  }
+
+  Widget _buildPreviewCard({required double roiCenterX}) {
+    final tripwireAlignmentX = _tripwireAlignmentForRoiCenter(roiCenterX);
+    return Card(
+      key: const ValueKey<String>('native_preview_card'),
+      clipBehavior: Clip.antiAlias,
+      child: AspectRatio(
+        aspectRatio: 9 / 16,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            _buildPreviewSurface(),
+            Align(
+              key: const ValueKey<String>('preview_tripwire_alignment'),
+              alignment: Alignment(tripwireAlignmentX, 0),
+              child: IgnorePointer(
+                child: Container(
+                  key: const ValueKey<String>('preview_tripwire_line'),
+                  width: 2,
+                  height: double.infinity,
+                  color: const Color(0xFF005A8D),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPreviewSurface() {
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return const ColoredBox(
+        color: Colors.black12,
+        child: Center(
+          child: Text('Live camera preview is available on Android only.'),
+        ),
+      );
+    }
+    return AndroidView(
+      key: const ValueKey<String>('native_preview_view'),
+      viewType: NativeSensorBridge.previewViewType,
+      creationParams: const <String, dynamic>{},
+      creationParamsCodec: const StandardMessageCodec(),
+    );
+  }
+
+  double _tripwireAlignmentForRoiCenter(double roiCenterX) {
+    final clamped = roiCenterX.clamp(0.0, 1.0);
+    return (clamped * 2.0) - 1.0;
   }
 
   Widget _buildStopwatchCard() {

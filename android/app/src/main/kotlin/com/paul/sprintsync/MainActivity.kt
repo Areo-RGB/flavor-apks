@@ -8,6 +8,7 @@ import android.os.Looper
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.paul.sprintsync.sensor_native.SensorNativeController
+import com.paul.sprintsync.sensor_native.SensorNativePreviewViewFactory
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
 import com.google.android.gms.nearby.connection.ConnectionInfo
@@ -59,6 +60,13 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
         connectionsClient = Nearby.getConnectionsClient(this)
         sensorNativeController = SensorNativeController(this)
         sensorNativeController.configure(flutterEngine.dartExecutor.binaryMessenger)
+        flutterEngine
+            .platformViewsController
+            .registry
+            .registerViewFactory(
+                SensorNativeController.PREVIEW_VIEW_TYPE,
+                SensorNativePreviewViewFactory(sensorNativeController),
+            )
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
