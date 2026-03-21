@@ -1,0 +1,27 @@
+name: Shared Start Monitoring
+tags:
+  - navigation
+  - shared
+env:
+  LOBBY_TITLE: Race Lobby
+  MONITORING_TITLE: Monitoring
+---
+- assertVisible: ${LOBBY_TITLE}
+- assertVisible:
+    text: Start Monitoring
+    enabled: false
+- tapOn:
+    text: Unassigned
+    index: 0
+- tapOn: Start
+- tapOn:
+    text: Unassigned
+    index: 0
+- tapOn: Stop
+- assertVisible:
+    text: Start Monitoring
+    enabled: true
+- tapOn:
+    text: Start Monitoring
+    retryTapIfNoChange: true
+- assertVisible: ${MONITORING_TITLE}

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sprint_sync/core/repositories/local_repository.dart';
+import 'package:sprint_sync/core/services/native_sensor_bridge.dart';
 import 'package:sprint_sync/core/services/nearby_bridge.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_controller.dart';
 import 'package:sprint_sync/features/race_session/race_session_controller.dart';
@@ -27,10 +28,7 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 20));
 
-    final nextButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, 'Next'),
-    );
-    expect(nextButton.onPressed, isNull);
+    expect(find.text('Next'), findsNothing);
 
     fixture.dispose();
   });
@@ -50,7 +48,7 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 20));
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Create Lobby'));
+    await tester.tap(find.text('Host'));
     await tester.pump(const Duration(milliseconds: 20));
 
     fixture.bridge.emitEvent(<String, dynamic>{
@@ -60,35 +58,35 @@ void main() {
     });
     await tester.pump(const Duration(milliseconds: 5));
 
-    final nextButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, 'Next'),
-    );
-    expect(nextButton.onPressed, isNotNull);
+    expect(find.text('Next'), findsOneWidget);
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Next'));
+    await tester.tap(find.text('Next'));
     await tester.pump(const Duration(milliseconds: 20));
-    expect(find.text('Lobby'), findsOneWidget);
+    expect(find.text('Race Lobby'), findsOneWidget);
 
     fixture.dispose();
   });
-
 }
 
 class _ScreenFixture {
   _ScreenFixture({
     required this.bridge,
+    required this.nativeBridge,
     required this.motionController,
     required this.controller,
   });
 
   final _FakeNearbyBridge bridge;
+  final _FakeNativeSensorBridge nativeBridge;
   final MotionDetectionController motionController;
   final RaceSessionController controller;
 
   factory _ScreenFixture.create() {
     final bridge = _FakeNearbyBridge();
+    final nativeBridge = _FakeNativeSensorBridge();
     final motionController = MotionDetectionController(
       repository: LocalRepository(),
+      nativeSensorBridge: nativeBridge,
     );
     final controller = RaceSessionController(
       nearbyBridge: bridge,
@@ -98,6 +96,7 @@ class _ScreenFixture {
     );
     return _ScreenFixture(
       bridge: bridge,
+      nativeBridge: nativeBridge,
       motionController: motionController,
       controller: controller,
     );
@@ -107,6 +106,35 @@ class _ScreenFixture {
     controller.dispose();
     motionController.dispose();
     bridge.dispose();
+    nativeBridge.dispose();
+  }
+}
+
+class _FakeNativeSensorBridge extends NativeSensorBridge {
+  final StreamController<Map<String, dynamic>> _eventsController =
+      StreamController<Map<String, dynamic>>.broadcast();
+
+  @override
+  Stream<Map<String, dynamic>> get events => _eventsController.stream;
+
+  @override
+  Future<void> startNativeMonitoring({
+    required Map<String, dynamic> config,
+  }) async {}
+
+  @override
+  Future<void> stopNativeMonitoring() async {}
+
+  @override
+  Future<void> updateNativeConfig({
+    required Map<String, dynamic> config,
+  }) async {}
+
+  @override
+  Future<void> resetNativeRun() async {}
+
+  void dispose() {
+    _eventsController.close();
   }
 }
 

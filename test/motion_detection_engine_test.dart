@@ -10,134 +10,90 @@ void main() {
       MotionFrameStats? latest;
 
       for (int i = 0; i < 10; i++) {
-        latest = engine.process(rawScore: 0.01, timestampMicros: i * 100000);
+        latest = engine.process(
+          rawScore: 0.01,
+          frameSensorNanos: i * 100000000,
+        );
       }
 
       expect(latest, isNotNull);
       expect(latest!.triggerEvent, isNull);
     });
 
-    test('two consecutive qualifying frames emit first pulse event', () {
-      final engine = MotionDetectionEngine(
-        config: MotionDetectionConfig.defaults(),
-      );
-      MotionFrameStats? latest;
-
-      for (int i = 0; i < 8; i++) {
-        engine.process(rawScore: 0.01, timestampMicros: i * 100000);
-      }
-
-      for (int i = 0; i < 2; i++) {
-        latest = engine.process(
-          rawScore: 0.22,
-          timestampMicros: 900000 + (i * 100000),
-        );
-      }
-
-      expect(latest, isNotNull);
-      expect(latest!.triggerEvent, isNotNull);
-      expect(latest.triggerEvent!.type, MotionTriggerType.split);
-      expect(latest.triggerEvent!.splitIndex, 1);
-    });
-
-    test('re-arm and second pulse increments index', () {
+    test('first qualifying pulse emits split trigger', () {
       final engine = MotionDetectionEngine(
         config: MotionDetectionConfig.defaults(),
       );
 
       for (int i = 0; i < 8; i++) {
-        engine.process(rawScore: 0.01, timestampMicros: i * 100000);
+        engine.process(rawScore: 0.01, frameSensorNanos: i * 100000000);
       }
 
-      for (int i = 0; i < 2; i++) {
-        engine.process(rawScore: 0.23, timestampMicros: 900000 + (i * 100000));
-      }
-
-      for (int i = 0; i < 4; i++) {
-        engine.process(rawScore: 0.0, timestampMicros: 1300000 + (i * 100000));
-      }
-
-      MotionFrameStats? latest;
-      for (int i = 0; i < 2; i++) {
-        latest = engine.process(
-          rawScore: 0.25,
-          timestampMicros: 2200000 + (i * 100000),
-        );
-      }
-
-      expect(latest, isNotNull);
-      expect(latest!.triggerEvent, isNotNull);
-      expect(latest.triggerEvent!.type, MotionTriggerType.split);
-      expect(latest.triggerEvent!.splitIndex, 2);
+      final trigger = engine.process(
+        rawScore: 0.23,
+        frameSensorNanos: 800000000,
+      );
+      expect(trigger.triggerEvent, isNotNull);
+      expect(trigger.triggerEvent!.type, MotionTriggerType.split);
+      expect(trigger.triggerEvent!.splitIndex, 1);
     });
 
-    test('additional detections continue producing pulses after re-arm', () {
+    test('re-arm and cooldown allow subsequent triggers', () {
       final engine = MotionDetectionEngine(
         config: MotionDetectionConfig.defaults(),
       );
 
       for (int i = 0; i < 8; i++) {
-        engine.process(rawScore: 0.01, timestampMicros: i * 100000);
+        engine.process(rawScore: 0.01, frameSensorNanos: i * 100000000);
       }
+      engine.process(rawScore: 0.23, frameSensorNanos: 800000000);
 
-      for (int i = 0; i < 2; i++) {
-        engine.process(rawScore: 0.23, timestampMicros: 900000 + (i * 100000));
-      }
-
-      for (int i = 0; i < 4; i++) {
-        engine.process(rawScore: 0.0, timestampMicros: 1300000 + (i * 100000));
-      }
-
-      for (int i = 0; i < 2; i++) {
-        engine.process(rawScore: 0.24, timestampMicros: 2200000 + (i * 100000));
-      }
-
-      for (int i = 0; i < 4; i++) {
-        engine.process(rawScore: 0.0, timestampMicros: 2800000 + (i * 100000));
-      }
-
-      MotionFrameStats? afterStop;
-      for (int i = 0; i < 2; i++) {
-        afterStop = engine.process(
-          rawScore: 0.24,
-          timestampMicros: 3300000 + (i * 100000),
+      for (int i = 0; i < 3; i++) {
+        engine.process(
+          rawScore: 0.0,
+          frameSensorNanos: 900000000 + (i * 100000000),
         );
       }
 
-      expect(afterStop!.triggerEvent, isNotNull);
-      expect(afterStop.triggerEvent!.type, MotionTriggerType.split);
-      expect(afterStop.triggerEvent!.splitIndex, 3);
+      final blocked = engine.process(
+        rawScore: 0.24,
+        frameSensorNanos: 1200000000,
+      );
+      expect(blocked.triggerEvent, isNull);
+
+      final next = engine.process(rawScore: 0.24, frameSensorNanos: 1700000000);
+      expect(next.triggerEvent, isNotNull);
+      expect(next.triggerEvent!.splitIndex, 2);
     });
 
-    test('resetRace clears baseline so next session detects motion immediately', () {
+    test('resetRace clears baseline and pulse index', () {
       final engine = MotionDetectionEngine(
         config: MotionDetectionConfig.defaults(),
       );
 
       for (int i = 0; i < 20; i++) {
-        engine.process(rawScore: 0.04, timestampMicros: i * 100000);
+        engine.process(rawScore: 0.04, frameSensorNanos: i * 100000000);
       }
-      final baselineBefore = engine.process(
-        rawScore: 0.04,
-        timestampMicros: 2100000,
-      ).baseline;
+
+      final baselineBefore = engine
+          .process(rawScore: 0.04, frameSensorNanos: 2100000000)
+          .baseline;
       expect(baselineBefore, greaterThan(0.03));
 
       engine.resetRace();
 
-      final afterReset = engine.process(rawScore: 0.001, timestampMicros: 3000000);
-      expect(afterReset.baseline, 0.001);
+      final firstAfterReset = engine.process(
+        rawScore: 0.001,
+        frameSensorNanos: 3000000000,
+      );
+      expect(firstAfterReset.baseline, 0.001);
 
-      MotionFrameStats? triggerFrame;
-      for (int i = 0; i < 2; i++) {
-        triggerFrame = engine.process(
-          rawScore: 0.22,
-          timestampMicros: 3200000 + (i * 100000),
-        );
-      }
-
-      expect(triggerFrame!.triggerEvent, isNotNull,
-          reason: 'Motion should be detected immediately after resetRace');
+      final trigger = engine.process(
+        rawScore: 0.24,
+        frameSensorNanos: 3200000000,
+      );
+      expect(trigger.triggerEvent, isNotNull);
+      expect(trigger.triggerEvent!.splitIndex, 1);
     });
   });
 }

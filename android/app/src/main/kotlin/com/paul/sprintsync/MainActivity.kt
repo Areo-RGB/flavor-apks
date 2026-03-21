@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.paul.sprintsync.sensor_native.SensorNativeController
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
 import com.google.android.gms.nearby.connection.ConnectionInfo
@@ -45,6 +46,7 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
     private val connectedEndpointIds = mutableSetOf<String>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var connectionsClient: ConnectionsClient
+    private lateinit var sensorNativeController: SensorNativeController
 
     private var eventSink: EventChannel.EventSink? = null
     private var pendingPermissionResult: MethodChannel.Result? = null
@@ -55,6 +57,8 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         connectionsClient = Nearby.getConnectionsClient(this)
+        sensorNativeController = SensorNativeController(this)
+        sensorNativeController.configure(flutterEngine.dartExecutor.binaryMessenger)
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -75,6 +79,20 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
                 }
             },
         )
+    }
+
+    override fun onPause() {
+        if (::sensorNativeController.isInitialized) {
+            sensorNativeController.onHostPaused()
+        }
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        if (::sensorNativeController.isInitialized) {
+            sensorNativeController.dispose()
+        }
+        super.onDestroy()
     }
 
     private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -345,6 +363,7 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
 
     private fun requiredPermissions(): List<String> {
         val permissions = mutableListOf(
+            Manifest.permission.CAMERA,
             Manifest.permission.ACCESS_COARSE_LOCATION,
             Manifest.permission.ACCESS_FINE_LOCATION,
         )

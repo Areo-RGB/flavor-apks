@@ -63,72 +63,46 @@ class SessionDevice {
 
 class SessionRaceTimeline {
   const SessionRaceTimeline({
-    this.startedAtEpochMs,
-    required this.splitMicros,
-    this.stopElapsedMicros,
-    required this.revision,
+    this.startedSensorNanos,
+    required this.splitElapsedNanos,
+    this.stopElapsedNanos,
   });
 
-  final int? startedAtEpochMs;
-  final List<int> splitMicros;
-  final int? stopElapsedMicros;
-  final int revision;
+  final int? startedSensorNanos;
+  final List<int> splitElapsedNanos;
+  final int? stopElapsedNanos;
 
-  factory SessionRaceTimeline.idle({int revision = 0}) {
-    return SessionRaceTimeline(splitMicros: const <int>[], revision: revision);
+  factory SessionRaceTimeline.idle() {
+    return const SessionRaceTimeline(splitElapsedNanos: <int>[]);
   }
 
-  bool get hasStarted => startedAtEpochMs != null;
-  bool get hasStopped => stopElapsedMicros != null;
+  bool get hasStarted => startedSensorNanos != null;
+  bool get hasStopped => stopElapsedNanos != null;
   bool get isRunning => hasStarted && !hasStopped;
 
-  int elapsedMicrosAt(int nowMicros) {
-    final startedAt = startedAtEpochMs;
-    if (startedAt == null) {
-      return 0;
-    }
-    final stoppedAt = stopElapsedMicros;
-    if (stoppedAt != null) {
-      return stoppedAt;
-    }
-    final elapsed = nowMicros - (startedAt * 1000);
-    return elapsed < 0 ? 0 : elapsed;
-  }
-
-  List<int> get displaySplitMicros {
-    final stoppedAt = stopElapsedMicros;
-    if (stoppedAt == null) {
-      return List<int>.unmodifiable(splitMicros);
-    }
-    return List<int>.unmodifiable(<int>[...splitMicros, stoppedAt]);
-  }
-
   SessionRaceTimeline copyWith({
-    int? startedAtEpochMs,
-    List<int>? splitMicros,
-    int? stopElapsedMicros,
-    int? revision,
-    bool clearStartedAt = false,
-    bool clearStopElapsed = false,
+    int? startedSensorNanos,
+    List<int>? splitElapsedNanos,
+    int? stopElapsedNanos,
+    bool clearStartedSensor = false,
+    bool clearStopElapsedNanos = false,
   }) {
     return SessionRaceTimeline(
-      startedAtEpochMs: clearStartedAt
+      startedSensorNanos: clearStartedSensor
           ? null
-          : (startedAtEpochMs ?? this.startedAtEpochMs),
-      splitMicros: splitMicros ?? this.splitMicros,
-      stopElapsedMicros: clearStopElapsed
+          : (startedSensorNanos ?? this.startedSensorNanos),
+      splitElapsedNanos: splitElapsedNanos ?? this.splitElapsedNanos,
+      stopElapsedNanos: clearStopElapsedNanos
           ? null
-          : (stopElapsedMicros ?? this.stopElapsedMicros),
-      revision: revision ?? this.revision,
+          : (stopElapsedNanos ?? this.stopElapsedNanos),
     );
   }
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
-      'startedAtEpochMs': startedAtEpochMs,
-      'splitMicros': splitMicros,
-      'stopElapsedMicros': stopElapsedMicros,
-      'revision': revision,
+      'startedSensorNanos': startedSensorNanos,
+      'splitElapsedNanos': splitElapsedNanos,
+      'stopElapsedNanos': stopElapsedNanos,
     };
   }
 
@@ -136,30 +110,27 @@ class SessionRaceTimeline {
     if (source is! Map<String, dynamic>) {
       return SessionRaceTimeline.idle();
     }
-    final splitRaw = source['splitMicros'];
-    final splitMicros = <int>[];
+    final splitRaw = source['splitElapsedNanos'];
+    final splitElapsedNanos = <int>[];
     if (splitRaw is List) {
       for (final value in splitRaw) {
         if (value is int) {
-          splitMicros.add(value);
+          splitElapsedNanos.add(value);
         } else if (value is num) {
-          splitMicros.add(value.toInt());
+          splitElapsedNanos.add(value.toInt());
         }
       }
     }
-    final startedAtRaw = source['startedAtEpochMs'];
-    final stopElapsedRaw = source['stopElapsedMicros'];
-    final startedAtEpochMs = startedAtRaw is num ? startedAtRaw.toInt() : null;
-    final stopElapsedMicros = stopElapsedRaw is num
+    final startedRaw = source['startedSensorNanos'];
+    final stopElapsedRaw = source['stopElapsedNanos'];
+    final startedSensorNanos = startedRaw is num ? startedRaw.toInt() : null;
+    final stopElapsedNanos = stopElapsedRaw is num
         ? stopElapsedRaw.toInt()
         : null;
-    final revisionRaw = source['revision'];
-    final revision = revisionRaw is num ? revisionRaw.toInt() : 0;
     return SessionRaceTimeline(
-      startedAtEpochMs: startedAtEpochMs,
-      splitMicros: splitMicros,
-      stopElapsedMicros: stopElapsedMicros,
-      revision: revision,
+      startedSensorNanos: startedSensorNanos,
+      splitElapsedNanos: splitElapsedNanos,
+      stopElapsedNanos: stopElapsedNanos,
     );
   }
 }
@@ -170,6 +141,7 @@ class SessionSnapshotMessage {
     required this.monitoringActive,
     required this.devices,
     required this.timeline,
+    this.hostSensorMinusElapsedNanos,
     this.selfDeviceId,
   });
 
@@ -177,6 +149,7 @@ class SessionSnapshotMessage {
   final bool monitoringActive;
   final List<SessionDevice> devices;
   final SessionRaceTimeline timeline;
+  final int? hostSensorMinusElapsedNanos;
   final String? selfDeviceId;
 
   Map<String, dynamic> toJson() {
@@ -186,6 +159,7 @@ class SessionSnapshotMessage {
       'monitoringActive': monitoringActive,
       'devices': devices.map((device) => device.toJson()).toList(),
       'timeline': timeline.toJson(),
+      'hostSensorMinusElapsedNanos': hostSensorMinusElapsedNanos,
       'selfDeviceId': selfDeviceId,
     };
   }
@@ -222,6 +196,8 @@ class SessionSnapshotMessage {
         monitoringActive: monitoringActive,
         devices: devices,
         timeline: SessionRaceTimeline.fromJson(decoded['timeline']),
+        hostSensorMinusElapsedNanos:
+            (decoded['hostSensorMinusElapsedNanos'] as num?)?.toInt(),
         selfDeviceId: decoded['selfDeviceId']?.toString(),
       );
     } catch (_) {
@@ -233,24 +209,21 @@ class SessionSnapshotMessage {
 class SessionTriggerRequestMessage {
   const SessionTriggerRequestMessage({
     required this.role,
-    required this.deviceTriggerMicros,
-    this.hostTriggerMicros,
+    required this.triggerSensorNanos,
+    this.mappedHostSensorNanos,
   });
 
   final SessionDeviceRole role;
-  final int deviceTriggerMicros;
-  final int? hostTriggerMicros;
+  final int triggerSensorNanos;
+  final int? mappedHostSensorNanos;
 
   Map<String, dynamic> toJson() {
-    final payload = <String, dynamic>{
+    return <String, dynamic>{
       'type': 'trigger_request',
       'role': role.name,
-      'deviceTriggerMicros': deviceTriggerMicros,
+      'triggerSensorNanos': triggerSensorNanos,
+      'mappedHostSensorNanos': mappedHostSensorNanos,
     };
-    if (hostTriggerMicros != null) {
-      payload['hostTriggerMicros'] = hostTriggerMicros;
-    }
-    return payload;
   }
 
   String toJsonString() => jsonEncode(toJson());
@@ -263,17 +236,16 @@ class SessionTriggerRequestMessage {
         return null;
       }
       final role = sessionDeviceRoleFromName(decoded['role']?.toString());
-      final deviceTriggerMicrosRaw =
-          decoded['deviceTriggerMicros'] ?? decoded['triggerMicros'];
-      if (role == null || deviceTriggerMicrosRaw is! num) {
+      final triggerSensorNanosRaw = decoded['triggerSensorNanos'];
+      if (role == null || triggerSensorNanosRaw is! num) {
         return null;
       }
-      final hostTriggerMicrosRaw = decoded['hostTriggerMicros'];
+      final mappedHostSensorNanosRaw = decoded['mappedHostSensorNanos'];
       return SessionTriggerRequestMessage(
         role: role,
-        deviceTriggerMicros: deviceTriggerMicrosRaw.toInt(),
-        hostTriggerMicros: hostTriggerMicrosRaw is num
-            ? hostTriggerMicrosRaw.toInt()
+        triggerSensorNanos: triggerSensorNanosRaw.toInt(),
+        mappedHostSensorNanos: mappedHostSensorNanosRaw is num
+            ? mappedHostSensorNanosRaw.toInt()
             : null,
       );
     } catch (_) {
@@ -282,45 +254,15 @@ class SessionTriggerRequestMessage {
   }
 }
 
-class SessionTimelineUpdateMessage {
-  const SessionTimelineUpdateMessage({required this.timeline});
-
-  final SessionRaceTimeline timeline;
-
-  Map<String, dynamic> toJson() {
-    return <String, dynamic>{
-      'type': 'timeline_update',
-      'timeline': timeline.toJson(),
-    };
-  }
-
-  String toJsonString() => jsonEncode(toJson());
-
-  static SessionTimelineUpdateMessage? tryParse(String raw) {
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map<String, dynamic> ||
-          decoded['type'] != 'timeline_update') {
-        return null;
-      }
-      return SessionTimelineUpdateMessage(
-        timeline: SessionRaceTimeline.fromJson(decoded['timeline']),
-      );
-    } catch (_) {
-      return null;
-    }
-  }
-}
-
 class SessionClockSyncRequestMessage {
-  const SessionClockSyncRequestMessage({required this.clientSentAtMicros});
+  const SessionClockSyncRequestMessage({required this.clientSendElapsedNanos});
 
-  final int clientSentAtMicros;
+  final int clientSendElapsedNanos;
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
       'type': 'clock_sync_request',
-      'clientSentAtMicros': clientSentAtMicros,
+      'clientSendElapsedNanos': clientSendElapsedNanos,
     };
   }
 
@@ -333,12 +275,12 @@ class SessionClockSyncRequestMessage {
           decoded['type'] != 'clock_sync_request') {
         return null;
       }
-      final clientSentAtMicros = decoded['clientSentAtMicros'];
-      if (clientSentAtMicros is! num) {
+      final clientSendElapsedNanosRaw = decoded['clientSendElapsedNanos'];
+      if (clientSendElapsedNanosRaw is! num) {
         return null;
       }
       return SessionClockSyncRequestMessage(
-        clientSentAtMicros: clientSentAtMicros.toInt(),
+        clientSendElapsedNanos: clientSendElapsedNanosRaw.toInt(),
       );
     } catch (_) {
       return null;
@@ -348,21 +290,21 @@ class SessionClockSyncRequestMessage {
 
 class SessionClockSyncResponseMessage {
   const SessionClockSyncResponseMessage({
-    required this.clientSentAtMicros,
-    required this.hostReceivedAtMicros,
-    required this.hostSentAtMicros,
+    required this.clientSendElapsedNanos,
+    required this.hostReceiveElapsedNanos,
+    required this.hostSendElapsedNanos,
   });
 
-  final int clientSentAtMicros;
-  final int hostReceivedAtMicros;
-  final int hostSentAtMicros;
+  final int clientSendElapsedNanos;
+  final int hostReceiveElapsedNanos;
+  final int hostSendElapsedNanos;
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
       'type': 'clock_sync_response',
-      'clientSentAtMicros': clientSentAtMicros,
-      'hostReceivedAtMicros': hostReceivedAtMicros,
-      'hostSentAtMicros': hostSentAtMicros,
+      'clientSendElapsedNanos': clientSendElapsedNanos,
+      'hostReceiveElapsedNanos': hostReceiveElapsedNanos,
+      'hostSendElapsedNanos': hostSendElapsedNanos,
     };
   }
 
@@ -375,18 +317,18 @@ class SessionClockSyncResponseMessage {
           decoded['type'] != 'clock_sync_response') {
         return null;
       }
-      final clientSentAtMicros = decoded['clientSentAtMicros'];
-      final hostReceivedAtMicros = decoded['hostReceivedAtMicros'];
-      final hostSentAtMicros = decoded['hostSentAtMicros'];
-      if (clientSentAtMicros is! num ||
-          hostReceivedAtMicros is! num ||
-          hostSentAtMicros is! num) {
+      final clientSendElapsedNanosRaw = decoded['clientSendElapsedNanos'];
+      final hostReceiveElapsedNanosRaw = decoded['hostReceiveElapsedNanos'];
+      final hostSendElapsedNanosRaw = decoded['hostSendElapsedNanos'];
+      if (clientSendElapsedNanosRaw is! num ||
+          hostReceiveElapsedNanosRaw is! num ||
+          hostSendElapsedNanosRaw is! num) {
         return null;
       }
       return SessionClockSyncResponseMessage(
-        clientSentAtMicros: clientSentAtMicros.toInt(),
-        hostReceivedAtMicros: hostReceivedAtMicros.toInt(),
-        hostSentAtMicros: hostSentAtMicros.toInt(),
+        clientSendElapsedNanos: clientSendElapsedNanosRaw.toInt(),
+        hostReceiveElapsedNanos: hostReceiveElapsedNanosRaw.toInt(),
+        hostSendElapsedNanos: hostSendElapsedNanosRaw.toInt(),
       );
     } catch (_) {
       return null;

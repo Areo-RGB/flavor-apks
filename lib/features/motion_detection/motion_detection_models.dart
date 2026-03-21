@@ -5,39 +5,39 @@ enum MotionTriggerType { start, stop, split }
 class MotionRunSnapshot {
   const MotionRunSnapshot({
     required this.isActive,
-    this.startedAtMicros,
-    required this.elapsedMicros,
-    required this.splitMicros,
+    this.startedSensorNanos,
+    required this.elapsedNanos,
+    required this.splitElapsedNanos,
   });
 
   final bool isActive;
-  final int? startedAtMicros;
-  final int elapsedMicros;
-  final List<int> splitMicros;
+  final int? startedSensorNanos;
+  final int elapsedNanos;
+  final List<int> splitElapsedNanos;
 
   factory MotionRunSnapshot.ready() {
     return const MotionRunSnapshot(
       isActive: false,
-      startedAtMicros: null,
-      elapsedMicros: 0,
-      splitMicros: <int>[],
+      startedSensorNanos: null,
+      elapsedNanos: 0,
+      splitElapsedNanos: <int>[],
     );
   }
 
   MotionRunSnapshot copyWith({
     bool? isActive,
-    int? startedAtMicros,
-    int? elapsedMicros,
-    List<int>? splitMicros,
-    bool clearStartedAt = false,
+    int? startedSensorNanos,
+    int? elapsedNanos,
+    List<int>? splitElapsedNanos,
+    bool clearStartedSensorNanos = false,
   }) {
     return MotionRunSnapshot(
       isActive: isActive ?? this.isActive,
-      startedAtMicros: clearStartedAt
+      startedSensorNanos: clearStartedSensorNanos
           ? null
-          : (startedAtMicros ?? this.startedAtMicros),
-      elapsedMicros: elapsedMicros ?? this.elapsedMicros,
-      splitMicros: splitMicros ?? this.splitMicros,
+          : (startedSensorNanos ?? this.startedSensorNanos),
+      elapsedNanos: elapsedNanos ?? this.elapsedNanos,
+      splitElapsedNanos: splitElapsedNanos ?? this.splitElapsedNanos,
     );
   }
 }
@@ -119,13 +119,13 @@ class MotionDetectionConfig {
 
 class MotionTriggerEvent {
   const MotionTriggerEvent({
-    required this.triggerMicros,
+    required this.triggerSensorNanos,
     required this.score,
     required this.type,
     required this.splitIndex,
   });
 
-  final int triggerMicros;
+  final int triggerSensorNanos;
   final double score;
   final MotionTriggerType type;
   final int splitIndex;
@@ -136,14 +136,14 @@ class MotionFrameStats {
     required this.rawScore,
     required this.baseline,
     required this.effectiveScore,
-    required this.timestampMicros,
+    required this.frameSensorNanos,
     this.triggerEvent,
   });
 
   final double rawScore;
   final double baseline;
   final double effectiveScore;
-  final int timestampMicros;
+  final int frameSensorNanos;
   final MotionTriggerEvent? triggerEvent;
 }
 
@@ -159,8 +159,8 @@ class MotionDetectionEngine {
   double _baseline = 0;
   int _aboveCount = 0;
   bool _armed = true;
-  int? _belowSinceMicros;
-  int? _lastTriggerMicros;
+  int? _belowSinceNanos;
+  int? _lastTriggerNanos;
   int _pulseCounter = 0;
 
   MotionDetectionConfig get config => _config;
@@ -173,14 +173,14 @@ class MotionDetectionEngine {
     _baseline = 0;
     _aboveCount = 0;
     _armed = true;
-    _belowSinceMicros = null;
-    _lastTriggerMicros = null;
+    _belowSinceNanos = null;
+    _lastTriggerNanos = null;
     _pulseCounter = 0;
   }
 
   MotionFrameStats process({
     required double rawScore,
-    required int timestampMicros,
+    required int frameSensorNanos,
   }) {
     if (_baseline == 0) {
       _baseline = rawScore;
@@ -194,16 +194,16 @@ class MotionDetectionEngine {
 
     if (!_armed) {
       if (effectiveScore < rearmsBelow) {
-        _belowSinceMicros ??= timestampMicros;
+        _belowSinceNanos ??= frameSensorNanos;
         final elapsed =
-            timestampMicros - (_belowSinceMicros ?? timestampMicros);
-        if (elapsed >= 200000) {
+            frameSensorNanos - (_belowSinceNanos ?? frameSensorNanos);
+        if (elapsed >= 200000000) {
           _armed = true;
           _aboveCount = 0;
-          _belowSinceMicros = null;
+          _belowSinceNanos = null;
         }
       } else {
-        _belowSinceMicros = null;
+        _belowSinceNanos = null;
       }
     }
 
@@ -214,20 +214,19 @@ class MotionDetectionEngine {
     }
 
     MotionTriggerEvent? trigger;
-    final cooldownMicros = _config.cooldownMs * 1000;
+    final cooldownNanos = _config.cooldownMs * 1000000;
     final cooldownPassed =
-        _lastTriggerMicros == null ||
-        (timestampMicros - (_lastTriggerMicros ?? 0)) >= cooldownMicros;
+        _lastTriggerNanos == null ||
+        (frameSensorNanos - (_lastTriggerNanos ?? 0)) >= cooldownNanos;
 
-    // Trigger off a single frame crossing the threshold, as athletes move fast!
     if (_armed && cooldownPassed && _aboveCount >= 1) {
-      _lastTriggerMicros = timestampMicros;
+      _lastTriggerNanos = frameSensorNanos;
       _aboveCount = 0;
       _armed = false;
-      _belowSinceMicros = null;
+      _belowSinceNanos = null;
       _pulseCounter += 1;
       trigger = MotionTriggerEvent(
-        triggerMicros: timestampMicros,
+        triggerSensorNanos: frameSensorNanos,
         score: effectiveScore,
         type: MotionTriggerType.split,
         splitIndex: _pulseCounter,
@@ -238,7 +237,7 @@ class MotionDetectionEngine {
       rawScore: rawScore,
       baseline: _baseline,
       effectiveScore: effectiveScore,
-      timestampMicros: timestampMicros,
+      frameSensorNanos: frameSensorNanos,
       triggerEvent: trigger,
     );
   }
@@ -254,8 +253,9 @@ double _clampDouble(double value, double min, double max) {
   return value;
 }
 
-String formatDurationMicros(int micros) {
-  final seconds = micros / Duration.microsecondsPerSecond;
+String formatDurationNanos(int nanos) {
+  const nanosPerSecond = 1000000000;
+  final seconds = nanos / nanosPerSecond;
   return '${seconds.toStringAsFixed(2)}s';
 }
 

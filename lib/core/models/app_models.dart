@@ -1,22 +1,25 @@
 class LastRunResult {
   const LastRunResult({
-    required this.startedAtEpochMs,
-    required this.splitMicros,
+    required this.startedSensorNanos,
+    required this.splitElapsedNanos,
   });
 
-  final int startedAtEpochMs;
-  final List<int> splitMicros;
+  final int startedSensorNanos;
+  final List<int> splitElapsedNanos;
 
   Map<String, dynamic> toJson() {
-    return {'startedAtEpochMs': startedAtEpochMs, 'splitMicros': splitMicros};
+    return {
+      'startedSensorNanos': startedSensorNanos,
+      'splitElapsedNanos': splitElapsedNanos,
+    };
   }
 
   static LastRunResult? fromJson(dynamic source) {
     if (source is! Map<String, dynamic>) {
       return null;
     }
-    final startedAt = source['startedAtEpochMs'];
-    final splits = source['splitMicros'];
+    final startedAt = source['startedSensorNanos'];
+    final splits = source['splitElapsedNanos'];
     if (startedAt is! int || splits is! List) {
       return null;
     }
@@ -27,8 +30,8 @@ class LastRunResult {
       }
     }
     return LastRunResult(
-      startedAtEpochMs: startedAt,
-      splitMicros: parsedSplits,
+      startedSensorNanos: startedAt,
+      splitElapsedNanos: parsedSplits,
     );
   }
 }

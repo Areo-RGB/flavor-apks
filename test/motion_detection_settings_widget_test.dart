@@ -1,9 +1,10 @@
-import 'dart:convert';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sprint_sync/core/repositories/local_repository.dart';
+import 'package:sprint_sync/core/services/native_sensor_bridge.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_controller.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_screen.dart';
@@ -13,7 +14,10 @@ void main() {
     tester,
   ) async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    final controller = MotionDetectionController(repository: LocalRepository());
+    final controller = MotionDetectionController(
+      repository: LocalRepository(),
+      nativeSensorBridge: _FakeNativeSensorBridge(),
+    );
 
     await tester.pumpWidget(
       MaterialApp(
@@ -41,9 +45,14 @@ void main() {
     controller.dispose();
   });
 
-  testWidgets('finish row renders stopwatch-formatted value', (tester) async {
+  testWidgets('finish row renders stopwatch-formatted nanos value', (
+    tester,
+  ) async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    final controller = MotionDetectionController(repository: LocalRepository());
+    final controller = MotionDetectionController(
+      repository: LocalRepository(),
+      nativeSensorBridge: _FakeNativeSensorBridge(),
+    );
 
     await tester.pumpWidget(
       MaterialApp(
@@ -59,19 +68,21 @@ void main() {
 
     controller.ingestTrigger(
       const MotionTriggerEvent(
-        triggerMicros: 1000000,
+        triggerSensorNanos: 1000000000,
         score: 0.21,
         type: MotionTriggerType.start,
         splitIndex: 0,
       ),
+      forwardToSync: false,
     );
     controller.ingestTrigger(
       const MotionTriggerEvent(
-        triggerMicros: 1750000,
+        triggerSensorNanos: 1750000000,
         score: 0.22,
         type: MotionTriggerType.stop,
         splitIndex: 0,
       ),
+      forwardToSync: false,
     );
     await tester.pump(const Duration(milliseconds: 10));
 
@@ -89,7 +100,10 @@ void main() {
 
   testWidgets('threshold slider updates motion config', (tester) async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    final controller = MotionDetectionController(repository: LocalRepository());
+    final controller = MotionDetectionController(
+      repository: LocalRepository(),
+      nativeSensorBridge: _FakeNativeSensorBridge(),
+    );
 
     await tester.pumpWidget(
       MaterialApp(
@@ -118,85 +132,56 @@ void main() {
     controller.dispose();
   });
 
-  testWidgets('latest saved run renders in last run section', (tester) async {
-    SharedPreferences.setMockInitialValues(<String, Object>{
-      'last_run_result_v1': jsonEncode({
-        'startedAtEpochMs': 2000,
-        'splitMicros': <int>[500000],
-      }),
-    });
-    final controller = MotionDetectionController(repository: LocalRepository());
+  testWidgets(
+    'native preview notice is shown only when preview mode is enabled',
+    (tester) async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final controller = MotionDetectionController(
+        repository: LocalRepository(),
+        nativeSensorBridge: _FakeNativeSensorBridge(),
+      );
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: MotionDetectionScreen(
-            controller: controller,
-            showPreview: false,
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MotionDetectionScreen(
+              controller: controller,
+              showPreview: true,
+            ),
           ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    await tester.pump(const Duration(milliseconds: 20));
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Camera preview is disabled in native monitoring mode.'),
+        findsOneWidget,
+      );
 
-    expect(find.byKey(const ValueKey<String>('saved_split_1')), findsOneWidget);
-    final savedSplit = tester.widget<Text>(
-      find.byKey(const ValueKey<String>('saved_split_1')),
-    );
-    expect(savedSplit.data, 'Finish: 0.50s');
-
-    controller.dispose();
-  });
-
-  testWidgets('preview overlay tracks tripwire position and status border', (
-    tester,
-  ) async {
-    SharedPreferences.setMockInitialValues(<String, Object>{});
-    final motionController = MotionDetectionController(repository: LocalRepository());
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: MotionDetectionScreen(
-            controller: motionController,
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    expect(_previewBorderColor(tester), const Color(0xFF005A8D));
-    expect(_tripwireColor(tester), const Color(0xFF005A8D));
-    expect(_tripwireAlignmentX(tester), closeTo(0, 0.001));
-
-    await motionController.updateRoiCenter(0.2);
-    await tester.pumpAndSettle();
-    expect(_tripwireAlignmentX(tester), closeTo(-0.6, 0.001));
-
-    motionController.dispose();
-  });
+      controller.dispose();
+    },
+  );
 }
 
-Color _previewBorderColor(WidgetTester tester) {
-  final decoratedBox = tester.widget<DecoratedBox>(
-    find.byKey(const ValueKey<String>('preview_status_border')),
-  );
-  final decoration = decoratedBox.decoration as BoxDecoration;
-  final border = decoration.border as Border;
-  return border.top.color;
-}
+class _FakeNativeSensorBridge extends NativeSensorBridge {
+  final StreamController<Map<String, dynamic>> _eventsController =
+      StreamController<Map<String, dynamic>>.broadcast();
 
-Color? _tripwireColor(WidgetTester tester) {
-  final tripwire = tester.widget<Container>(
-    find.byKey(const ValueKey<String>('preview_tripwire_line')),
-  );
-  return tripwire.color;
-}
+  @override
+  Stream<Map<String, dynamic>> get events => _eventsController.stream;
 
-double _tripwireAlignmentX(WidgetTester tester) {
-  final tripwireAlignment = tester.widget<Align>(
-    find.byKey(const ValueKey<String>('preview_tripwire_alignment')),
-  );
-  return (tripwireAlignment.alignment as Alignment).x;
+  @override
+  Future<void> startNativeMonitoring({
+    required Map<String, dynamic> config,
+  }) async {}
+
+  @override
+  Future<void> stopNativeMonitoring() async {}
+
+  @override
+  Future<void> updateNativeConfig({
+    required Map<String, dynamic> config,
+  }) async {}
+
+  @override
+  Future<void> resetNativeRun() async {}
 }

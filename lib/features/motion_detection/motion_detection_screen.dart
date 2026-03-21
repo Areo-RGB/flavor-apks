@@ -1,4 +1,3 @@
-import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_controller.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
@@ -23,9 +22,7 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    if (widget.showPreview) {
-      widget.controller.initializeCamera();
-    }
+    widget.controller.initializeCamera();
   }
 
   @override
@@ -36,9 +33,6 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (!widget.showPreview) {
-      return;
-    }
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused) {
       widget.controller.stopDetection();
@@ -60,16 +54,18 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
           padding: const EdgeInsets.all(16),
           children: [
             if (widget.showPreview)
-              _buildPreviewCard(
-                widget.controller.cameraController,
-                roiCenterX: config.roiCenterX,
+              const Card(
+                child: Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Text(
+                    'Camera preview is disabled in native monitoring mode.',
+                  ),
+                ),
               ),
             if (widget.showPreview) const SizedBox(height: 12),
             _buildStopwatchCard(),
             const SizedBox(height: 12),
             _buildCurrentSplitsCard(),
-            const SizedBox(height: 12),
-            _buildLastRunCard(),
             const SizedBox(height: 12),
             Card(
               child: ExpansionTile(
@@ -130,7 +126,7 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
                   Text(
                     'Effective: ${stats?.effectiveScore.toStringAsFixed(4) ?? '-'}',
                   ),
-                  Text('Timestamp: ${stats?.timestampMicros ?? '-'}'),
+                  Text('Frame Sensor Nanos: ${stats?.frameSensorNanos ?? '-'}'),
                   Text(
                     'Frames: ${widget.controller.processedFrameCount}'
                     '/${widget.controller.streamFrameCount}',
@@ -161,7 +157,7 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
                       return Align(
                         alignment: Alignment.centerLeft,
                         child: Text(
-                          '$label at ${event.triggerMicros}us '
+                          '$label at ${event.triggerSensorNanos}ns '
                           '(score ${event.score.toStringAsFixed(4)})',
                         ),
                       );
@@ -191,7 +187,7 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
               'Status: ${widget.controller.runStatusLabel}',
               key: const ValueKey<String>('run_status_text'),
             ),
-            Text('Marks: ${widget.controller.currentSplitMicros.length}'),
+            Text('Marks: ${widget.controller.currentSplitElapsedNanos.length}'),
             const SizedBox(height: 12),
             const Text('Timer'),
             Text(
@@ -221,117 +217,28 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
-            if (widget.controller.currentSplitMicros.isEmpty)
+            if (widget.controller.currentSplitElapsedNanos.isEmpty)
               const Text('No finish mark yet.')
             else
-              ...widget.controller.currentSplitMicros.asMap().entries.map((
-                entry,
-              ) {
-                final splitIndex = entry.key + 1;
-                final isFinish =
-                    !widget.controller.isRunActive &&
-                    splitIndex == widget.controller.currentSplitMicros.length;
-                final label = isFinish
-                    ? 'Finish'
-                    : formatSplitLabel(splitIndex);
-                return Text(
-                  '$label: ${formatDurationMicros(entry.value)}',
-                  key: ValueKey<String>('current_split_$splitIndex'),
-                );
-              }),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLastRunCard() {
-    final lastRun = widget.controller.lastRun;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Last Saved Run',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            if (lastRun == null || lastRun.splitMicros.isEmpty)
-              const Text('No saved run yet.')
-            else
-              ...lastRun.splitMicros.asMap().entries.map((entry) {
-                final splitIndex = entry.key + 1;
-                final isFinish = splitIndex == lastRun.splitMicros.length;
-                final label = isFinish
-                    ? 'Finish'
-                    : formatSplitLabel(splitIndex);
-                return Text(
-                  '$label: ${formatDurationMicros(entry.value)}',
-                  key: ValueKey<String>('saved_split_$splitIndex'),
-                );
-              }),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPreviewCard(
-    CameraController? controller, {
-    required double roiCenterX,
-  }) {
-    final statusColor = const Color(0xFF005A8D);
-    final tripwireAlignmentX = _tripwireAlignmentForRoiCenter(roiCenterX);
-
-    late final Widget previewChild;
-    late final double previewAspectRatio;
-
-    if (controller != null && controller.value.isInitialized) {
-      previewChild = CameraPreview(controller);
-      previewAspectRatio = controller.value.aspectRatio;
-    } else {
-      previewChild = const Center(child: Text('Camera preview unavailable'));
-      previewAspectRatio = 9 / 16;
-    }
-
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: AspectRatio(
-        aspectRatio: previewAspectRatio,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            ColoredBox(color: Colors.black12, child: previewChild),
-            Align(
-              key: const ValueKey<String>('preview_tripwire_alignment'),
-              alignment: Alignment(tripwireAlignmentX, 0),
-              child: IgnorePointer(
-                child: Container(
-                  key: const ValueKey<String>('preview_tripwire_line'),
-                  width: 2,
-                  height: double.infinity,
-                  color: statusColor,
-                ),
+              ...widget.controller.currentSplitElapsedNanos.asMap().entries.map(
+                (entry) {
+                  final splitIndex = entry.key + 1;
+                  final isFinish =
+                      !widget.controller.isRunActive &&
+                      splitIndex ==
+                          widget.controller.currentSplitElapsedNanos.length;
+                  final label = isFinish
+                      ? 'Finish'
+                      : formatSplitLabel(splitIndex);
+                  return Text(
+                    '$label: ${formatDurationNanos(entry.value)}',
+                    key: ValueKey<String>('current_split_$splitIndex'),
+                  );
+                },
               ),
-            ),
-            IgnorePointer(
-              child: DecoratedBox(
-                key: const ValueKey<String>('preview_status_border'),
-                decoration: BoxDecoration(
-                  border: Border.all(color: statusColor, width: 3),
-                ),
-              ),
-            ),
           ],
         ),
       ),
     );
-  }
-
-  double _tripwireAlignmentForRoiCenter(double roiCenterX) {
-    final clamped = roiCenterX.clamp(0.0, 1.0);
-    return (clamped * 2.0) - 1.0;
   }
 }

@@ -6,7 +6,7 @@ import 'package:sprint_sync/features/motion_detection/motion_detection_models.da
 
 class LocalRepository {
   static const _motionConfigKey = 'motion_detection_config_v2';
-  static const _lastRunKey = 'last_run_result_v1';
+  static const _lastRunKey = 'last_run_result_v2_nanos';
 
   Future<MotionDetectionConfig> loadMotionConfig() async {
     final prefs = await SharedPreferences.getInstance();

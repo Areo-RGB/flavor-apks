@@ -1,22 +1,34 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
+import 'package:sprint_sync/core/services/race_session_motion_bridge.dart';
 import 'package:sprint_sync/core/services/nearby_bridge.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_controller.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
 import 'package:sprint_sync/features/race_session/race_session_models.dart';
 
 class RaceSessionController extends ChangeNotifier {
+  static const int _maxClockSyncRttNanos = 400000000;
+  static const int _clockSyncStaleAfterNanos = 5000000000;
+  static final Stopwatch _elapsedClock = Stopwatch()..start();
+
+  static int _defaultElapsedNanos() {
+    return _elapsedClock.elapsedMicroseconds * 1000;
+  }
+
   RaceSessionController({
     required NearbyBridge nearbyBridge,
     required MotionDetectionController motionController,
     Future<void> Function()? startMonitoringAction,
     Future<void> Function()? stopMonitoringAction,
+    int Function()? nowElapsedNanos,
   }) : _nearbyBridge = nearbyBridge,
        _motionController = motionController,
        _startMonitoringAction = startMonitoringAction,
-       _stopMonitoringAction = stopMonitoringAction {
+       _stopMonitoringAction = stopMonitoringAction,
+       _nowElapsedNanos = nowElapsedNanos ?? _defaultElapsedNanos {
     _eventsSubscription = _nearbyBridge.events.listen(_onNearbyEvent);
+    _motionController.addListener(_onMotionControllerChanged);
     _devices[_localHostDeviceId] = const SessionDevice(
       id: _localHostDeviceId,
       name: 'This device',
@@ -26,30 +38,31 @@ class RaceSessionController extends ChangeNotifier {
   }
   static const String _serviceId = 'com.paul.sprintsync.nearby';
   static const String _localHostDeviceId = 'local-device';
-  static const int _clockSyncIntervalMicros = 3000000;
-  static const int _maxAcceptedRemoteTriggerSkewMicros = 500000;
   final NearbyBridge _nearbyBridge;
   final MotionDetectionController _motionController;
   final Future<void> Function()? _startMonitoringAction;
   final Future<void> Function()? _stopMonitoringAction;
+  final int Function() _nowElapsedNanos;
   final Map<String, NearbyEndpoint> _discovered = <String, NearbyEndpoint>{};
   final Set<String> _connectedEndpointIds = <String>{};
   final Map<String, SessionDevice> _devices = <String, SessionDevice>{};
   StreamSubscription<Map<String, dynamic>>? _eventsSubscription;
   SessionStage _stage = SessionStage.setup;
   SessionNetworkRole _networkRole = SessionNetworkRole.none;
+  SessionRaceTimeline _timeline = SessionRaceTimeline.idle();
   String _localDeviceId = _localHostDeviceId;
   bool _busy = false;
   bool _permissionsGranted = false;
   bool _monitoringActive = false;
+  int? _hostMinusClientElapsedNanos;
+  int? _hostClockRoundTripNanos;
+  int? _lastClockSyncElapsedNanos;
+  int? _hostSensorMinusElapsedNanos;
+  int? _lastClockSyncRequestNanos;
   String? _errorText;
-  Future<void> _payloadQueue = Future<void>.value();
-  int? _hostClockOffsetMicros;
-  int? _lastClockSyncAtMicros;
-  int? _lastClockSyncRequestAtMicros;
   SessionStage get stage => _stage;
   SessionNetworkRole get networkRole => _networkRole;
-  SessionRaceTimeline get timeline => _motionController.timeline;
+  SessionRaceTimeline get timeline => _timeline;
   bool get isHost => _networkRole == SessionNetworkRole.host;
   bool get isClient => _networkRole == SessionNetworkRole.client;
   bool get busy => _busy;
@@ -172,109 +185,153 @@ class RaceSessionController extends ChangeNotifier {
     if (!canStartMonitoring) return;
     _monitoringActive = true;
     _stage = SessionStage.monitoring;
+    _timeline = SessionRaceTimeline.idle();
     _motionController.resetRace();
     notifyListeners();
-    await _broadcastSnapshot();
     if (_startMonitoringAction != null) {
       await _startMonitoringAction();
     } else {
+      await _motionController.initializeCamera();
       await _motionController.startDetection();
     }
+    await _broadcastSnapshot();
   }
 
   Future<void> stopMonitoring() async {
     if (!isHost || !_monitoringActive) return;
-    _monitoringActive = false;
-    _stage = SessionStage.lobby;
-    notifyListeners();
-    await _broadcastSnapshot();
     if (_stopMonitoringAction != null) {
       await _stopMonitoringAction();
     } else {
       await _motionController.stopDetection();
     }
+    _monitoringActive = false;
+    _stage = SessionStage.lobby;
+    notifyListeners();
+    await _broadcastSnapshot();
   }
 
   Future<void> resetRun() async {
     if (!isHost) return;
+    _timeline = SessionRaceTimeline.idle();
     _motionController.resetRace();
     notifyListeners();
-    await _broadcastTimelineUpdate();
+    await _broadcastSnapshot();
   }
 
   Future<void> triggerManualEvent(SessionDeviceRole role) async {
     if (!isHost || _stage != SessionStage.lobby) return;
     if (role == SessionDeviceRole.split && !canShowSplitControls) return;
-    await _applyRoleEvent(role: role, triggerMicros: _nowMicros());
+    await _applyRoleEvent(
+      role: role,
+      triggerSensorNanos: _estimateLocalSensorNanosNow(),
+    );
   }
 
   Future<void> onLocalMotionPulse(MotionTriggerEvent trigger) async {
     if (!_monitoringActive) return;
     if (localRole == SessionDeviceRole.unassigned) {
-      _motionController.ingestDetectedPulse(trigger);
+      ingestStandalonePulse(_motionController, trigger);
       return;
     }
     if (isHost) {
       await _applyRoleEvent(
         role: localRole,
-        triggerMicros: trigger.triggerMicros,
+        triggerSensorNanos: trigger.triggerSensorNanos,
       );
       return;
     }
     if (isClient &&
         _connectedEndpointIds.isNotEmpty &&
         localRole != SessionDeviceRole.unassigned) {
-      unawaited(_maybeRequestClockSync());
+      final mappedHostSensorNanos = _mapClientSensorToHostSensor(
+        trigger.triggerSensorNanos,
+      );
+      if (mappedHostSensorNanos == null) {
+        _errorText =
+            'Trigger rejected: no valid clock lock (no sync, stale sync, or RTT > 400ms).';
+        notifyListeners();
+        return;
+      }
       await _nearbyBridge.sendBytes(
         endpointId: _connectedEndpointIds.first,
         messageJson: SessionTriggerRequestMessage(
           role: localRole,
-          deviceTriggerMicros: trigger.triggerMicros,
-          hostTriggerMicros: _estimatedHostTriggerMicros(trigger.triggerMicros),
+          triggerSensorNanos: trigger.triggerSensorNanos,
+          mappedHostSensorNanos: mappedHostSensorNanos,
         ).toJsonString(),
       );
     }
   }
 
+  void _onMotionControllerChanged() {
+    if (!isClient || !_monitoringActive) {
+      return;
+    }
+    final now = _nowElapsedNanos();
+    final lastReq = _lastClockSyncRequestNanos ?? 0;
+
+    final needsSync = !_isClockLockValid() || (now - lastReq > 2000000000);
+
+    if (needsSync && (now - lastReq > 1000000000)) {
+      _lastClockSyncRequestNanos = now;
+      unawaited(_requestClockSync());
+    }
+  }
+
   Future<void> _applyRoleEvent({
     required SessionDeviceRole role,
-    required int triggerMicros,
+    required int triggerSensorNanos,
   }) async {
     if (role == SessionDeviceRole.unassigned) return;
     if (role == SessionDeviceRole.split && !canShowSplitControls) return;
+    final startedSensorNanos = _timeline.startedSensorNanos;
     if (role == SessionDeviceRole.start) {
-      if (timeline.hasStarted) return;
+      if (_timeline.hasStarted) return;
+      _timeline = _timeline.copyWith(
+        startedSensorNanos: triggerSensorNanos,
+        splitElapsedNanos: <int>[],
+        clearStopElapsedNanos: true,
+      );
       _motionController.ingestTrigger(
         MotionTriggerEvent(
-          triggerMicros: triggerMicros,
+          triggerSensorNanos: triggerSensorNanos,
           score: 0,
           type: MotionTriggerType.start,
           splitIndex: 0,
         ),
+        forwardToSync: false,
       );
     } else if (role == SessionDeviceRole.split) {
-      if (!timeline.isRunning) return;
+      if (!_timeline.isRunning || startedSensorNanos == null) return;
+      final elapsedNanos = math.max(0, triggerSensorNanos - startedSensorNanos);
+      _timeline = _timeline.copyWith(
+        splitElapsedNanos: <int>[..._timeline.splitElapsedNanos, elapsedNanos],
+      );
       _motionController.ingestTrigger(
         MotionTriggerEvent(
-          triggerMicros: triggerMicros,
+          triggerSensorNanos: triggerSensorNanos,
           score: 0,
           type: MotionTriggerType.split,
-          splitIndex: timeline.splitMicros.length + 1,
+          splitIndex: _timeline.splitElapsedNanos.length,
         ),
+        forwardToSync: false,
       );
     } else if (role == SessionDeviceRole.stop) {
-      if (!timeline.isRunning) return;
+      if (!_timeline.isRunning || startedSensorNanos == null) return;
+      final elapsedNanos = math.max(0, triggerSensorNanos - startedSensorNanos);
+      _timeline = _timeline.copyWith(stopElapsedNanos: elapsedNanos);
       _motionController.ingestTrigger(
         MotionTriggerEvent(
-          triggerMicros: triggerMicros,
+          triggerSensorNanos: triggerSensorNanos,
           score: 0,
           type: MotionTriggerType.stop,
           splitIndex: 0,
         ),
+        forwardToSync: false,
       );
     }
     notifyListeners();
-    if (isHost) await _broadcastTimelineUpdate();
+    if (isHost) await _broadcastSnapshot();
   }
 
   void _onNearbyEvent(Map<String, dynamic> event) {
@@ -316,15 +373,18 @@ class RaceSessionController extends ChangeNotifier {
             role: SessionDeviceRole.unassigned,
             isLocal: false,
           );
+        } else if (isClient) {
+          unawaited(_requestClockSync());
         }
       } else {
         _connectedEndpointIds.remove(connection.endpointId);
         _devices.remove(connection.endpointId);
+        if (_connectedEndpointIds.isEmpty) {
+          _clearClockSyncLock();
+          _hostSensorMinusElapsedNanos = null;
+        }
       }
       notifyListeners();
-      if (isClient) {
-        unawaited(_requestClockSync(force: true));
-      }
       if (isHost) unawaited(_broadcastSnapshot());
       return;
     }
@@ -336,7 +396,9 @@ class RaceSessionController extends ChangeNotifier {
     if (type == 'payload_received') {
       final message = event['message']?.toString();
       if (message != null) {
-        _enqueuePayload(message, endpointId: event['endpointId']?.toString());
+        unawaited(
+          _onPayload(message, endpointId: event['endpointId']?.toString()),
+        );
       }
       return;
     }
@@ -349,66 +411,318 @@ class RaceSessionController extends ChangeNotifier {
   Future<void> _onPayload(String raw, {required String? endpointId}) async {
     final snapshot = SessionSnapshotMessage.tryParse(raw);
     if (snapshot != null && isClient) {
-      await _applyClientSnapshot(snapshot);
-      return;
-    }
-    final timelineUpdate = SessionTimelineUpdateMessage.tryParse(raw);
-    if (timelineUpdate != null && isClient) {
-      if (_applyRemoteTimelineIfNewer(timelineUpdate.timeline)) {
-        notifyListeners();
+      final wasMonitoring = _monitoringActive;
+      final previousTimeline = _timeline;
+      _stage = snapshot.stage;
+      _monitoringActive = snapshot.monitoringActive;
+      _timeline = snapshot.timeline;
+      final previousHostSensorMinusElapsedNanos = _hostSensorMinusElapsedNanos;
+      _hostSensorMinusElapsedNanos =
+          snapshot.hostSensorMinusElapsedNanos ?? _hostSensorMinusElapsedNanos;
+      _localDeviceId = snapshot.selfDeviceId ?? _localDeviceId;
+      _devices
+        ..clear()
+        ..addEntries(
+          snapshot.devices.map((device) {
+            final isLocal = device.id == _localDeviceId;
+            return MapEntry(device.id, device.copyWith(isLocal: isLocal));
+          }),
+        );
+      if (!wasMonitoring && _monitoringActive) {
+        _clearClockSyncLock();
+        if (_startMonitoringAction != null) {
+          await _startMonitoringAction();
+        } else {
+          await _motionController.initializeCamera();
+          await _motionController.startDetection();
+        }
+        unawaited(_requestClockSync());
+      } else if (wasMonitoring && !_monitoringActive) {
+        if (_stopMonitoringAction != null) {
+          await _stopMonitoringAction();
+        } else {
+          await _motionController.stopDetection();
+        }
       }
+      final timelineChanged =
+          previousTimeline.startedSensorNanos != _timeline.startedSensorNanos ||
+          previousTimeline.stopElapsedNanos != _timeline.stopElapsedNanos ||
+          !listEquals(
+            previousTimeline.splitElapsedNanos,
+            _timeline.splitElapsedNanos,
+          );
+      final hostOffsetChanged =
+          previousHostSensorMinusElapsedNanos != _hostSensorMinusElapsedNanos;
+      if (timelineChanged || hostOffsetChanged) {
+        _syncMotionControllerFromTimeline();
+      }
+      if (_monitoringActive && !_isClockLockValid()) {
+        unawaited(_requestClockSync());
+      }
+      notifyListeners();
       return;
     }
     final clockSyncRequest = SessionClockSyncRequestMessage.tryParse(raw);
     if (clockSyncRequest != null && isHost && endpointId != null) {
-      final hostReceivedAtMicros = _nowMicros();
+      final hostReceiveElapsedNanos = _nowClockSyncElapsedNanos(
+        requireSensorDomainIfMonitoring: true,
+      );
+      if (hostReceiveElapsedNanos == null) {
+        return;
+      }
+      final hostSendElapsedNanos = _nowClockSyncElapsedNanos(
+        requireSensorDomainIfMonitoring: true,
+      );
+      if (hostSendElapsedNanos == null) {
+        return;
+      }
       await _nearbyBridge.sendBytes(
         endpointId: endpointId,
         messageJson: SessionClockSyncResponseMessage(
-          clientSentAtMicros: clockSyncRequest.clientSentAtMicros,
-          hostReceivedAtMicros: hostReceivedAtMicros,
-          hostSentAtMicros: _nowMicros(),
+          clientSendElapsedNanos: clockSyncRequest.clientSendElapsedNanos,
+          hostReceiveElapsedNanos: hostReceiveElapsedNanos,
+          hostSendElapsedNanos: hostSendElapsedNanos,
         ).toJsonString(),
       );
       return;
     }
     final clockSyncResponse = SessionClockSyncResponseMessage.tryParse(raw);
     if (clockSyncResponse != null && isClient) {
-      _syncHostClockOffset(clockSyncResponse);
-      notifyListeners();
+      final clientReceiveElapsedNanos = _nowClockSyncElapsedNanos(
+        requireSensorDomainIfMonitoring: true,
+      );
+      if (clientReceiveElapsedNanos == null) {
+        return;
+      }
+      _updateHostClockOffset(
+        clientSendElapsedNanos: clockSyncResponse.clientSendElapsedNanos,
+        hostReceiveElapsedNanos: clockSyncResponse.hostReceiveElapsedNanos,
+        clientReceiveElapsedNanos: clientReceiveElapsedNanos,
+      );
       return;
     }
     final triggerRequest = SessionTriggerRequestMessage.tryParse(raw);
     if (triggerRequest != null && isHost && endpointId != null) {
       final role = _devices[endpointId]?.role ?? SessionDeviceRole.unassigned;
       if (role == triggerRequest.role) {
+        final mappedHostSensorNanos = triggerRequest.mappedHostSensorNanos;
+        if (mappedHostSensorNanos == null) {
+          _errorText =
+              'Rejected trigger from $endpointId: missing mappedHostSensorNanos.';
+          notifyListeners();
+          return;
+        }
         await _applyRoleEvent(
           role: role,
-          triggerMicros: _canonicalizeRemoteTriggerMicros(triggerRequest),
+          triggerSensorNanos: mappedHostSensorNanos,
         );
       }
+      return;
     }
+  }
+
+  Future<void> _requestClockSync() async {
+    if (!isClient || _connectedEndpointIds.isEmpty) {
+      return;
+    }
+    final clientSendElapsedNanos = _nowClockSyncElapsedNanos(
+      requireSensorDomainIfMonitoring: true,
+    );
+    if (clientSendElapsedNanos == null) {
+      return;
+    }
+    final endpointId = _connectedEndpointIds.first;
+    await _nearbyBridge.sendBytes(
+      endpointId: endpointId,
+      messageJson: SessionClockSyncRequestMessage(
+        clientSendElapsedNanos: clientSendElapsedNanos,
+      ).toJsonString(),
+    );
+  }
+
+  void _updateHostClockOffset({
+    required int clientSendElapsedNanos,
+    required int hostReceiveElapsedNanos,
+    required int clientReceiveElapsedNanos,
+  }) {
+    if (clientReceiveElapsedNanos < clientSendElapsedNanos) {
+      _clearClockSyncLock();
+      _errorText = 'Clock sync rejected: receive time moved backwards.';
+      notifyListeners();
+      return;
+    }
+    final roundTripNanos = math.max(
+      0,
+      clientReceiveElapsedNanos - clientSendElapsedNanos,
+    );
+    _hostClockRoundTripNanos = roundTripNanos;
+    if (roundTripNanos > _maxClockSyncRttNanos) {
+      _hostMinusClientElapsedNanos = null;
+      _lastClockSyncElapsedNanos = null;
+      _errorText =
+          'Clock sync rejected: RTT ${(roundTripNanos / 1000000).toStringAsFixed(1)}ms exceeds 400ms.';
+      notifyListeners();
+      return;
+    }
+    final estimatedClientAtHostReceiveElapsedNanos =
+        clientSendElapsedNanos + (roundTripNanos ~/ 2);
+    final sampleOffsetNanos =
+        hostReceiveElapsedNanos - estimatedClientAtHostReceiveElapsedNanos;
+    if (_hostMinusClientElapsedNanos == null) {
+      _hostMinusClientElapsedNanos = sampleOffsetNanos;
+    } else {
+      _hostMinusClientElapsedNanos =
+          ((_hostMinusClientElapsedNanos! * 3) + sampleOffsetNanos) ~/ 4;
+    }
+    _lastClockSyncElapsedNanos = clientReceiveElapsedNanos;
+    _errorText = null;
+    if (isClient && _timeline.hasStarted) {
+      _syncMotionControllerFromTimeline();
+      notifyListeners();
+    }
+  }
+
+  int? _mapClientSensorToHostSensor(int clientSensorNanos) {
+    if (!_isClockLockValid()) {
+      return null;
+    }
+    final clientSensorMinusElapsedNanos =
+        _motionController.sensorMinusElapsedNanos;
+    final hostMinusClientElapsedNanos = _hostMinusClientElapsedNanos;
+    final hostSensorMinusElapsedNanos = _hostSensorMinusElapsedNanos;
+    if (clientSensorMinusElapsedNanos == null ||
+        hostMinusClientElapsedNanos == null ||
+        hostSensorMinusElapsedNanos == null) {
+      return null;
+    }
+    final clientElapsedNanos =
+        clientSensorNanos - clientSensorMinusElapsedNanos;
+    final hostElapsedNanos = clientElapsedNanos + hostMinusClientElapsedNanos;
+    return hostElapsedNanos + hostSensorMinusElapsedNanos;
+  }
+
+  int? _mapHostSensorToLocalSensor(int hostSensorNanos) {
+    final hostSensorMinusElapsedNanos = _hostSensorMinusElapsedNanos;
+    final hostMinusClientElapsedNanos = _hostMinusClientElapsedNanos;
+    final localSensorMinusElapsedNanos =
+        _motionController.sensorMinusElapsedNanos;
+    if (hostSensorMinusElapsedNanos == null ||
+        hostMinusClientElapsedNanos == null ||
+        localSensorMinusElapsedNanos == null) {
+      return null;
+    }
+    final hostElapsedNanos = hostSensorNanos - hostSensorMinusElapsedNanos;
+    final localElapsedNanos = hostElapsedNanos - hostMinusClientElapsedNanos;
+    return localElapsedNanos + localSensorMinusElapsedNanos;
+  }
+
+  void _syncMotionControllerFromTimeline() {
+    if (!_timeline.hasStarted) {
+      syncMotionControllerFromTimeline(_motionController, _timeline);
+      return;
+    }
+    if (!isClient) {
+      syncMotionControllerFromTimeline(_motionController, _timeline);
+      return;
+    }
+    final hostStartSensorNanos = _timeline.startedSensorNanos;
+    if (hostStartSensorNanos == null) {
+      return;
+    }
+    final localStartSensorNanos = _mapHostSensorToLocalSensor(
+      hostStartSensorNanos,
+    );
+    if (localStartSensorNanos == null) {
+      return;
+    }
+    syncMotionControllerFromTimeline(
+      _motionController,
+      _timeline,
+      startedSensorNanosOverride: localStartSensorNanos,
+    );
+  }
+
+  bool _isClockLockValid() {
+    final offset = _hostMinusClientElapsedNanos;
+    final roundTripNanos = _hostClockRoundTripNanos;
+    final lastSyncElapsedNanos = _lastClockSyncElapsedNanos;
+    if (offset == null ||
+        roundTripNanos == null ||
+        lastSyncElapsedNanos == null) {
+      return false;
+    }
+    if (roundTripNanos > _maxClockSyncRttNanos) {
+      return false;
+    }
+    final nowElapsedNanos = _nowClockSyncElapsedNanos(
+      requireSensorDomainIfMonitoring: _monitoringActive,
+    );
+    if (nowElapsedNanos == null) {
+      return false;
+    }
+    final ageNanos = nowElapsedNanos - lastSyncElapsedNanos;
+    if (ageNanos < 0) {
+      return false;
+    }
+    if (ageNanos > _clockSyncStaleAfterNanos) {
+      return false;
+    }
+    if (_motionController.sensorMinusElapsedNanos == null) {
+      return false;
+    }
+    return _hostSensorMinusElapsedNanos != null;
+  }
+
+  int _estimateLocalSensorNanosNow() {
+    final sensorMinusElapsedNanos = _motionController.sensorMinusElapsedNanos;
+    final nowElapsedNanos = _nowElapsedNanos();
+    if (sensorMinusElapsedNanos == null) {
+      return nowElapsedNanos;
+    }
+    return nowElapsedNanos + sensorMinusElapsedNanos;
+  }
+
+  int? _sensorDerivedElapsedNanos() {
+    final sensorMinusElapsedNanos = _motionController.sensorMinusElapsedNanos;
+    final latestFrameSensorNanos =
+        _motionController.latestStats?.frameSensorNanos;
+    if (sensorMinusElapsedNanos == null || latestFrameSensorNanos == null) {
+      return null;
+    }
+    return latestFrameSensorNanos - sensorMinusElapsedNanos;
+  }
+
+  int? _nowClockSyncElapsedNanos({
+    bool requireSensorDomainIfMonitoring = false,
+  }) {
+    final sensorElapsedNanos = _sensorDerivedElapsedNanos();
+    if (sensorElapsedNanos != null) {
+      return sensorElapsedNanos;
+    }
+    if (requireSensorDomainIfMonitoring && _monitoringActive) {
+      return null;
+    }
+    return _nowElapsedNanos();
   }
 
   Future<void> _broadcastSnapshot() async {
     if (!isHost) return;
     final deviceSnapshot = _devices.values.toList();
-    await _broadcastMessageToClients((endpointId) {
-      return SessionSnapshotMessage(
-        stage: _stage,
-        monitoringActive: _monitoringActive,
-        devices: deviceSnapshot,
-        timeline: timeline,
-        selfDeviceId: endpointId,
-      ).toJsonString();
-    });
-  }
-
-  Future<void> _broadcastTimelineUpdate() async {
-    if (!isHost) return;
-    await _broadcastMessageToClients((_) {
-      return SessionTimelineUpdateMessage(timeline: timeline).toJsonString();
-    });
+    final hostSensorMinusElapsedNanos =
+        _motionController.sensorMinusElapsedNanos;
+    for (final endpointId in _connectedEndpointIds.toList()) {
+      await _nearbyBridge.sendBytes(
+        endpointId: endpointId,
+        messageJson: SessionSnapshotMessage(
+          stage: _stage,
+          monitoringActive: _monitoringActive,
+          devices: deviceSnapshot,
+          timeline: _timeline,
+          hostSensorMinusElapsedNanos: hostSensorMinusElapsedNanos,
+          selfDeviceId: endpointId,
+        ).toJsonString(),
+      );
+    }
   }
 
   Future<void> _ensurePermissions() async {
@@ -432,12 +746,13 @@ class RaceSessionController extends ChangeNotifier {
   void _resetSession(SessionNetworkRole networkRole) {
     _networkRole = networkRole;
     _stage = SessionStage.setup;
+    _timeline = SessionRaceTimeline.idle();
     _monitoringActive = false;
+    _clearClockSyncLock();
+    _lastClockSyncRequestNanos = null;
+    _hostSensorMinusElapsedNanos = null;
     _discovered.clear();
     _connectedEndpointIds.clear();
-    _hostClockOffsetMicros = null;
-    _lastClockSyncAtMicros = null;
-    _lastClockSyncRequestAtMicros = null;
     _devices
       ..clear()
       ..[_localHostDeviceId] = const SessionDevice(
@@ -447,178 +762,19 @@ class RaceSessionController extends ChangeNotifier {
         isLocal: true,
       );
     _localDeviceId = _localHostDeviceId;
-    _motionController.resetRace(revision: 0);
+    _motionController.resetRace();
+  }
+
+  void _clearClockSyncLock() {
+    _hostMinusClientElapsedNanos = null;
+    _hostClockRoundTripNanos = null;
+    _lastClockSyncElapsedNanos = null;
   }
 
   @override
   void dispose() {
+    _motionController.removeListener(_onMotionControllerChanged);
     _eventsSubscription?.cancel();
     super.dispose();
   }
-
-  void _enqueuePayload(String raw, {required String? endpointId}) {
-    _payloadQueue = _payloadQueue
-        .then((_) => _onPayload(raw, endpointId: endpointId))
-        .catchError((Object error, StackTrace stackTrace) {
-          _errorText = 'Payload processing failed: $error';
-          notifyListeners();
-        });
-  }
-
-  Future<void> _applyClientSnapshot(SessionSnapshotMessage snapshot) async {
-    final wasMonitoring = _monitoringActive;
-    _stage = snapshot.stage;
-    _monitoringActive = snapshot.monitoringActive;
-    _localDeviceId = snapshot.selfDeviceId ?? _localDeviceId;
-    _devices
-      ..clear()
-      ..addEntries(
-        snapshot.devices.map((device) {
-          final isLocal = device.id == _localDeviceId;
-          return MapEntry(device.id, device.copyWith(isLocal: isLocal));
-        }),
-      );
-    _applyRemoteTimelineIfNewer(snapshot.timeline);
-    notifyListeners();
-    if (!wasMonitoring && _monitoringActive) {
-      unawaited(_requestClockSync(force: true));
-      await _startLocalMonitoring();
-      return;
-    }
-    if (wasMonitoring && !_monitoringActive) {
-      await _stopLocalMonitoring();
-      return;
-    }
-    if (_monitoringActive) {
-      unawaited(_maybeRequestClockSync());
-    }
-  }
-
-  bool _applyRemoteTimelineIfNewer(SessionRaceTimeline remoteTimeline) {
-    if (remoteTimeline.revision < timeline.revision) {
-      return false;
-    }
-    if (remoteTimeline.revision == timeline.revision &&
-        _timelinesEqual(remoteTimeline, timeline)) {
-      return false;
-    }
-    _motionController.applyTimeline(remoteTimeline);
-    return true;
-  }
-
-  bool _timelinesEqual(SessionRaceTimeline left, SessionRaceTimeline right) {
-    return left.startedAtEpochMs == right.startedAtEpochMs &&
-        left.stopElapsedMicros == right.stopElapsedMicros &&
-        left.revision == right.revision &&
-        listEquals(left.splitMicros, right.splitMicros);
-  }
-
-  Future<void> _startLocalMonitoring() async {
-    if (_startMonitoringAction != null) {
-      await _startMonitoringAction();
-      return;
-    }
-    await _motionController.startDetection();
-  }
-
-  Future<void> _stopLocalMonitoring() async {
-    if (_stopMonitoringAction != null) {
-      await _stopMonitoringAction();
-      return;
-    }
-    await _motionController.stopDetection();
-  }
-
-  Future<void> _broadcastMessageToClients(
-    String Function(String endpointId) buildMessage,
-  ) async {
-    final endpoints = _connectedEndpointIds.toList();
-    if (endpoints.isEmpty) {
-      return;
-    }
-    final futures = <Future<void>>[];
-    for (final endpointId in endpoints) {
-      futures.add(
-        _nearbyBridge
-            .sendBytes(
-              endpointId: endpointId,
-              messageJson: buildMessage(endpointId),
-            )
-            .catchError((Object error, StackTrace stackTrace) {
-              _errorText = 'Nearby sync failed: $error';
-            }),
-      );
-    }
-    await Future.wait(futures);
-    if (_errorText != null) {
-      notifyListeners();
-    }
-  }
-
-  Future<void> _maybeRequestClockSync() async {
-    final nowMicros = _nowMicros();
-    final lastSyncAtMicros = _lastClockSyncAtMicros;
-    if (lastSyncAtMicros != null &&
-        nowMicros - lastSyncAtMicros < _clockSyncIntervalMicros) {
-      return;
-    }
-    await _requestClockSync();
-  }
-
-  Future<void> _requestClockSync({bool force = false}) async {
-    if (!isClient || _connectedEndpointIds.isEmpty) {
-      return;
-    }
-    final nowMicros = _nowMicros();
-    final lastRequestedAtMicros = _lastClockSyncRequestAtMicros;
-    if (!force &&
-        lastRequestedAtMicros != null &&
-        nowMicros - lastRequestedAtMicros < _clockSyncIntervalMicros) {
-      return;
-    }
-    _lastClockSyncRequestAtMicros = nowMicros;
-    await _nearbyBridge.sendBytes(
-      endpointId: _connectedEndpointIds.first,
-      messageJson: SessionClockSyncRequestMessage(
-        clientSentAtMicros: nowMicros,
-      ).toJsonString(),
-    );
-  }
-
-  int? _estimatedHostTriggerMicros(int deviceTriggerMicros) {
-    final offsetMicros = _hostClockOffsetMicros;
-    final lastSyncAtMicros = _lastClockSyncAtMicros;
-    if (offsetMicros == null || lastSyncAtMicros == null) {
-      return null;
-    }
-    if (_nowMicros() - lastSyncAtMicros > (_clockSyncIntervalMicros * 2)) {
-      return null;
-    }
-    return deviceTriggerMicros + offsetMicros;
-  }
-
-  int _canonicalizeRemoteTriggerMicros(SessionTriggerRequestMessage request) {
-    final nowMicros = _nowMicros();
-    final estimatedHostTriggerMicros = request.hostTriggerMicros;
-    if (estimatedHostTriggerMicros == null) {
-      return nowMicros;
-    }
-    final skew = (estimatedHostTriggerMicros - nowMicros).abs();
-    if (skew > _maxAcceptedRemoteTriggerSkewMicros) {
-      return nowMicros;
-    }
-    return estimatedHostTriggerMicros;
-  }
-
-  void _syncHostClockOffset(SessionClockSyncResponseMessage response) {
-    final clientReceivedAtMicros = _nowMicros();
-    final offsetMicros =
-        ((response.hostReceivedAtMicros - response.clientSentAtMicros) +
-            (response.hostSentAtMicros - clientReceivedAtMicros)) ~/
-        2;
-    _hostClockOffsetMicros = offsetMicros;
-    _lastClockSyncAtMicros = clientReceivedAtMicros;
-  }
-
-  int _nowMicros() => DateTime.now().microsecondsSinceEpoch;
 }

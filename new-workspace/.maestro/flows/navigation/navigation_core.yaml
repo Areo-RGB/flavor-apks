@@ -1,0 +1,31 @@
+appId: com.paul.sprintsync
+name: Navigation Core (Setup -> Lobby -> Monitoring -> Lobby)
+tags:
+  - navigation
+  - core
+env:
+  SETUP_TITLE: Setup Session
+  LOBBY_TITLE: Race Lobby
+  MONITORING_TITLE: Monitoring
+---
+- launchApp:
+    clearState: true
+- runFlow:
+    file: ../shared/setup_host_join.yaml
+    env:
+      SETUP_TITLE: ${SETUP_TITLE}
+- runFlow:
+    file: ../shared/go_to_lobby.yaml
+    env:
+      SETUP_TITLE: ${SETUP_TITLE}
+      LOBBY_TITLE: ${LOBBY_TITLE}
+- runFlow:
+    file: ../shared/start_monitoring.yaml
+    env:
+      LOBBY_TITLE: ${LOBBY_TITLE}
+      MONITORING_TITLE: ${MONITORING_TITLE}
+- runFlow:
+    file: ../shared/stop_monitoring.yaml
+    env:
+      LOBBY_TITLE: ${LOBBY_TITLE}
+      MONITORING_TITLE: ${MONITORING_TITLE}
