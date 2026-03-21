@@ -21,6 +21,7 @@ function fail(message, detail = '') {
   process.exit(1);
 }
 
+const appId = 'com.paul.sprintsync';
 const apkPath = resolve(
   process.cwd(),
   'build',
@@ -58,6 +59,7 @@ if (readyDeviceIds.length === 0) {
 }
 
 let failedInstalls = 0;
+let failedLaunches = 0;
 for (const deviceId of readyDeviceIds) {
   console.log(`Installing debug APK on ${deviceId}...`);
   const installResult = run('adb', ['-s', deviceId, 'install', '-r', apkPath]);
@@ -73,10 +75,43 @@ for (const deviceId of readyDeviceIds) {
   }
 
   console.log(`Install success on ${deviceId}.`);
+
+  console.log(`Launching ${appId} on ${deviceId}...`);
+  const launchResult = run('adb', [
+    '-s',
+    deviceId,
+    'shell',
+    'monkey',
+    '-p',
+    appId,
+    '-c',
+    'android.intent.category.LAUNCHER',
+    '1',
+  ]);
+  const launchOutput = `${launchResult.stdout}\n${launchResult.stderr}`.trim();
+  const launchSucceeded =
+    launchResult.status === 0 &&
+    !launchOutput.includes('No activities found') &&
+    !launchOutput.includes('Error');
+
+  if (!launchSucceeded) {
+    failedLaunches += 1;
+    console.error(`Launch failed on ${deviceId}.`);
+    if (launchOutput.length > 0) {
+      console.error(launchOutput);
+    }
+    continue;
+  }
+
+  console.log(`Launch success on ${deviceId}.`);
 }
 
 if (failedInstalls > 0) {
   fail(`${failedInstalls} device install(s) failed.`);
 }
 
-console.log(`Installed debug APK on ${readyDeviceIds.length} device(s).`);
+if (failedLaunches > 0) {
+  fail(`${failedLaunches} device launch(es) failed.`);
+}
+
+console.log(`Installed and launched debug APK on ${readyDeviceIds.length} device(s).`);

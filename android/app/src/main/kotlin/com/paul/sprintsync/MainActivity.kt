@@ -54,6 +54,7 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
     private var activeRole: NearbyRole = NearbyRole.NONE
     private var pendingEndpointId: String? = null
     private var requestedEndpointId: String? = null
+    private val endpointNamesById = mutableMapOf<String, String>()
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -167,6 +168,18 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
         return value
     }
 
+    private fun localEndpointName(): String {
+        val model = Build.MODEL?.trim().orEmpty()
+        if (model.isNotEmpty()) {
+            return model
+        }
+        val device = Build.DEVICE?.trim().orEmpty()
+        if (device.isNotEmpty()) {
+            return device
+        }
+        return "Android Device"
+    }
+
     private fun requestPermissions(result: MethodChannel.Result) {
         if (pendingPermissionResult != null) {
             result.error("permissions_in_flight", "A permission request is already running.", null)
@@ -234,11 +247,12 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
         result: MethodChannel.Result,
     ) {
         normalizeForRole(NearbyRole.HOST)
+        val effectiveEndpointName = localEndpointName().takeIf { it.isNotBlank() } ?: endpointName
         val options = AdvertisingOptions.Builder()
             .setStrategy(STRATEGY)
             .build()
         connectionsClient
-            .startAdvertising(endpointName, serviceId, connectionLifecycleCallback, options)
+            .startAdvertising(effectiveEndpointName, serviceId, connectionLifecycleCallback, options)
             .addOnSuccessListener { result.success(null) }
             .addOnFailureListener { error ->
                 clearTransientState()
@@ -310,8 +324,9 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
         }
 
         requestedEndpointId = endpointId
+        val effectiveEndpointName = localEndpointName().takeIf { it.isNotBlank() } ?: endpointName
         connectionsClient
-            .requestConnection(endpointName, endpointId, connectionLifecycleCallback)
+            .requestConnection(effectiveEndpointName, endpointId, connectionLifecycleCallback)
             .addOnSuccessListener { result.success(null) }
             .addOnFailureListener { error ->
                 if (requestedEndpointId == endpointId) {
@@ -398,6 +413,7 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
         pendingEndpointId = null
         requestedEndpointId = null
         connectedEndpointIds.clear()
+        endpointNamesById.clear()
     }
 
     private fun clearEndpointState(endpointId: String) {
@@ -408,6 +424,7 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
             requestedEndpointId = null
         }
         connectedEndpointIds.remove(endpointId)
+        endpointNamesById.remove(endpointId)
     }
 
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
@@ -438,6 +455,8 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
 
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
+            val endpointName = info.endpointName.trim().ifEmpty { endpointId }
+            endpointNamesById[endpointId] = endpointName
             val hasPendingDifferent = pendingEndpointId != null && pendingEndpointId != endpointId
             val clientBusy = activeRole == NearbyRole.CLIENT &&
                 connectedEndpointIds.isNotEmpty() &&
@@ -449,6 +468,7 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
                     mapOf(
                         "type" to "connection_result",
                         "endpointId" to endpointId,
+                        "endpointName" to endpointNamesById[endpointId],
                         "connected" to false,
                         "statusCode" to ConnectionsStatusCodes.STATUS_ENDPOINT_IO_ERROR,
                         "statusMessage" to "Connection rejected: competing connection state.",
@@ -471,6 +491,7 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
                         mapOf(
                             "type" to "connection_result",
                             "endpointId" to endpointId,
+                            "endpointName" to endpointNamesById[endpointId],
                             "connected" to false,
                             "statusCode" to ConnectionsStatusCodes.STATUS_ENDPOINT_IO_ERROR,
                             "statusMessage" to (error.localizedMessage
@@ -487,6 +508,7 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
         ) {
             val status = resolution.status
             val isConnected = status.statusCode == ConnectionsStatusCodes.STATUS_OK
+            val endpointName = endpointNamesById[endpointId]
             if (isConnected) {
                 connectedEndpointIds.add(endpointId)
                 clearEndpointState(endpointId)
@@ -501,6 +523,7 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
                 mapOf(
                     "type" to "connection_result",
                     "endpointId" to endpointId,
+                    "endpointName" to endpointName,
                     "connected" to isConnected,
                     "statusCode" to status.statusCode,
                     "statusMessage" to status.statusMessage,

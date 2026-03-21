@@ -74,6 +74,19 @@ class RaceSessionController extends ChangeNotifier {
   bool get permissionsGranted => _permissionsGranted;
   bool get monitoringActive => _monitoringActive;
   String? get errorText => _errorText;
+  bool get hasConnectedPeers => _connectedEndpointIds.isNotEmpty;
+  String get monitoringConnectionTypeLabel => 'Nearby (auto BT/Wi-Fi Direct)';
+  int? get monitoringLatencyMs {
+    if (!isClient || !hasConnectedPeers || !_isClockLockValid()) {
+      return null;
+    }
+    final roundTripNanos = _hostClockRoundTripNanos;
+    if (roundTripNanos == null) {
+      return null;
+    }
+    return (roundTripNanos / 1000000).round();
+  }
+
   List<NearbyEndpoint> get discoveredEndpoints => _discovered.values.toList();
   List<SessionDevice> get devices => _devices.values.toList();
   int get totalDeviceCount {
@@ -321,6 +334,7 @@ class RaceSessionController extends ChangeNotifier {
       );
     } else if (role == SessionDeviceRole.split) {
       if (!_timeline.isRunning || startedSensorNanos == null) return;
+      if (_timeline.splitElapsedNanos.isNotEmpty) return;
       final elapsedNanos = math.max(0, triggerSensorNanos - startedSensorNanos);
       _timeline = _timeline.copyWith(
         splitElapsedNanos: <int>[..._timeline.splitElapsedNanos, elapsedNanos],
@@ -382,9 +396,15 @@ class RaceSessionController extends ChangeNotifier {
       if (connection.connected) {
         _connectedEndpointIds.add(connection.endpointId);
         if (isHost) {
-          final name =
-              _discovered.remove(connection.endpointId)?.name ??
-              'Device ${connection.endpointId}';
+          final connectionName = connection.endpointName?.trim();
+          final discoveredName = _discovered
+              .remove(connection.endpointId)
+              ?.name;
+          final name = (connectionName != null && connectionName.isNotEmpty)
+              ? connectionName
+              : ((discoveredName != null && discoveredName.isNotEmpty)
+                    ? discoveredName
+                    : 'Device ${connection.endpointId}');
           _devices[connection.endpointId] = SessionDevice(
             id: connection.endpointId,
             name: name,

@@ -247,6 +247,8 @@ class RaceSessionScreen extends StatelessWidget {
   }
 
   Widget _buildMonitoringScaffold(BuildContext context) {
+    final latencyMs = controller.monitoringLatencyMs;
+    final latencyLabel = latencyMs == null ? '-' : '$latencyMs ms';
     return Scaffold(
       appBar: AppBar(
         title: const Text(
@@ -266,33 +268,47 @@ class RaceSessionScreen extends StatelessWidget {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Role: ${sessionDeviceRoleLabel(controller.localRole)}',
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Role: ${sessionDeviceRoleLabel(controller.localRole)}',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    if (!controller.isHost)
+                      const Text(
+                        'Waiting for host...',
+                        style: TextStyle(
+                          color: Colors.grey,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      )
+                    else
+                      FilledButton.icon(
+                        onPressed: controller.resetRun,
+                        icon: const Icon(Icons.refresh, size: 16),
+                        label: const Text('Reset Run'),
+                        style: FilledButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                  ],
                 ),
-                if (!controller.isHost)
-                  const Text(
-                    'Waiting for host...',
-                    style: TextStyle(
-                      color: Colors.grey,
-                      fontStyle: FontStyle.italic,
-                    ),
-                  )
-                else
-                  FilledButton.icon(
-                    onPressed: controller.resetRun,
-                    icon: const Icon(Icons.refresh, size: 16),
-                    label: const Text('Reset Run'),
-                    style: FilledButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                    ),
-                  ),
+                const SizedBox(height: 2),
+                Text(
+                  'Connection: ${controller.monitoringConnectionTypeLabel} · '
+                  'Latency: $latencyLabel',
+                  key: const ValueKey<String>('monitoring_connection_info'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
               ],
             ),
           ),

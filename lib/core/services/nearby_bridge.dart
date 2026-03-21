@@ -4,12 +4,14 @@ class NearbyConnectionResultEvent {
   const NearbyConnectionResultEvent({
     required this.endpointId,
     required this.connected,
+    this.endpointName,
     this.statusCode,
     this.statusMessage,
   });
 
   final String endpointId;
   final bool connected;
+  final String? endpointName;
   final int? statusCode;
   final String? statusMessage;
 
@@ -28,6 +30,7 @@ class NearbyConnectionResultEvent {
     return NearbyConnectionResultEvent(
       endpointId: endpointId,
       connected: connected,
+      endpointName: event['endpointName']?.toString(),
       statusCode: _readInt(event['statusCode']),
       statusMessage: event['statusMessage']?.toString(),
     );

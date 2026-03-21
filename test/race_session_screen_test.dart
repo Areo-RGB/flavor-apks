@@ -162,6 +162,14 @@ void main() {
       find.byKey(const ValueKey<String>('preview_tripwire_line')),
       findsOneWidget,
     );
+    expect(
+      find.byKey(const ValueKey<String>('monitoring_connection_info')),
+      findsOneWidget,
+    );
+    expect(
+      find.text('Connection: Nearby (auto BT/Wi-Fi Direct) · Latency: -'),
+      findsOneWidget,
+    );
 
     fixture.dispose();
   });
