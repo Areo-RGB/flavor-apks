@@ -1,29 +1,28 @@
 package com.paul.sprintsync.sensor_native
+
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.media.Image
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
+import android.view.TextureView
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+
 class SensorNativeController(
     private val activity: FlutterActivity,
-) : EventChannel.StreamHandler, ImageAnalysis.Analyzer {
+) : EventChannel.StreamHandler {
     companion object {
         private const val TAG = "SensorNativeController"
         private const val PREVIEW_REBIND_RETRY_DELAY_MS = 200L
@@ -33,53 +32,68 @@ class SensorNativeController(
         const val EVENT_CHANNEL_NAME = "com.paul.sprintsync/sensor_native_events"
         const val PREVIEW_VIEW_TYPE = "com.paul.sprintsync/sensor_native_preview"
     }
+
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val analyzerExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val frameDiffer = RoiFrameDiffer()
     private val offsetSmoother = SensorOffsetSmoother()
     private val fpsMonitor = SensorNativeFpsMonitor(lowFpsThreshold = HS_FALLBACK_TRIGGER_FPS)
+
     @Volatile
     private var eventSink: EventChannel.EventSink? = null
+
     @Volatile
     private var monitoring = false
+
     @Volatile
     private var config: NativeMonitoringConfig = NativeMonitoringConfig.defaults()
+
     @Volatile
     private var streamFrameCount = 0L
+
     @Volatile
     private var processedFrameCount = 0L
+
     @Volatile
     private var hostSensorMinusElapsedNanos: Long? = null
+
     @Volatile
     private var gpsUtcOffsetNanos: Long? = null
+
     @Volatile
     private var gpsFixElapsedRealtimeNanos: Long? = null
+
     @Volatile
     private var requestedCameraFpsMode: NativeCameraFpsMode = NativeCameraFpsMode.NORMAL
+
     @Volatile
     private var activeCameraFpsMode: NativeCameraFpsMode = NativeCameraFpsMode.NORMAL
+
     @Volatile
     private var targetFpsUpper = 0
+
     @Volatile
     private var observedFps: Double? = null
+
     @Volatile
     private var hsDowngradeTriggered = false
-    private var cameraProvider: ProcessCameraProvider? = null
+
     private var locationManager: LocationManager? = null
-    private var previewView: PreviewView? = null
+    private var previewView: TextureView? = null
     private var pendingPreviewRebindRunnable: Runnable? = null
     private var previewRebindAttemptCount = 0
+
     private val detectionMath = NativeDetectionMath(config)
+
     private val cameraSession: SensorNativeCameraSession by lazy {
         SensorNativeCameraSession(
             activity = activity,
             mainHandler = mainHandler,
-            analyzerExecutor = analyzerExecutor,
-            analyzer = this,
             emitError = ::emitError,
             emitDiagnostic = ::emitDiagnostic,
+            onImageAvailable = ::onImageAvailable,
         )
     }
+
     private val gpsLocationListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
             val utcNanos = location.time * 1_000_000L
@@ -104,29 +118,39 @@ class SensorNativeController(
             // no-op
         }
     }
+
     fun configure(binaryMessenger: BinaryMessenger) {
         MethodChannel(binaryMessenger, METHOD_CHANNEL_NAME).setMethodCallHandler(::onMethodCall)
         EventChannel(binaryMessenger, EVENT_CHANNEL_NAME).setStreamHandler(this)
     }
+
     fun onHostPaused() {
         if (monitoring) {
             stopNativeMonitoringInternal()
         }
     }
+
     fun dispose() {
         cancelPreviewRebindRetries()
         stopGpsUpdates()
         stopNativeMonitoringInternal()
-        analyzerExecutor.shutdown()
     }
-    fun attachPreviewSurface(targetPreviewView: PreviewView) {
+
+    fun attachPreviewSurface(targetPreviewView: TextureView) {
         mainHandler.post {
             previewView = targetPreviewView
-            rebindCameraUseCasesIfMonitoring()
-            schedulePreviewRebindRetriesIfMonitoring()
+            if (!monitoring) {
+                return@post
+            }
+            if (targetPreviewView.isAvailable) {
+                rebindCameraUseCasesIfMonitoring()
+            } else {
+                schedulePreviewRebindRetriesIfMonitoring()
+            }
         }
     }
-    fun detachPreviewSurface(targetPreviewView: PreviewView) {
+
+    fun detachPreviewSurface(targetPreviewView: TextureView) {
         mainHandler.post {
             if (previewView !== targetPreviewView) {
                 return@post
@@ -136,19 +160,22 @@ class SensorNativeController(
             rebindCameraUseCasesIfMonitoring()
         }
     }
+
     override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
         eventSink = events
     }
+
     override fun onCancel(arguments: Any?) {
         eventSink = null
     }
-    override fun analyze(image: ImageProxy) {
+
+    private fun onImageAvailable(image: Image) {
         try {
             if (!monitoring) {
                 return
             }
             streamFrameCount += 1
-            val frameSensorNanos = image.imageInfo.timestamp
+            val frameSensorNanos = image.timestamp
             val offsetSample = frameSensorNanos - SystemClock.elapsedRealtimeNanos()
             val smoothedOffset = offsetSmoother.update(offsetSample)
             val fpsObservation = fpsMonitor.update(
@@ -160,11 +187,13 @@ class SensorNativeController(
                 requestHsFallbackToNormal()
             }
             hostSensorMinusElapsedNanos = smoothedOffset
+
             val activeConfig = config
             if ((streamFrameCount % activeConfig.processEveryNFrames.toLong()) != 0L) {
                 return
             }
-            val lumaPlane = image.planes[0]
+
+            val lumaPlane = image.planes.firstOrNull() ?: return
             val rawScore = frameDiffer.scoreLumaPlane(
                 lumaBuffer = lumaPlane.buffer,
                 rowStride = lumaPlane.rowStride,
@@ -187,6 +216,7 @@ class SensorNativeController(
             image.close()
         }
     }
+
     private fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "startNativeMonitoring" -> startNativeMonitoring(call, result)
@@ -195,21 +225,26 @@ class SensorNativeController(
                 emitState(if (monitoring) "monitoring" else "idle")
                 result.success(null)
             }
+
             "stopNativeMonitoring" -> {
                 stopNativeMonitoringInternal()
                 result.success(null)
             }
+
             "updateNativeConfig" -> {
                 updateNativeConfig(call)
                 result.success(null)
             }
+
             "resetNativeRun" -> {
                 resetNativeRun()
                 result.success(null)
             }
+
             else -> result.notImplemented()
         }
     }
+
     private fun startNativeMonitoring(call: MethodCall, result: MethodChannel.Result) {
         val permission = ContextCompat.checkSelfPermission(activity, Manifest.permission.CAMERA)
         if (permission != PackageManager.PERMISSION_GRANTED) {
@@ -218,14 +253,17 @@ class SensorNativeController(
             result.error("camera_permission_denied", message, null)
             return
         }
+
         config = NativeMonitoringConfig.fromMap(call.argument<Any>("config"))
         detectionMath.updateConfig(config)
         requestedCameraFpsMode = requestedFpsModeForConfig(config)
+
         if (monitoring) {
             emitState("monitoring")
             result.success(null)
             return
         }
+
         streamFrameCount = 0L
         processedFrameCount = 0L
         hostSensorMinusElapsedNanos = null
@@ -241,39 +279,59 @@ class SensorNativeController(
         detectionMath.resetRun()
         frameDiffer.reset()
         startGpsUpdatesIfAvailable()
-        val providerFuture = ProcessCameraProvider.getInstance(activity)
-        providerFuture.addListener(
-            {
-                try {
-                    val provider = providerFuture.get()
-                    cameraProvider = provider
-                    cameraSession.bindAndConfigure(
-                        provider = provider,
-                        previewView = previewView,
-                        includePreview = true,
-                        preferredFacing = config.cameraFacing,
-                        preferredFpsMode = requestedCameraFpsMode,
-                    )
+
+        val resultHandled = AtomicBoolean(false)
+        monitoring = true
+        schedulePreviewRebindRetriesIfMonitoring()
+        try {
+            cameraSession.bindAndConfigure(
+                previewView = previewView,
+                preferredFacing = config.cameraFacing,
+                preferredFpsMode = requestedCameraFpsMode,
+                onConfigured = {
+                    if (!monitoring) {
+                        return@bindAndConfigure
+                    }
                     syncCameraFpsStateFromSession()
-                    monitoring = true
-                    schedulePreviewRebindRetriesIfMonitoring()
                     emitState("monitoring")
-                    result.success(null)
-                } catch (error: Exception) {
-                    val message = "Failed to initialize native monitoring: ${error.localizedMessage ?: "unknown"}"
-                    emitError(message)
-                    result.error("native_monitor_start_failed", message, null)
-                }
-            },
-            ContextCompat.getMainExecutor(activity),
-        )
+                    if (resultHandled.compareAndSet(false, true)) {
+                        mainHandler.post { result.success(null) }
+                    }
+                },
+                onError = { message ->
+                    val fullMessage =
+                        "Failed to initialize native monitoring: ${message.ifBlank { "unknown" }}"
+                    emitError(fullMessage)
+                    monitoring = false
+                    stopGpsUpdates()
+                    cameraSession.stop()
+                    emitState("idle")
+                    if (resultHandled.compareAndSet(false, true)) {
+                        mainHandler.post {
+                            result.error("native_monitor_start_failed", fullMessage, null)
+                        }
+                    }
+                },
+            )
+        } catch (error: Exception) {
+            monitoring = false
+            stopGpsUpdates()
+            cameraSession.stop()
+            val message =
+                "Failed to initialize native monitoring: ${error.localizedMessage ?: "unknown"}"
+            emitError(message)
+            emitState("idle")
+            if (resultHandled.compareAndSet(false, true)) {
+                result.error("native_monitor_start_failed", message, null)
+            }
+        }
     }
+
     private fun stopNativeMonitoringInternal() {
         cancelPreviewRebindRetries()
         monitoring = false
         stopGpsUpdates()
-        cameraSession.stop(cameraProvider)
-        cameraProvider = null
+        cameraSession.stop()
         streamFrameCount = 0L
         processedFrameCount = 0L
         hostSensorMinusElapsedNanos = null
@@ -288,6 +346,7 @@ class SensorNativeController(
         detectionMath.resetRun()
         emitState("idle")
     }
+
     private fun updateNativeConfig(call: MethodCall) {
         val previousFacing = config.cameraFacing
         val previousHighSpeedEnabled = config.highSpeedEnabled
@@ -305,6 +364,7 @@ class SensorNativeController(
         }
         emitState(if (monitoring) "monitoring" else "idle")
     }
+
     private fun resetNativeRun() {
         streamFrameCount = 0L
         processedFrameCount = 0L
@@ -312,6 +372,7 @@ class SensorNativeController(
         frameDiffer.reset()
         emitState(if (monitoring) "monitoring" else "idle")
     }
+
     private fun rebindCameraUseCasesIfMonitoring() {
         if (!monitoring) {
             return
@@ -322,16 +383,25 @@ class SensorNativeController(
     }
 
     private fun attemptPreviewRebind(): Boolean {
-        val provider = cameraProvider ?: return false
+        if (!monitoring) {
+            return false
+        }
         return try {
             cameraSession.bindAndConfigure(
-                provider = provider,
                 previewView = previewView,
-                includePreview = true,
                 preferredFacing = config.cameraFacing,
                 preferredFpsMode = requestedCameraFpsMode,
+                onConfigured = {
+                    if (!monitoring) {
+                        return@bindAndConfigure
+                    }
+                    syncCameraFpsStateFromSession()
+                    emitState("monitoring")
+                },
+                onError = { message ->
+                    emitError("Failed to bind preview surface: ${message.ifBlank { "unknown" }}")
+                },
             )
-            syncCameraFpsStateFromSession()
             true
         } catch (error: Exception) {
             emitError("Failed to bind preview surface: ${error.localizedMessage ?: "unknown"}")
@@ -384,22 +454,32 @@ class SensorNativeController(
     }
 
     private fun schedulePreviewRebindRetriesIfMonitoring() {
-        if (!monitoring || previewView == null || cameraProvider == null) {
+        if (!monitoring || previewView == null) {
+            return
+        }
+        val view = previewView ?: return
+        if (view.isAvailable) {
             return
         }
         cancelPreviewRebindRetries()
         previewRebindAttemptCount = 0
         val runnable = object : Runnable {
             override fun run() {
-                if (!monitoring || previewView == null || cameraProvider == null) {
+                val currentView = previewView
+                if (!monitoring || currentView == null) {
                     cancelPreviewRebindRetries()
                     return
                 }
-                previewRebindAttemptCount += 1
-                val success = attemptPreviewRebind()
-                if (!success) {
-                    Log.w(TAG, "Preview rebind attempt $previewRebindAttemptCount failed.")
+                if (currentView.isAvailable) {
+                    val success = attemptPreviewRebind()
+                    if (!success) {
+                        Log.w(TAG, "Preview rebind after surface availability failed.")
+                    }
+                    cancelPreviewRebindRetries()
+                    return
                 }
+
+                previewRebindAttemptCount += 1
                 if (previewRebindAttemptCount >= PREVIEW_REBIND_MAX_ATTEMPTS) {
                     cancelPreviewRebindRetries()
                     return
@@ -475,6 +555,7 @@ class SensorNativeController(
             ),
         )
     }
+
     private fun emitTrigger(trigger: NativeTriggerEvent) {
         emitEvent(
             mapOf(
@@ -486,6 +567,7 @@ class SensorNativeController(
             ),
         )
     }
+
     private fun emitState(state: String) {
         emitEvent(
             mapOf(
@@ -498,6 +580,7 @@ class SensorNativeController(
             ),
         )
     }
+
     private fun emitError(message: String) {
         emitEvent(
             mapOf(
@@ -506,6 +589,7 @@ class SensorNativeController(
             ),
         )
     }
+
     private fun emitDiagnostic(message: String) {
         emitEvent(
             mapOf(
@@ -514,6 +598,7 @@ class SensorNativeController(
             ),
         )
     }
+
     private fun emitEvent(event: Map<String, Any?>) {
         val sink = eventSink ?: return
         mainHandler.post { sink.success(event) }
