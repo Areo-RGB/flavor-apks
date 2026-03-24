@@ -254,7 +254,7 @@ void main() {
   );
 
   test(
-    'updateHighSpeedEnabled persists and pushes native config while streaming',
+    'native frame stats update observed FPS and camera mode fields',
     () async {
       final bridge = _FakeNativeSensorBridge();
       final controller = MotionDetectionController(
@@ -263,49 +263,35 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 5));
 
-      await controller.startDetection();
-      expect(bridge.startConfigs, isNotEmpty);
-      expect(bridge.startConfigs.last['highSpeedEnabled'], isFalse);
-
-      await controller.updateHighSpeedEnabled(true);
-
-      expect(controller.config.highSpeedEnabled, isTrue);
-      expect(bridge.updateConfigs, isNotEmpty);
-      expect(bridge.updateConfigs.last['highSpeedEnabled'], isTrue);
-      final savedConfig = await LocalRepository().loadMotionConfig();
-      expect(savedConfig.highSpeedEnabled, isTrue);
-
-      controller.dispose();
-    },
-  );
-
-  test(
-    'native_frame_stats parses observed fps, fps mode, and target upper fps',
-    () async {
-      final bridge = _FakeNativeSensorBridge();
-      final controller = MotionDetectionController(
-        repository: LocalRepository(),
-        nativeSensorBridge: bridge,
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 5));
-
-      bridge.emitEvent({
+      bridge.emitEvent(<String, dynamic>{
         'type': 'native_frame_stats',
+        'frameSensorNanos': 1000000000,
         'rawScore': 0.01,
-        'baseline': 0.005,
-        'effectiveScore': 0.005,
-        'frameSensorNanos': 2000000000,
-        'streamFrameCount': 10,
-        'processedFrameCount': 10,
-        'observedFps': 118.7,
-        'cameraFpsMode': 'hs120',
-        'targetFpsUpper': 120,
+        'baseline': 0.01,
+        'effectiveScore': 0.01,
+        'streamFrameCount': 1,
+        'processedFrameCount': 1,
+        'cameraFpsMode': 'normal',
+        'targetFpsUpper': 60,
+      });
+      bridge.emitEvent(<String, dynamic>{
+        'type': 'native_frame_stats',
+        'frameSensorNanos': 1016666667,
+        'rawScore': 0.01,
+        'baseline': 0.01,
+        'effectiveScore': 0.01,
+        'streamFrameCount': 2,
+        'processedFrameCount': 2,
+        'cameraFpsMode': 'normal',
+        'targetFpsUpper': 60,
       });
       await Future<void>.delayed(const Duration(milliseconds: 5));
 
-      expect(controller.observedFps, closeTo(118.7, 0.001));
-      expect(controller.cameraFpsMode, 'hs120');
-      expect(controller.targetFpsUpper, 120);
+      expect(controller.observedFps, isNotNull);
+      expect(controller.observedFps!, greaterThan(55));
+      expect(controller.observedFps!, lessThan(65));
+      expect(controller.cameraFpsMode, 'normal');
+      expect(controller.targetFpsUpper, 60);
 
       controller.dispose();
     },
@@ -321,6 +307,10 @@ class _FakeNativeSensorBridge extends NativeSensorBridge {
 
   @override
   Stream<Map<String, dynamic>> get events => _eventsController.stream;
+
+  void emitEvent(Map<String, dynamic> event) {
+    _eventsController.add(event);
+  }
 
   @override
   Future<void> startNativeMonitoring({
@@ -342,9 +332,5 @@ class _FakeNativeSensorBridge extends NativeSensorBridge {
   @override
   Future<void> resetNativeRun() async {
     resetCalls += 1;
-  }
-
-  void emitEvent(Map<String, dynamic> event) {
-    _eventsController.add(Map<String, dynamic>.from(event));
   }
 }

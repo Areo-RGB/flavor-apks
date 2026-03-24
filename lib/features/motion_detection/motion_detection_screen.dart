@@ -227,31 +227,18 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
     return (clamped * 2.0) - 1.0;
   }
 
-  String _cameraStatusText() {
+  Widget _buildStopwatchCard() {
     final observedFps = widget.controller.observedFps;
-    final modeLabel = _modeLabel(observedFps, widget.controller.cameraFpsMode);
+    final modeLabel = _cameraModeLabel(
+      observedFps,
+      widget.controller.cameraFpsMode,
+    );
     final targetUpper = widget.controller.targetFpsUpper;
     final fpsLabel = observedFps == null
         ? '--.-'
         : observedFps.toStringAsFixed(1);
-    final targetLabel = (targetUpper != null && targetUpper > 0)
-        ? ' · target $targetUpper'
-        : '';
-    return 'Camera: $fpsLabel fps · $modeLabel$targetLabel';
-  }
+    final targetSuffix = targetUpper == null ? '' : ' · target $targetUpper';
 
-  String _modeLabel(double? observedFps, String? cameraFpsMode) {
-    if (observedFps == null) {
-      return 'INIT';
-    }
-    return switch (cameraFpsMode) {
-      'hs120' => 'HS',
-      'normal' => 'NORMAL',
-      _ => 'NORMAL',
-    };
-  }
-
-  Widget _buildStopwatchCard() {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -267,11 +254,11 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
               'Status: ${widget.controller.runStatusLabel}',
               key: const ValueKey<String>('run_status_text'),
             ),
-            Text(
-              _cameraStatusText(),
-              key: const ValueKey<String>('stopwatch_camera_status_text'),
-            ),
             Text('Marks: ${widget.controller.currentSplitElapsedNanos.length}'),
+            Text(
+              'Camera: $fpsLabel fps · $modeLabel$targetSuffix',
+              key: const ValueKey<String>('camera_status_text'),
+            ),
             const SizedBox(height: 12),
             const Text('Timer'),
             Text(
@@ -287,6 +274,16 @@ class _MotionDetectionScreenState extends State<MotionDetectionScreen>
         ),
       ),
     );
+  }
+
+  String _cameraModeLabel(double? observedFps, String? cameraFpsMode) {
+    if (observedFps == null) {
+      return 'INIT';
+    }
+    return switch (cameraFpsMode) {
+      'hs120' => 'HS',
+      _ => 'NORMAL',
+    };
   }
 
   Widget _buildCurrentSplitsCard() {

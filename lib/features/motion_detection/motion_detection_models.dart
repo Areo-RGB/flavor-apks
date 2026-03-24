@@ -52,7 +52,6 @@ class MotionDetectionConfig {
     required this.cooldownMs,
     required this.processEveryNFrames,
     this.cameraFacing = MotionCameraFacing.rear,
-    this.highSpeedEnabled = false,
   });
 
   final double threshold;
@@ -61,7 +60,6 @@ class MotionDetectionConfig {
   final int cooldownMs;
   final int processEveryNFrames;
   final MotionCameraFacing cameraFacing;
-  final bool highSpeedEnabled;
 
   factory MotionDetectionConfig.defaults() {
     return const MotionDetectionConfig(
@@ -71,7 +69,6 @@ class MotionDetectionConfig {
       cooldownMs: 900,
       processEveryNFrames: 1,
       cameraFacing: MotionCameraFacing.rear,
-      highSpeedEnabled: false,
     );
   }
 
@@ -82,7 +79,6 @@ class MotionDetectionConfig {
     int? cooldownMs,
     int? processEveryNFrames,
     MotionCameraFacing? cameraFacing,
-    bool? highSpeedEnabled,
   }) {
     return MotionDetectionConfig(
       threshold: threshold ?? this.threshold,
@@ -91,7 +87,6 @@ class MotionDetectionConfig {
       cooldownMs: cooldownMs ?? this.cooldownMs,
       processEveryNFrames: processEveryNFrames ?? this.processEveryNFrames,
       cameraFacing: cameraFacing ?? this.cameraFacing,
-      highSpeedEnabled: highSpeedEnabled ?? this.highSpeedEnabled,
     );
   }
 
@@ -103,7 +98,6 @@ class MotionDetectionConfig {
       'cooldownMs': cooldownMs,
       'processEveryNFrames': processEveryNFrames,
       'cameraFacing': cameraFacing.name,
-      'highSpeedEnabled': highSpeedEnabled,
     };
   }
 
@@ -123,8 +117,6 @@ class MotionDetectionConfig {
     final parsedCameraFacing =
         motionCameraFacingFromName(json['cameraFacing']?.toString()) ??
         defaults.cameraFacing;
-    final parsedHighSpeedEnabled =
-        (json['highSpeedEnabled'] as bool?) ?? defaults.highSpeedEnabled;
 
     return MotionDetectionConfig(
       threshold: _clampDouble(parsedThreshold, 0.001, 0.08),
@@ -133,7 +125,6 @@ class MotionDetectionConfig {
       cooldownMs: parsedCooldown.clamp(300, 2000),
       processEveryNFrames: parsedFrameSkip.clamp(1, 5),
       cameraFacing: parsedCameraFacing,
-      highSpeedEnabled: parsedHighSpeedEnabled,
     );
   }
 }

@@ -40,6 +40,7 @@ class MotionDetectionController extends ChangeNotifier {
   int? _sensorMinusElapsedNanos;
   int? _gpsUtcOffsetNanos;
   int? _gpsFixElapsedRealtimeNanos;
+  int? _lastFrameSensorNanos;
   double? _observedFps;
   String? _cameraFpsMode;
   int? _targetFpsUpper;
@@ -109,6 +110,7 @@ class MotionDetectionController extends ChangeNotifier {
   Future<void> startDetection() async {
     _isLoading = true;
     _errorText = null;
+    _lastFrameSensorNanos = null;
     _observedFps = null;
     _cameraFpsMode = null;
     _targetFpsUpper = null;
@@ -132,6 +134,7 @@ class MotionDetectionController extends ChangeNotifier {
       _errorText = 'Stop native monitoring failed: $error';
     }
     _isStreaming = false;
+    _lastFrameSensorNanos = null;
     _observedFps = null;
     _cameraFpsMode = null;
     _targetFpsUpper = null;
@@ -183,16 +186,6 @@ class MotionDetectionController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> updateHighSpeedEnabled(bool enabled) async {
-    if (_config.highSpeedEnabled == enabled) {
-      return;
-    }
-    _config = _config.copyWith(highSpeedEnabled: enabled);
-    await _repository.saveMotionConfig(_config);
-    await _pushNativeConfig();
-    notifyListeners();
-  }
-
   Future<void> _pushNativeConfig() async {
     if (!_isStreaming) {
       return;
@@ -219,9 +212,6 @@ class MotionDetectionController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    if (type == 'native_diagnostic') {
-      return;
-    }
     if (type == 'native_frame_stats') {
       final frameSensorNanos = _readInt(event['frameSensorNanos']);
       final rawScore = _readDouble(event['rawScore']);
@@ -237,6 +227,25 @@ class MotionDetectionController extends ChangeNotifier {
       final processedFrameCount = _readInt(event['processedFrameCount']);
       _streamFrameCount = streamFrameCount ?? (_streamFrameCount + 1);
       _processedFrameCount = processedFrameCount ?? (_processedFrameCount + 1);
+      final previousFrameSensorNanos = _lastFrameSensorNanos;
+      if (previousFrameSensorNanos != null) {
+        final deltaNanos = frameSensorNanos - previousFrameSensorNanos;
+        if (deltaNanos > 0) {
+          final instantFps = 1e9 / deltaNanos;
+          if (instantFps.isFinite && instantFps > 0) {
+            final current = _observedFps;
+            _observedFps = current == null
+                ? instantFps
+                : ((current * 0.8) + (instantFps * 0.2));
+          }
+        }
+      }
+      _lastFrameSensorNanos = frameSensorNanos;
+      _targetFpsUpper = _readInt(event['targetFpsUpper']) ?? _targetFpsUpper;
+      final cameraFpsMode = event['cameraFpsMode']?.toString();
+      if (cameraFpsMode != null && cameraFpsMode.isNotEmpty) {
+        _cameraFpsMode = cameraFpsMode;
+      }
       _sensorMinusElapsedNanos =
           _readInt(event['hostSensorMinusElapsedNanos']) ??
           _sensorMinusElapsedNanos;
@@ -245,12 +254,6 @@ class MotionDetectionController extends ChangeNotifier {
       _gpsFixElapsedRealtimeNanos =
           _readInt(event['gpsFixElapsedRealtimeNanos']) ??
           _gpsFixElapsedRealtimeNanos;
-      _observedFps = _readDouble(event['observedFps']) ?? _observedFps;
-      _targetFpsUpper = _readInt(event['targetFpsUpper']) ?? _targetFpsUpper;
-      final cameraFpsMode = event['cameraFpsMode']?.toString();
-      if (cameraFpsMode != null && cameraFpsMode.isNotEmpty) {
-        _cameraFpsMode = cameraFpsMode;
-      }
       _latestStats = MotionFrameStats(
         rawScore: rawScore,
         baseline: baseline,

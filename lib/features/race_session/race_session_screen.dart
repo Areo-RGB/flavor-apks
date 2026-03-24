@@ -20,7 +20,7 @@ class RaceSessionScreen extends StatefulWidget {
 }
 
 class _RaceSessionScreenState extends State<RaceSessionScreen> {
-  bool _showMonitoringPreview = true;
+  bool _showPreview = true;
 
   RaceSessionController get controller => widget.controller;
   MotionDetectionController get motionController => widget.motionController;
@@ -331,22 +331,6 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    const Text('Preview', style: TextStyle(fontSize: 13)),
-                    const SizedBox(width: 8),
-                    Switch(
-                      key: const ValueKey<String>('monitoring_preview_toggle'),
-                      value: _showMonitoringPreview,
-                      onChanged: (value) {
-                        setState(() {
-                          _showMonitoringPreview = value;
-                        });
-                      },
-                    ),
-                  ],
-                ),
                 if (clockLockWarningText != null) ...[
                   const SizedBox(height: 8),
                   Container(
@@ -389,10 +373,28 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
               ],
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Row(
+              children: [
+                const Text('Preview'),
+                const SizedBox(width: 8),
+                Switch(
+                  key: const ValueKey<String>('monitoring_preview_toggle'),
+                  value: _showPreview,
+                  onChanged: (value) {
+                    setState(() {
+                      _showPreview = value;
+                    });
+                  },
+                ),
+              ],
+            ),
+          ),
           Expanded(
             child: MotionDetectionScreen(
               controller: motionController,
-              showPreview: _showMonitoringPreview,
+              showPreview: _showPreview,
             ),
           ),
         ],
@@ -451,24 +453,6 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
             },
           )
         : Text(sessionCameraFacingLabel(device.cameraFacing));
-    final highSpeedControl = canEdit
-        ? FilterChip(
-            key: ValueKey<String>('high_speed_toggle_${device.id}'),
-            label: const Text('HS'),
-            selected: device.highSpeedEnabled,
-            showCheckmark: false,
-            visualDensity: VisualDensity.compact,
-            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            onSelected: (selected) {
-              controller.assignHighSpeedEnabled(device.id, selected);
-            },
-          )
-        : Chip(
-            key: ValueKey<String>('high_speed_state_${device.id}'),
-            label: Text(device.highSpeedEnabled ? 'HS On' : 'HS Off'),
-            visualDensity: VisualDensity.compact,
-            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          );
 
     return ListTile(
       dense: true,
@@ -477,13 +461,7 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
       subtitle: Text(device.id),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
-        children: [
-          cameraFacingControl,
-          const SizedBox(width: 8),
-          highSpeedControl,
-          const SizedBox(width: 8),
-          roleControl,
-        ],
+        children: [cameraFacingControl, const SizedBox(width: 8), roleControl],
       ),
     );
   }

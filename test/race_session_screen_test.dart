@@ -171,108 +171,6 @@ void main() {
     fixture.dispose();
   });
 
-  testWidgets('host can toggle HS chip in lobby device row', (tester) async {
-    final fixture = _ScreenFixture.create();
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: RaceSessionScreen(
-          controller: fixture.controller,
-          motionController: fixture.motionController,
-        ),
-      ),
-    );
-    await tester.pump(const Duration(milliseconds: 20));
-
-    await tester.tap(find.text('Host'));
-    await tester.pump(const Duration(milliseconds: 20));
-    fixture.bridge.emitEvent(<String, dynamic>{
-      'type': 'connection_result',
-      'endpointId': 'peer-1',
-      'connected': true,
-    });
-    await tester.pump(const Duration(milliseconds: 20));
-    await tester.tap(find.text('Next'));
-    await tester.pump(const Duration(milliseconds: 20));
-
-    expect(
-      find.byKey(const ValueKey<String>('high_speed_toggle_local-device')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey<String>('high_speed_toggle_peer-1')),
-      findsOneWidget,
-    );
-
-    await tester.tap(
-      find.byKey(const ValueKey<String>('high_speed_toggle_local-device')),
-    );
-    await tester.pump(const Duration(milliseconds: 20));
-
-    final localDevice = fixture.controller.devices.firstWhere(
-      (device) => device.id == 'local-device',
-    );
-    expect(localDevice.highSpeedEnabled, isTrue);
-
-    fixture.dispose();
-  });
-
-  testWidgets('client sees read-only HS state badge in lobby', (tester) async {
-    final fixture = _ScreenFixture.create();
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: RaceSessionScreen(
-          controller: fixture.controller,
-          motionController: fixture.motionController,
-        ),
-      ),
-    );
-    await tester.pump(const Duration(milliseconds: 20));
-
-    await fixture.controller.joinLobby();
-
-    fixture.bridge.emitEvent(<String, dynamic>{
-      'type': 'payload_received',
-      'endpointId': 'host-1',
-      'message': SessionSnapshotMessage(
-        stage: SessionStage.lobby,
-        monitoringActive: false,
-        devices: const <SessionDevice>[
-          SessionDevice(
-            id: 'local-device',
-            name: 'Client',
-            role: SessionDeviceRole.start,
-            highSpeedEnabled: true,
-            isLocal: false,
-          ),
-          SessionDevice(
-            id: 'host-1',
-            name: 'Host',
-            role: SessionDeviceRole.stop,
-            highSpeedEnabled: false,
-            isLocal: false,
-          ),
-        ],
-        timeline: SessionRaceTimeline.idle(),
-        hostSensorMinusElapsedNanos: 120000000,
-        selfDeviceId: 'local-device',
-      ).toJsonString(),
-    });
-    await tester.pump(const Duration(milliseconds: 20));
-
-    expect(
-      find.byKey(const ValueKey<String>('high_speed_state_local-device')),
-      findsOneWidget,
-    );
-    expect(find.text('HS On'), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey<String>('high_speed_toggle_local-device')),
-      findsNothing,
-    );
-    fixture.dispose();
-  });
-
   testWidgets('monitoring stage shows preview marker overlay', (tester) async {
     final fixture = _ScreenFixture.create();
 
@@ -320,65 +218,21 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Sync: - · Latency: -'), findsOneWidget);
-
-    fixture.dispose();
-  });
-
-  testWidgets('monitoring preview switch hides and shows preview locally', (
-    tester,
-  ) async {
-    final fixture = _ScreenFixture.create();
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: RaceSessionScreen(
-          controller: fixture.controller,
-          motionController: fixture.motionController,
-        ),
-      ),
-    );
-    await tester.pump(const Duration(milliseconds: 20));
-
-    await tester.tap(find.text('Host'));
-    await tester.pump(const Duration(milliseconds: 20));
-
-    fixture.bridge.emitEvent(<String, dynamic>{
-      'type': 'connection_result',
-      'endpointId': 'peer-1',
-      'connected': true,
-    });
-    await tester.pump(const Duration(milliseconds: 20));
-
-    await tester.tap(find.text('Next'));
-    await tester.pump(const Duration(milliseconds: 20));
-
-    fixture.controller.assignRole('local-device', SessionDeviceRole.start);
-    fixture.controller.assignRole('peer-1', SessionDeviceRole.stop);
-    await tester.pump(const Duration(milliseconds: 20));
-
-    await tester.tap(find.text('Start Monitoring'));
-    await tester.pump(const Duration(milliseconds: 120));
-
-    final previewToggle = find.byKey(
-      const ValueKey<String>('monitoring_preview_toggle'),
-    );
-    expect(previewToggle, findsOneWidget);
     expect(
-      find.byKey(const ValueKey<String>('preview_tripwire_line')),
+      find.byKey(const ValueKey<String>('monitoring_preview_toggle')),
       findsOneWidget,
     );
 
-    await tester.tap(previewToggle);
-    await tester.pump(const Duration(milliseconds: 120));
+    await tester.tap(
+      find.byKey(const ValueKey<String>('monitoring_preview_toggle')),
+    );
+    await tester.pump(const Duration(milliseconds: 20));
     expect(
       find.byKey(const ValueKey<String>('preview_tripwire_line')),
       findsNothing,
     );
-
-    await tester.tap(previewToggle);
-    await tester.pump(const Duration(milliseconds: 120));
     expect(
-      find.byKey(const ValueKey<String>('preview_tripwire_line')),
+      find.byKey(const ValueKey<String>('camera_status_text')),
       findsOneWidget,
     );
 

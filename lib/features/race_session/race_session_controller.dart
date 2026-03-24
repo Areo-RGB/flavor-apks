@@ -293,26 +293,14 @@ class RaceSessionController extends ChangeNotifier {
     _devices[deviceId] = device.copyWith(cameraFacing: cameraFacing);
     notifyListeners();
     if (deviceId == _localDeviceId) {
-      unawaited(_syncLocalCameraSettingsFromDevices());
-    }
-    unawaited(_broadcastSnapshot());
-  }
-
-  void assignHighSpeedEnabled(String deviceId, bool highSpeedEnabled) {
-    if (!isHost || _monitoringActive) return;
-    final device = _devices[deviceId];
-    if (device == null || device.highSpeedEnabled == highSpeedEnabled) return;
-    _devices[deviceId] = device.copyWith(highSpeedEnabled: highSpeedEnabled);
-    notifyListeners();
-    if (deviceId == _localDeviceId) {
-      unawaited(_syncLocalCameraSettingsFromDevices());
+      unawaited(_syncLocalCameraFacingFromDevices());
     }
     unawaited(_broadcastSnapshot());
   }
 
   Future<void> startMonitoring() async {
     if (!canStartMonitoring) return;
-    await _syncLocalCameraSettingsFromDevices();
+    await _syncLocalCameraFacingFromDevices();
     _monitoringActive = true;
     _stage = SessionStage.monitoring;
     await _setWakeLockEnabled(true);
@@ -632,7 +620,7 @@ class RaceSessionController extends ChangeNotifier {
             return MapEntry(device.id, device.copyWith(isLocal: isLocal));
           }),
         );
-      await _syncLocalCameraSettingsFromDevices();
+      await _syncLocalCameraFacingFromDevices();
       if (!wasMonitoring && _monitoringActive) {
         await _setWakeLockEnabled(true);
         _clearClockSyncLock();
@@ -768,7 +756,9 @@ class RaceSessionController extends ChangeNotifier {
   }
 
   Future<({int? bestRttNanos, int responseCount, int highRttRejectCount})>
-  _runClockSyncBurst({required String endpointId}) async {
+  _runClockSyncBurst({
+    required String endpointId,
+  }) async {
     final burstStartElapsedNanos = _nowClockSyncElapsedNanos(
       requireSensorDomainIfMonitoring: true,
     );
@@ -1061,8 +1051,7 @@ class RaceSessionController extends ChangeNotifier {
     }
     final nowElapsedNanos = _nowElapsedNanos();
     final sampleAgeNanos = nowElapsedNanos - lastCapturedAtNanos;
-    if (sampleAgeNanos < 0 ||
-        sampleAgeNanos > _sensorElapsedProjectionMaxAgeNanos) {
+    if (sampleAgeNanos < 0 || sampleAgeNanos > _sensorElapsedProjectionMaxAgeNanos) {
       return null;
     }
     return lastSampledElapsedNanos + sampleAgeNanos;
@@ -1135,21 +1124,16 @@ class RaceSessionController extends ChangeNotifier {
     );
   }
 
-  Future<void> _syncLocalCameraSettingsFromDevices() async {
+  Future<void> _syncLocalCameraFacingFromDevices() async {
     final localDevice = _devices[_localDeviceId];
     if (localDevice == null) {
       return;
     }
     final localFacing = _toMotionCameraFacing(localDevice.cameraFacing);
-    if (_motionController.config.cameraFacing != localFacing) {
-      await _motionController.updateCameraFacing(localFacing);
+    if (_motionController.config.cameraFacing == localFacing) {
+      return;
     }
-    if (_motionController.config.highSpeedEnabled !=
-        localDevice.highSpeedEnabled) {
-      await _motionController.updateHighSpeedEnabled(
-        localDevice.highSpeedEnabled,
-      );
-    }
+    await _motionController.updateCameraFacing(localFacing);
   }
 
   MotionCameraFacing _toMotionCameraFacing(SessionCameraFacing cameraFacing) {

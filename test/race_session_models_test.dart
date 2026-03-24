@@ -73,33 +73,4 @@ void main() {
     expect(decoded, isNotNull);
     expect(decoded!.cameraFacing, SessionCameraFacing.rear);
   });
-
-  test('session device high-speed serializes and parses', () {
-    const device = SessionDevice(
-      id: 'device-1',
-      name: 'Device 1',
-      role: SessionDeviceRole.start,
-      highSpeedEnabled: true,
-      isLocal: false,
-    );
-
-    final encoded = device.toJson();
-    final decoded = SessionDevice.fromJson(encoded);
-
-    expect(decoded, isNotNull);
-    expect(decoded!.highSpeedEnabled, isTrue);
-  });
-
-  test('session device high-speed defaults to false when missing', () {
-    final decoded = SessionDevice.fromJson(<String, dynamic>{
-      'id': 'device-1',
-      'name': 'Device 1',
-      'role': SessionDeviceRole.stop.name,
-      'cameraFacing': SessionCameraFacing.front.name,
-      'isLocal': true,
-    });
-
-    expect(decoded, isNotNull);
-    expect(decoded!.highSpeedEnabled, isFalse);
-  });
 }

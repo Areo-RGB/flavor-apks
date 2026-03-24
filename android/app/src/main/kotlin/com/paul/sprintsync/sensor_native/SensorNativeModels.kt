@@ -8,11 +8,6 @@ enum class NativeCameraFacing(val wireName: String) {
     FRONT("front"),
 }
 
-enum class NativeCameraFpsMode(val wireName: String) {
-    HS120("hs120"),
-    NORMAL("normal"),
-}
-
 data class NativeMonitoringConfig(
     val threshold: Double,
     val roiCenterX: Double,
@@ -20,7 +15,6 @@ data class NativeMonitoringConfig(
     val cooldownMs: Int,
     val processEveryNFrames: Int,
     val cameraFacing: NativeCameraFacing,
-    val highSpeedEnabled: Boolean,
 ) {
     companion object {
         fun defaults(): NativeMonitoringConfig {
@@ -31,7 +25,6 @@ data class NativeMonitoringConfig(
                 cooldownMs = 900,
                 processEveryNFrames = 1,
                 cameraFacing = NativeCameraFacing.REAR,
-                highSpeedEnabled = false,
             )
         }
 
@@ -70,8 +63,6 @@ data class NativeMonitoringConfig(
                 cameraFacing = nativeCameraFacingFromWire(
                     raw["cameraFacing"]?.toString(),
                 ) ?: defaults.cameraFacing,
-                highSpeedEnabled =
-                    raw["highSpeedEnabled"] as? Boolean ?: defaults.highSpeedEnabled,
             )
         }
     }
@@ -89,9 +80,6 @@ data class NativeFrameStats(
     val baseline: Double,
     val effectiveScore: Double,
     val frameSensorNanos: Long,
-    val observedFps: Double? = null,
-    val cameraFpsMode: NativeCameraFpsMode = NativeCameraFpsMode.NORMAL,
-    val targetFpsUpper: Int? = null,
     val triggerEvent: NativeTriggerEvent?,
 )
 
