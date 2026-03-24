@@ -89,6 +89,7 @@ class RaceSessionController extends ChangeNotifier {
   int? _lastSensorElapsedSampleNanos;
   int? _lastSensorElapsedSampleCapturedAtNanos;
   bool _wakeLockEnabled = false;
+  bool _localMonitoringCaptureActive = false;
   String? _errorText;
   SessionStage get stage => _stage;
   SessionNetworkRole get networkRole => _networkRole;
@@ -307,22 +308,13 @@ class RaceSessionController extends ChangeNotifier {
     _timeline = SessionRaceTimeline.idle();
     _motionController.resetRace();
     notifyListeners();
-    if (_startMonitoringAction != null) {
-      await _startMonitoringAction();
-    } else {
-      await _motionController.initializeCamera();
-      await _motionController.startDetection();
-    }
+    await _startLocalMonitoringCaptureIfAssigned();
     await _broadcastSnapshot();
   }
 
   Future<void> stopMonitoring() async {
     if (!isHost || !_monitoringActive) return;
-    if (_stopMonitoringAction != null) {
-      await _stopMonitoringAction();
-    } else {
-      await _motionController.stopDetection();
-    }
+    await _stopLocalMonitoringCaptureIfRunning();
     _monitoringActive = false;
     _stage = SessionStage.lobby;
     await _setWakeLockEnabled(false);
@@ -624,21 +616,12 @@ class RaceSessionController extends ChangeNotifier {
       if (!wasMonitoring && _monitoringActive) {
         await _setWakeLockEnabled(true);
         _clearClockSyncLock();
-        if (_startMonitoringAction != null) {
-          await _startMonitoringAction();
-        } else {
-          await _motionController.initializeCamera();
-          await _motionController.startDetection();
-        }
+        await _startLocalMonitoringCaptureIfAssigned();
         if (_shouldRunNtpSync()) {
           unawaited(_requestClockSync());
         }
       } else if (wasMonitoring && !_monitoringActive) {
-        if (_stopMonitoringAction != null) {
-          await _stopMonitoringAction();
-        } else {
-          await _motionController.stopDetection();
-        }
+        await _stopLocalMonitoringCaptureIfRunning();
         await _setWakeLockEnabled(false);
       }
       final timelineChanged =
@@ -756,9 +739,7 @@ class RaceSessionController extends ChangeNotifier {
   }
 
   Future<({int? bestRttNanos, int responseCount, int highRttRejectCount})>
-  _runClockSyncBurst({
-    required String endpointId,
-  }) async {
+  _runClockSyncBurst({required String endpointId}) async {
     final burstStartElapsedNanos = _nowClockSyncElapsedNanos(
       requireSensorDomainIfMonitoring: true,
     );
@@ -1051,7 +1032,8 @@ class RaceSessionController extends ChangeNotifier {
     }
     final nowElapsedNanos = _nowElapsedNanos();
     final sampleAgeNanos = nowElapsedNanos - lastCapturedAtNanos;
-    if (sampleAgeNanos < 0 || sampleAgeNanos > _sensorElapsedProjectionMaxAgeNanos) {
+    if (sampleAgeNanos < 0 ||
+        sampleAgeNanos > _sensorElapsedProjectionMaxAgeNanos) {
       return null;
     }
     return lastSampledElapsedNanos + sampleAgeNanos;
@@ -1193,6 +1175,35 @@ class RaceSessionController extends ChangeNotifier {
     }
   }
 
+  Future<void> _startLocalMonitoringCaptureIfAssigned() async {
+    if (localRole == SessionDeviceRole.unassigned) {
+      _localMonitoringCaptureActive = false;
+      return;
+    }
+    if (_startMonitoringAction != null) {
+      await _startMonitoringAction();
+    } else {
+      await _motionController.initializeCamera();
+      await _motionController.startDetection();
+    }
+    _localMonitoringCaptureActive = true;
+  }
+
+  Future<void> _stopLocalMonitoringCaptureIfRunning() async {
+    if (!_localMonitoringCaptureActive) {
+      return;
+    }
+    try {
+      if (_stopMonitoringAction != null) {
+        await _stopMonitoringAction();
+      } else {
+        await _motionController.stopDetection();
+      }
+    } finally {
+      _localMonitoringCaptureActive = false;
+    }
+  }
+
   bool _hasRequiredRoles() {
     int starts = 0;
     int stops = 0;
@@ -1218,6 +1229,7 @@ class RaceSessionController extends ChangeNotifier {
     _hostSensorMinusElapsedNanos = null;
     _hostGpsUtcOffsetNanos = null;
     _hostGpsFixAgeNanos = null;
+    _localMonitoringCaptureActive = false;
     _lastBroadcastHostGpsUtcOffsetNanos = null;
     _lastBroadcastHostGpsFixAgeNanos = null;
     _lastGpsSnapshotBroadcastElapsedNanos = null;

@@ -36,7 +36,12 @@ void main() {
   });
 
   test('host startMonitoring enables wake lock once', () async {
-    final fixture = _ControllerFixture.create();
+    var startMonitoringCalls = 0;
+    final fixture = _ControllerFixture.create(
+      startMonitoringAction: () async {
+        startMonitoringCalls += 1;
+      },
+    );
     await fixture.controller.createLobby();
     fixture.bridge.emitEvent(<String, dynamic>{
       'type': 'connection_result',
@@ -54,6 +59,7 @@ void main() {
 
     expect(fixture.wakeLockBridge.enableCalls, 1);
     expect(fixture.wakeLockBridge.disableCalls, 0);
+    expect(startMonitoringCalls, 1);
     fixture.dispose();
   });
 
@@ -80,6 +86,50 @@ void main() {
     expect(fixture.wakeLockBridge.disableCalls, 1);
     fixture.dispose();
   });
+
+  test(
+    'host startMonitoring with local unassigned role skips local monitoring action',
+    () async {
+      var startMonitoringCalls = 0;
+      var stopMonitoringCalls = 0;
+      final fixture = _ControllerFixture.create(
+        startMonitoringAction: () async {
+          startMonitoringCalls += 1;
+        },
+        stopMonitoringAction: () async {
+          stopMonitoringCalls += 1;
+        },
+      );
+      await fixture.controller.createLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'peer-start',
+        'connected': true,
+      });
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'peer-stop',
+        'connected': true,
+      });
+      await _flushEvents();
+      fixture.controller.goToLobby();
+      fixture.controller.assignRole('peer-start', SessionDeviceRole.start);
+      fixture.controller.assignRole('peer-stop', SessionDeviceRole.stop);
+      fixture.wakeLockBridge.resetCounts();
+
+      await fixture.controller.startMonitoring();
+      await _flushEvents();
+      await fixture.controller.stopMonitoring();
+      await _flushEvents();
+
+      expect(fixture.controller.localRole, SessionDeviceRole.unassigned);
+      expect(fixture.wakeLockBridge.enableCalls, 1);
+      expect(fixture.wakeLockBridge.disableCalls, 1);
+      expect(startMonitoringCalls, 0);
+      expect(stopMonitoringCalls, 0);
+      fixture.dispose();
+    },
+  );
 
   test('client snapshot transition to monitoring enables wake lock', () async {
     final fixture = _ControllerFixture.create();
@@ -122,6 +172,58 @@ void main() {
     expect(fixture.wakeLockBridge.enableCalls, 1);
     fixture.dispose();
   });
+
+  test(
+    'client snapshot transition to monitoring with unassigned role skips local monitoring action',
+    () async {
+      var startMonitoringCalls = 0;
+      final fixture = _ControllerFixture.create(
+        startMonitoringAction: () async {
+          startMonitoringCalls += 1;
+        },
+      );
+      await fixture.controller.joinLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'host-1',
+        'connected': true,
+      });
+      await _flushEvents();
+      fixture.wakeLockBridge.resetCounts();
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'host-1',
+        'message': SessionSnapshotMessage(
+          stage: SessionStage.monitoring,
+          monitoringActive: true,
+          devices: const <SessionDevice>[
+            SessionDevice(
+              id: 'local-device',
+              name: 'Client',
+              role: SessionDeviceRole.unassigned,
+              isLocal: false,
+            ),
+            SessionDevice(
+              id: 'host-1',
+              name: 'Host',
+              role: SessionDeviceRole.start,
+              isLocal: false,
+            ),
+          ],
+          timeline: SessionRaceTimeline.idle(),
+          hostSensorMinusElapsedNanos: 120000000,
+          selfDeviceId: 'local-device',
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      expect(fixture.controller.monitoringActive, isTrue);
+      expect(fixture.wakeLockBridge.enableCalls, 1);
+      expect(startMonitoringCalls, 0);
+      fixture.dispose();
+    },
+  );
 
   test(
     'client snapshot transition out of monitoring disables wake lock',
@@ -1312,104 +1414,107 @@ void main() {
     },
   );
 
-  test('client trigger is rejected when clock sync RTT exceeds 100ms', () async {
-    int nowElapsedNanos = 1000000000;
-    final fixture = _ControllerFixture.create(
-      nowElapsedNanos: () => nowElapsedNanos,
-    );
-    await fixture.controller.joinLobby();
-    fixture.bridge.emitEvent(<String, dynamic>{
-      'type': 'connection_result',
-      'endpointId': 'host-1',
-      'connected': true,
-    });
-    await _flushEvents();
-    fixture.nativeBridge.emitEvent(<String, dynamic>{
-      'type': 'native_state',
-      'hostSensorMinusElapsedNanos': 500000000,
-    });
-    fixture.bridge.emitEvent(<String, dynamic>{
-      'type': 'payload_received',
-      'endpointId': 'host-1',
-      'message': SessionSnapshotMessage(
-        stage: SessionStage.monitoring,
-        monitoringActive: true,
-        devices: const <SessionDevice>[
-          SessionDevice(
-            id: 'local-device',
-            name: 'Client',
-            role: SessionDeviceRole.start,
-            isLocal: false,
-          ),
-          SessionDevice(
-            id: 'host-1',
-            name: 'Host',
-            role: SessionDeviceRole.stop,
-            isLocal: false,
-          ),
-        ],
-        timeline: SessionRaceTimeline.idle(),
-        hostSensorMinusElapsedNanos: 120000000,
-        selfDeviceId: 'local-device',
-      ).toJsonString(),
-    });
-    await _flushEvents();
-    final syncRequests = fixture.bridge.sentPayloads
-        .map(
-          (payload) =>
-              SessionClockSyncRequestMessage.tryParse(payload.messageJson),
-        )
-        .whereType<SessionClockSyncRequestMessage>()
-        .toList();
-    expect(syncRequests, hasLength(10));
-
-    for (final request in syncRequests) {
-      final highRttClientReceiveElapsedNanos =
-          request.clientSendElapsedNanos + 130000000;
-      fixture.nativeBridge.emitEvent(<String, dynamic>{
-        'type': 'native_frame_stats',
-        'frameSensorNanos': highRttClientReceiveElapsedNanos + 500000000,
-        'rawScore': 0.01,
-        'baseline': 0.01,
-        'effectiveScore': 0.0,
+  test(
+    'client trigger is rejected when clock sync RTT exceeds 100ms',
+    () async {
+      int nowElapsedNanos = 1000000000;
+      final fixture = _ControllerFixture.create(
+        nowElapsedNanos: () => nowElapsedNanos,
+      );
+      await fixture.controller.joinLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'host-1',
+        'connected': true,
       });
       await _flushEvents();
-      nowElapsedNanos = highRttClientReceiveElapsedNanos;
+      fixture.nativeBridge.emitEvent(<String, dynamic>{
+        'type': 'native_state',
+        'hostSensorMinusElapsedNanos': 500000000,
+      });
       fixture.bridge.emitEvent(<String, dynamic>{
         'type': 'payload_received',
         'endpointId': 'host-1',
-        'message': SessionClockSyncResponseMessage(
-          clientSendElapsedNanos: request.clientSendElapsedNanos,
-          hostReceiveElapsedNanos: 5000000000,
-          hostSendElapsedNanos: 5000000010,
+        'message': SessionSnapshotMessage(
+          stage: SessionStage.monitoring,
+          monitoringActive: true,
+          devices: const <SessionDevice>[
+            SessionDevice(
+              id: 'local-device',
+              name: 'Client',
+              role: SessionDeviceRole.start,
+              isLocal: false,
+            ),
+            SessionDevice(
+              id: 'host-1',
+              name: 'Host',
+              role: SessionDeviceRole.stop,
+              isLocal: false,
+            ),
+          ],
+          timeline: SessionRaceTimeline.idle(),
+          hostSensorMinusElapsedNanos: 120000000,
+          selfDeviceId: 'local-device',
         ).toJsonString(),
       });
       await _flushEvents();
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    expect(fixture.controller.clockLockWarningText, isNotNull);
-    fixture.bridge.sentPayloads.clear();
+      final syncRequests = fixture.bridge.sentPayloads
+          .map(
+            (payload) =>
+                SessionClockSyncRequestMessage.tryParse(payload.messageJson),
+          )
+          .whereType<SessionClockSyncRequestMessage>()
+          .toList();
+      expect(syncRequests, hasLength(10));
 
-    await fixture.controller.onLocalMotionPulse(
-      const MotionTriggerEvent(
-        triggerSensorNanos: 2000000000,
-        score: 0.1,
-        type: MotionTriggerType.start,
-        splitIndex: 0,
-      ),
-    );
+      for (final request in syncRequests) {
+        final highRttClientReceiveElapsedNanos =
+            request.clientSendElapsedNanos + 130000000;
+        fixture.nativeBridge.emitEvent(<String, dynamic>{
+          'type': 'native_frame_stats',
+          'frameSensorNanos': highRttClientReceiveElapsedNanos + 500000000,
+          'rawScore': 0.01,
+          'baseline': 0.01,
+          'effectiveScore': 0.0,
+        });
+        await _flushEvents();
+        nowElapsedNanos = highRttClientReceiveElapsedNanos;
+        fixture.bridge.emitEvent(<String, dynamic>{
+          'type': 'payload_received',
+          'endpointId': 'host-1',
+          'message': SessionClockSyncResponseMessage(
+            clientSendElapsedNanos: request.clientSendElapsedNanos,
+            hostReceiveElapsedNanos: 5000000000,
+            hostSendElapsedNanos: 5000000010,
+          ).toJsonString(),
+        });
+        await _flushEvents();
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(fixture.controller.clockLockWarningText, isNotNull);
+      fixture.bridge.sentPayloads.clear();
 
-    final triggerRequests = fixture.bridge.sentPayloads
-        .map(
-          (payload) =>
-              SessionTriggerRequestMessage.tryParse(payload.messageJson),
-        )
-        .whereType<SessionTriggerRequestMessage>()
-        .toList();
-    expect(triggerRequests, isEmpty);
-    expect(fixture.controller.isClockLockWarningVisible, isTrue);
-    fixture.dispose();
-  });
+      await fixture.controller.onLocalMotionPulse(
+        const MotionTriggerEvent(
+          triggerSensorNanos: 2000000000,
+          score: 0.1,
+          type: MotionTriggerType.start,
+          splitIndex: 0,
+        ),
+      );
+
+      final triggerRequests = fixture.bridge.sentPayloads
+          .map(
+            (payload) =>
+                SessionTriggerRequestMessage.tryParse(payload.messageJson),
+          )
+          .whereType<SessionTriggerRequestMessage>()
+          .toList();
+      expect(triggerRequests, isEmpty);
+      expect(fixture.controller.isClockLockWarningVisible, isTrue);
+      fixture.dispose();
+    },
+  );
 
   test(
     'client runs second sync burst when first best RTT is above 20ms target',
