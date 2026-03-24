@@ -405,6 +405,58 @@ void main() {
     },
   );
 
+  test(
+    'host applies split fallback timestamp when mapped host sensor is missing',
+    () async {
+      int nowElapsedNanos = 5300000000;
+      final fixture = _ControllerFixture.create(
+        nowElapsedNanos: () => nowElapsedNanos,
+      );
+      await fixture.controller.createLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'peer-1',
+        'connected': true,
+      });
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'peer-2',
+        'connected': true,
+      });
+      await _flushEvents();
+      fixture.controller.goToLobby();
+      fixture.controller.assignRole('peer-1', SessionDeviceRole.start);
+      fixture.controller.assignRole('peer-2', SessionDeviceRole.split);
+      fixture.controller.assignRole('local-device', SessionDeviceRole.stop);
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'peer-1',
+        'message': const SessionTriggerRequestMessage(
+          role: SessionDeviceRole.start,
+          triggerSensorNanos: 100,
+          mappedHostSensorNanos: 5000000000,
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      nowElapsedNanos = 5300000000;
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'peer-2',
+        'message': const SessionTriggerRequestMessage(
+          role: SessionDeviceRole.split,
+          triggerSensorNanos: 200,
+          mappedHostSensorNanos: null,
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      expect(fixture.controller.timeline.splitElapsedNanos, <int>[300000000]);
+      fixture.dispose();
+    },
+  );
+
   test('split role only records first split per run', () async {
     final fixture = _ControllerFixture.create();
     await fixture.controller.createLobby();
@@ -520,6 +572,61 @@ void main() {
     expect(fixture.controller.timeline.splitElapsedNanos, <int>[400000000]);
     fixture.dispose();
   });
+
+  test(
+    'split role still records after total device count drops during monitoring',
+    () async {
+      final fixture = _ControllerFixture.create();
+      await fixture.controller.createLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'peer-1',
+        'connected': true,
+      });
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'peer-2',
+        'connected': true,
+      });
+      await _flushEvents();
+      fixture.controller.goToLobby();
+      fixture.controller.assignRole('peer-1', SessionDeviceRole.start);
+      fixture.controller.assignRole('peer-2', SessionDeviceRole.split);
+      fixture.controller.assignRole('local-device', SessionDeviceRole.stop);
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'peer-1',
+        'message': const SessionTriggerRequestMessage(
+          role: SessionDeviceRole.start,
+          triggerSensorNanos: 100,
+          mappedHostSensorNanos: 5000000000,
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'endpoint_disconnected',
+        'endpointId': 'peer-1',
+      });
+      await _flushEvents();
+      expect(fixture.controller.totalDeviceCount, 2);
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'peer-2',
+        'message': const SessionTriggerRequestMessage(
+          role: SessionDeviceRole.split,
+          triggerSensorNanos: 200,
+          mappedHostSensorNanos: 5300000000,
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      expect(fixture.controller.timeline.splitElapsedNanos, <int>[300000000]);
+      fixture.dispose();
+    },
+  );
 
   test('split allowance resets on new run after reset', () async {
     final fixture = _ControllerFixture.create();
@@ -1900,6 +2007,68 @@ void main() {
         fixture.motionController.config.cameraFacing,
         MotionCameraFacing.front,
       );
+      fixture.dispose();
+    },
+  );
+
+  test(
+    'client split trigger is sent when clock lock is invalid',
+    () async {
+      final fixture = _ControllerFixture.create();
+      await fixture.controller.joinLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'host-1',
+        'connected': true,
+      });
+      await _flushEvents();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'host-1',
+        'message': SessionSnapshotMessage(
+          stage: SessionStage.monitoring,
+          monitoringActive: true,
+          devices: const <SessionDevice>[
+            SessionDevice(
+              id: 'local-device',
+              name: 'Client',
+              role: SessionDeviceRole.split,
+              isLocal: false,
+            ),
+            SessionDevice(
+              id: 'host-1',
+              name: 'Host',
+              role: SessionDeviceRole.stop,
+              isLocal: false,
+            ),
+          ],
+          timeline: SessionRaceTimeline.idle(),
+          hostSensorMinusElapsedNanos: 120000000,
+          selfDeviceId: 'local-device',
+        ).toJsonString(),
+      });
+      await _flushEvents();
+      fixture.bridge.sentPayloads.clear();
+
+      await fixture.controller.onLocalMotionPulse(
+        const MotionTriggerEvent(
+          triggerSensorNanos: 2000000000,
+          score: 0.1,
+          type: MotionTriggerType.split,
+          splitIndex: 1,
+        ),
+      );
+
+      final triggerRequests = fixture.bridge.sentPayloads
+          .map(
+            (payload) =>
+                SessionTriggerRequestMessage.tryParse(payload.messageJson),
+          )
+          .whereType<SessionTriggerRequestMessage>()
+          .toList();
+      expect(triggerRequests, hasLength(1));
+      expect(triggerRequests.single.role, SessionDeviceRole.split);
+      expect(triggerRequests.single.mappedHostSensorNanos, isNull);
       fixture.dispose();
     },
   );

@@ -370,6 +370,20 @@ class RaceSessionController extends ChangeNotifier {
         trigger.triggerSensorNanos,
       );
       if (mappedHostSensorNanos == null) {
+        if (localRole == SessionDeviceRole.split) {
+          _errorText =
+              'Split trigger sent without valid clock lock; host timestamp fallback applied.';
+          notifyListeners();
+          await _nearbyBridge.sendBytes(
+            endpointId: _connectedEndpointIds.first,
+            messageJson: SessionTriggerRequestMessage(
+              role: localRole,
+              triggerSensorNanos: trigger.triggerSensorNanos,
+              mappedHostSensorNanos: null,
+            ).toJsonString(),
+          );
+          return;
+        }
         _errorText =
             'Trigger rejected: no valid clock lock (no sync, stale sync, or RTT > ${_maxClockSyncRttNanos ~/ 1000000}ms).';
         notifyListeners();
@@ -409,7 +423,6 @@ class RaceSessionController extends ChangeNotifier {
     required int triggerSensorNanos,
   }) async {
     if (role == SessionDeviceRole.unassigned) return;
-    if (role == SessionDeviceRole.split && !canShowSplitControls) return;
     final startedSensorNanos = _timeline.startedSensorNanos;
     if (role == SessionDeviceRole.start) {
       if (_timeline.hasStarted) return;
@@ -690,8 +703,12 @@ class RaceSessionController extends ChangeNotifier {
     if (triggerRequest != null && isHost && endpointId != null) {
       final role = _devices[endpointId]?.role ?? SessionDeviceRole.unassigned;
       if (role == triggerRequest.role) {
-        final mappedHostSensorNanos = triggerRequest.mappedHostSensorNanos;
-        if (mappedHostSensorNanos == null) {
+        var resolvedHostSensorNanos = triggerRequest.mappedHostSensorNanos;
+        if (resolvedHostSensorNanos == null &&
+            role == SessionDeviceRole.split) {
+          resolvedHostSensorNanos = _estimateLocalSensorNanosNow();
+        }
+        if (resolvedHostSensorNanos == null) {
           _errorText =
               'Rejected trigger from $endpointId: missing mappedHostSensorNanos.';
           notifyListeners();
@@ -699,7 +716,7 @@ class RaceSessionController extends ChangeNotifier {
         }
         await _applyRoleEvent(
           role: role,
-          triggerSensorNanos: mappedHostSensorNanos,
+          triggerSensorNanos: resolvedHostSensorNanos,
         );
       }
       return;
