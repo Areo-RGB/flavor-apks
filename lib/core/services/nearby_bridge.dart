@@ -76,6 +76,24 @@ class NearbyBridge {
     return <String, dynamic>{'granted': false, 'denied': <String>[]};
   }
 
+  Future<Map<String, dynamic>> getPermissionStatus() async {
+    try {
+      final response = await _methodChannel.invokeMethod<dynamic>(
+        'getPermissionStatus',
+      );
+      if (response is Map) {
+        return Map<String, dynamic>.from(response);
+      }
+    } on MissingPluginException {
+      // Test and non-Android environments may not expose the platform method.
+    } on PlatformException catch (error) {
+      if (error.code != 'unimplemented') {
+        rethrow;
+      }
+    }
+    return <String, dynamic>{'granted': false, 'denied': <String>[]};
+  }
+
   Future<void> startHosting({
     required String serviceId,
     required String endpointName,

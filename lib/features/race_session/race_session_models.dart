@@ -153,6 +153,8 @@ class SessionSnapshotMessage {
     required this.devices,
     required this.timeline,
     this.hostSensorMinusElapsedNanos,
+    this.hostGpsUtcOffsetNanos,
+    this.hostGpsFixAgeNanos,
     this.selfDeviceId,
   });
 
@@ -161,6 +163,8 @@ class SessionSnapshotMessage {
   final List<SessionDevice> devices;
   final SessionRaceTimeline timeline;
   final int? hostSensorMinusElapsedNanos;
+  final int? hostGpsUtcOffsetNanos;
+  final int? hostGpsFixAgeNanos;
   final String? selfDeviceId;
 
   Map<String, dynamic> toJson() {
@@ -171,6 +175,8 @@ class SessionSnapshotMessage {
       'devices': devices.map((device) => device.toJson()).toList(),
       'timeline': timeline.toJson(),
       'hostSensorMinusElapsedNanos': hostSensorMinusElapsedNanos,
+      'hostGpsUtcOffsetNanos': hostGpsUtcOffsetNanos,
+      'hostGpsFixAgeNanos': hostGpsFixAgeNanos,
       'selfDeviceId': selfDeviceId,
     };
   }
@@ -209,6 +215,9 @@ class SessionSnapshotMessage {
         timeline: SessionRaceTimeline.fromJson(decoded['timeline']),
         hostSensorMinusElapsedNanos:
             (decoded['hostSensorMinusElapsedNanos'] as num?)?.toInt(),
+        hostGpsUtcOffsetNanos: (decoded['hostGpsUtcOffsetNanos'] as num?)
+            ?.toInt(),
+        hostGpsFixAgeNanos: (decoded['hostGpsFixAgeNanos'] as num?)?.toInt(),
         selfDeviceId: decoded['selfDeviceId']?.toString(),
       );
     } catch (_) {

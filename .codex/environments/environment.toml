@@ -11,6 +11,11 @@ icon = "run"
 command = "flutter run"
 
 [[actions]]
+name = "Run debug (all devices)"
+icon = "play"
+command = "flutter run --debug -d all"
+
+[[actions]]
 name = "Build debug APK"
 icon = "build"
 command = "flutter build apk --debug"
@@ -24,3 +29,8 @@ command = "npm run install:debug:devices"
 name = "Build & install debug (all devices)"
 icon = "package"
 command = "npm run rebuild:debug:devices"
+
+[[actions]]
+name = "Build & install release (all devices)"
+icon = "rocket"
+command = "npm run rebuild:release:devices"

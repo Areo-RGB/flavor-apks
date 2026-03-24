@@ -189,4 +189,20 @@ object SensorTimeMath {
     fun elapsedToSensorNanos(elapsedNanos: Long, sensorMinusElapsedNanos: Long): Long {
         return elapsedNanos + sensorMinusElapsedNanos
     }
+
+    fun sensorToUtcNanos(
+        sensorNanos: Long,
+        sensorMinusElapsedNanos: Long,
+        gpsUtcOffsetNanos: Long,
+    ): Long {
+        return sensorToElapsedNanos(sensorNanos, sensorMinusElapsedNanos) + gpsUtcOffsetNanos
+    }
+
+    fun utcToSensorNanos(
+        utcNanos: Long,
+        sensorMinusElapsedNanos: Long,
+        gpsUtcOffsetNanos: Long,
+    ): Long {
+        return elapsedToSensorNanos(utcNanos - gpsUtcOffsetNanos, sensorMinusElapsedNanos)
+    }
 }

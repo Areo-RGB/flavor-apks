@@ -41,4 +41,17 @@ class NativeSensorBridge {
   Future<void> resetNativeRun() {
     return _methodChannel.invokeMethod<void>('resetNativeRun');
   }
+
+  Future<void> warmupGpsSync() async {
+    try {
+      await _methodChannel.invokeMethod<void>('warmupGpsSync');
+    } on MissingPluginException {
+      // Non-Android platforms or tests may not expose native sensor methods.
+    } on PlatformException catch (error) {
+      if (error.code == 'unimplemented') {
+        return;
+      }
+      rethrow;
+    }
+  }
 }

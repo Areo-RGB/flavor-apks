@@ -65,7 +65,7 @@ class RaceSessionScreen extends StatelessWidget {
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      if (!controller.permissionsGranted)
+                      if (controller.shouldShowPermissionsButton)
                         FilledButton.icon(
                           key: const ValueKey<String>('permissions_button'),
                           onPressed: controller.busy
@@ -248,7 +248,13 @@ class RaceSessionScreen extends StatelessWidget {
 
   Widget _buildMonitoringScaffold(BuildContext context) {
     final latencyMs = controller.monitoringLatencyMs;
-    final latencyLabel = latencyMs == null ? '-' : '$latencyMs ms';
+    final syncModeLabel = controller.monitoringSyncModeLabel;
+    final latencyLabel = switch (syncModeLabel) {
+      'NTP' => latencyMs == null ? '-' : '$latencyMs ms',
+      'GPS' => 'GPS',
+      _ => '-',
+    };
+    final clockLockWarningText = controller.clockLockWarningText;
     return Scaffold(
       appBar: AppBar(
         title: const Text(
@@ -301,14 +307,59 @@ class RaceSessionScreen extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 2),
-                Text(
-                  'Connection: ${controller.monitoringConnectionTypeLabel} · '
-                  'Latency: $latencyLabel',
+                Column(
                   key: const ValueKey<String>('monitoring_connection_info'),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Connection: ${controller.monitoringConnectionTypeLabel}',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    Text(
+                      'Sync: $syncModeLabel · Latency: $latencyLabel',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ],
                 ),
+                if (clockLockWarningText != null) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    key: const ValueKey<String>('clock_lock_warning_banner'),
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.shade50,
+                      border: Border.all(color: Colors.orange.shade200),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.only(top: 1),
+                          child: Icon(
+                            Icons.warning_amber_rounded,
+                            size: 16,
+                            color: Colors.orange,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            clockLockWarningText,
+                            style: const TextStyle(
+                              color: Colors.black87,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

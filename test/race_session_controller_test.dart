@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sprint_sync/core/repositories/local_repository.dart';
 import 'package:sprint_sync/core/services/native_sensor_bridge.dart';
 import 'package:sprint_sync/core/services/nearby_bridge.dart';
+import 'package:sprint_sync/core/services/wake_lock_bridge.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_controller.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
 import 'package:sprint_sync/features/race_session/race_session_controller.dart';
@@ -33,6 +34,221 @@ void main() {
     expect(fixture.controller.canGoToLobby, isTrue);
     fixture.dispose();
   });
+
+  test('host startMonitoring enables wake lock once', () async {
+    final fixture = _ControllerFixture.create();
+    await fixture.controller.createLobby();
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'connection_result',
+      'endpointId': 'peer-1',
+      'connected': true,
+    });
+    await _flushEvents();
+    fixture.controller.goToLobby();
+    fixture.controller.assignRole('local-device', SessionDeviceRole.start);
+    fixture.controller.assignRole('peer-1', SessionDeviceRole.stop);
+    fixture.wakeLockBridge.resetCounts();
+
+    await fixture.controller.startMonitoring();
+    await _flushEvents();
+
+    expect(fixture.wakeLockBridge.enableCalls, 1);
+    expect(fixture.wakeLockBridge.disableCalls, 0);
+    fixture.dispose();
+  });
+
+  test('host stopMonitoring disables wake lock', () async {
+    final fixture = _ControllerFixture.create();
+    await fixture.controller.createLobby();
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'connection_result',
+      'endpointId': 'peer-1',
+      'connected': true,
+    });
+    await _flushEvents();
+    fixture.controller.goToLobby();
+    fixture.controller.assignRole('local-device', SessionDeviceRole.start);
+    fixture.controller.assignRole('peer-1', SessionDeviceRole.stop);
+    fixture.wakeLockBridge.resetCounts();
+    await fixture.controller.startMonitoring();
+    await _flushEvents();
+
+    await fixture.controller.stopMonitoring();
+    await _flushEvents();
+
+    expect(fixture.wakeLockBridge.enableCalls, 1);
+    expect(fixture.wakeLockBridge.disableCalls, 1);
+    fixture.dispose();
+  });
+
+  test('client snapshot transition to monitoring enables wake lock', () async {
+    final fixture = _ControllerFixture.create();
+    await fixture.controller.joinLobby();
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'connection_result',
+      'endpointId': 'host-1',
+      'connected': true,
+    });
+    await _flushEvents();
+    fixture.wakeLockBridge.resetCounts();
+
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'payload_received',
+      'endpointId': 'host-1',
+      'message': SessionSnapshotMessage(
+        stage: SessionStage.monitoring,
+        monitoringActive: true,
+        devices: const <SessionDevice>[
+          SessionDevice(
+            id: 'local-device',
+            name: 'Client',
+            role: SessionDeviceRole.start,
+            isLocal: false,
+          ),
+          SessionDevice(
+            id: 'host-1',
+            name: 'Host',
+            role: SessionDeviceRole.stop,
+            isLocal: false,
+          ),
+        ],
+        timeline: SessionRaceTimeline.idle(),
+        hostSensorMinusElapsedNanos: 120000000,
+        selfDeviceId: 'local-device',
+      ).toJsonString(),
+    });
+    await _flushEvents();
+
+    expect(fixture.wakeLockBridge.enableCalls, 1);
+    fixture.dispose();
+  });
+
+  test(
+    'client snapshot transition out of monitoring disables wake lock',
+    () async {
+      final fixture = _ControllerFixture.create();
+      await fixture.controller.joinLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'host-1',
+        'connected': true,
+      });
+      await _flushEvents();
+      fixture.wakeLockBridge.resetCounts();
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'host-1',
+        'message': SessionSnapshotMessage(
+          stage: SessionStage.monitoring,
+          monitoringActive: true,
+          devices: const <SessionDevice>[
+            SessionDevice(
+              id: 'local-device',
+              name: 'Client',
+              role: SessionDeviceRole.start,
+              isLocal: false,
+            ),
+            SessionDevice(
+              id: 'host-1',
+              name: 'Host',
+              role: SessionDeviceRole.stop,
+              isLocal: false,
+            ),
+          ],
+          timeline: SessionRaceTimeline.idle(),
+          hostSensorMinusElapsedNanos: 120000000,
+          selfDeviceId: 'local-device',
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'host-1',
+        'message': SessionSnapshotMessage(
+          stage: SessionStage.lobby,
+          monitoringActive: false,
+          devices: const <SessionDevice>[
+            SessionDevice(
+              id: 'local-device',
+              name: 'Client',
+              role: SessionDeviceRole.start,
+              isLocal: false,
+            ),
+            SessionDevice(
+              id: 'host-1',
+              name: 'Host',
+              role: SessionDeviceRole.stop,
+              isLocal: false,
+            ),
+          ],
+          timeline: SessionRaceTimeline.idle(),
+          hostSensorMinusElapsedNanos: 120000000,
+          selfDeviceId: 'local-device',
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      expect(fixture.wakeLockBridge.enableCalls, 1);
+      expect(fixture.wakeLockBridge.disableCalls, 1);
+      fixture.dispose();
+    },
+  );
+
+  test('dispose releases wake lock when monitoring is active', () async {
+    final fixture = _ControllerFixture.create();
+    await fixture.controller.createLobby();
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'connection_result',
+      'endpointId': 'peer-1',
+      'connected': true,
+    });
+    await _flushEvents();
+    fixture.controller.goToLobby();
+    fixture.controller.assignRole('local-device', SessionDeviceRole.start);
+    fixture.controller.assignRole('peer-1', SessionDeviceRole.stop);
+    fixture.wakeLockBridge.resetCounts();
+    await fixture.controller.startMonitoring();
+    await _flushEvents();
+
+    fixture.controller.dispose();
+    await _flushEvents();
+
+    expect(fixture.wakeLockBridge.enableCalls, 1);
+    expect(fixture.wakeLockBridge.disableCalls, 1);
+    fixture.motionController.dispose();
+    fixture.bridge.dispose();
+    fixture.nativeBridge.dispose();
+  });
+
+  test(
+    'reset session path releases wake lock from active monitoring',
+    () async {
+      final fixture = _ControllerFixture.create();
+      await fixture.controller.createLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'peer-1',
+        'connected': true,
+      });
+      await _flushEvents();
+      fixture.controller.goToLobby();
+      fixture.controller.assignRole('local-device', SessionDeviceRole.start);
+      fixture.controller.assignRole('peer-1', SessionDeviceRole.stop);
+      fixture.wakeLockBridge.resetCounts();
+      await fixture.controller.startMonitoring();
+      await _flushEvents();
+
+      await fixture.controller.joinLobby();
+      await _flushEvents();
+
+      expect(fixture.wakeLockBridge.enableCalls, 1);
+      expect(fixture.wakeLockBridge.disableCalls, 1);
+      expect(fixture.controller.monitoringActive, isFalse);
+      fixture.dispose();
+    },
+  );
 
   test(
     'host uses endpointName from connection_result for device label',
@@ -357,6 +573,7 @@ void main() {
       });
       await _flushEvents();
       expect(fixture.controller.monitoringLatencyMs, isNotNull);
+      expect(fixture.controller.monitoringSyncModeLabel, 'NTP');
       fixture.bridge.sentPayloads.clear();
 
       await fixture.controller.onLocalMotionPulse(
@@ -380,6 +597,397 @@ void main() {
       fixture.dispose();
     },
   );
+
+  test('client uses GPS offset when both devices have fresh GPS', () async {
+    final fixture = _ControllerFixture.create();
+    await fixture.controller.joinLobby();
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'connection_result',
+      'endpointId': 'host-1',
+      'connected': true,
+    });
+    await _flushEvents();
+    fixture.bridge.sentPayloads.clear();
+
+    fixture.nativeBridge.emitEvent(<String, dynamic>{
+      'type': 'native_state',
+      'hostSensorMinusElapsedNanos': 700000000,
+      'gpsUtcOffsetNanos': 3000000000,
+      'gpsFixElapsedRealtimeNanos': 1295000000,
+    });
+    fixture.nativeBridge.emitEvent(<String, dynamic>{
+      'type': 'native_frame_stats',
+      'frameSensorNanos': 2000000000,
+      'rawScore': 0.01,
+      'baseline': 0.01,
+      'effectiveScore': 0.0,
+      'gpsUtcOffsetNanos': 3000000000,
+      'gpsFixElapsedRealtimeNanos': 1295000000,
+    });
+    await _flushEvents();
+
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'payload_received',
+      'endpointId': 'host-1',
+      'message': SessionSnapshotMessage(
+        stage: SessionStage.monitoring,
+        monitoringActive: true,
+        devices: const <SessionDevice>[
+          SessionDevice(
+            id: 'local-device',
+            name: 'Client',
+            role: SessionDeviceRole.start,
+            isLocal: false,
+          ),
+          SessionDevice(
+            id: 'host-1',
+            name: 'Host',
+            role: SessionDeviceRole.stop,
+            isLocal: false,
+          ),
+        ],
+        timeline: SessionRaceTimeline.idle(),
+        hostSensorMinusElapsedNanos: 120000000,
+        hostGpsUtcOffsetNanos: 2800000000,
+        hostGpsFixAgeNanos: 1000000,
+        selfDeviceId: 'local-device',
+      ).toJsonString(),
+    });
+    await _flushEvents();
+
+    final syncRequests = fixture.bridge.sentPayloads
+        .map(
+          (payload) =>
+              SessionClockSyncRequestMessage.tryParse(payload.messageJson),
+        )
+        .whereType<SessionClockSyncRequestMessage>()
+        .toList();
+    expect(syncRequests, isEmpty);
+    expect(fixture.controller.monitoringSyncModeLabel, 'GPS');
+    expect(fixture.controller.monitoringLatencyMs, isNull);
+
+    await fixture.controller.onLocalMotionPulse(
+      const MotionTriggerEvent(
+        triggerSensorNanos: 2000000000,
+        score: 0.1,
+        type: MotionTriggerType.start,
+        splitIndex: 0,
+      ),
+    );
+
+    final triggerRequests = fixture.bridge.sentPayloads
+        .map(
+          (payload) =>
+              SessionTriggerRequestMessage.tryParse(payload.messageJson),
+        )
+        .whereType<SessionTriggerRequestMessage>()
+        .toList();
+    expect(triggerRequests, isNotEmpty);
+    expect(triggerRequests.last.mappedHostSensorNanos, 1620000000);
+    fixture.dispose();
+  });
+
+  test('client falls back to NTP when GPS is unavailable', () async {
+    final fixture = _ControllerFixture.create();
+    await fixture.controller.joinLobby();
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'connection_result',
+      'endpointId': 'host-1',
+      'connected': true,
+    });
+    await _flushEvents();
+    fixture.bridge.sentPayloads.clear();
+
+    fixture.nativeBridge.emitEvent(<String, dynamic>{
+      'type': 'native_state',
+      'hostSensorMinusElapsedNanos': 700000000,
+    });
+    fixture.nativeBridge.emitEvent(<String, dynamic>{
+      'type': 'native_frame_stats',
+      'frameSensorNanos': 2000000000,
+      'rawScore': 0.01,
+      'baseline': 0.01,
+      'effectiveScore': 0.0,
+    });
+    await _flushEvents();
+
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'payload_received',
+      'endpointId': 'host-1',
+      'message': SessionSnapshotMessage(
+        stage: SessionStage.monitoring,
+        monitoringActive: true,
+        devices: const <SessionDevice>[
+          SessionDevice(
+            id: 'local-device',
+            name: 'Client',
+            role: SessionDeviceRole.start,
+            isLocal: false,
+          ),
+          SessionDevice(
+            id: 'host-1',
+            name: 'Host',
+            role: SessionDeviceRole.stop,
+            isLocal: false,
+          ),
+        ],
+        timeline: SessionRaceTimeline.idle(),
+        hostSensorMinusElapsedNanos: 120000000,
+        selfDeviceId: 'local-device',
+      ).toJsonString(),
+    });
+    await _flushEvents();
+
+    final syncRequests = fixture.bridge.sentPayloads
+        .map(
+          (payload) =>
+              SessionClockSyncRequestMessage.tryParse(payload.messageJson),
+        )
+        .whereType<SessionClockSyncRequestMessage>()
+        .toList();
+    expect(syncRequests, hasLength(10));
+    fixture.dispose();
+  });
+
+  test('client falls back to NTP when GPS is stale', () async {
+    final fixture = _ControllerFixture.create();
+    await fixture.controller.joinLobby();
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'connection_result',
+      'endpointId': 'host-1',
+      'connected': true,
+    });
+    await _flushEvents();
+    fixture.bridge.sentPayloads.clear();
+
+    fixture.nativeBridge.emitEvent(<String, dynamic>{
+      'type': 'native_state',
+      'hostSensorMinusElapsedNanos': 700000000,
+      'gpsUtcOffsetNanos': 3000000000,
+      'gpsFixElapsedRealtimeNanos': 1000000000,
+    });
+    fixture.nativeBridge.emitEvent(<String, dynamic>{
+      'type': 'native_frame_stats',
+      'frameSensorNanos': 15000000000,
+      'rawScore': 0.01,
+      'baseline': 0.01,
+      'effectiveScore': 0.0,
+      'gpsUtcOffsetNanos': 3000000000,
+      'gpsFixElapsedRealtimeNanos': 1000000000,
+    });
+    await _flushEvents();
+
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'payload_received',
+      'endpointId': 'host-1',
+      'message': SessionSnapshotMessage(
+        stage: SessionStage.monitoring,
+        monitoringActive: true,
+        devices: const <SessionDevice>[
+          SessionDevice(
+            id: 'local-device',
+            name: 'Client',
+            role: SessionDeviceRole.start,
+            isLocal: false,
+          ),
+          SessionDevice(
+            id: 'host-1',
+            name: 'Host',
+            role: SessionDeviceRole.stop,
+            isLocal: false,
+          ),
+        ],
+        timeline: SessionRaceTimeline.idle(),
+        hostSensorMinusElapsedNanos: 120000000,
+        hostGpsUtcOffsetNanos: 2800000000,
+        hostGpsFixAgeNanos: 1000000,
+        selfDeviceId: 'local-device',
+      ).toJsonString(),
+    });
+    await _flushEvents();
+
+    final syncRequests = fixture.bridge.sentPayloads
+        .map(
+          (payload) =>
+              SessionClockSyncRequestMessage.tryParse(payload.messageJson),
+        )
+        .whereType<SessionClockSyncRequestMessage>()
+        .toList();
+    expect(syncRequests, hasLength(10));
+    fixture.dispose();
+  });
+
+  test('GPS offset is preferred over NTP when both are available', () async {
+    int nowElapsedNanos = 1200000000;
+    final fixture = _ControllerFixture.create(
+      nowElapsedNanos: () => nowElapsedNanos,
+    );
+    await fixture.controller.joinLobby();
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'connection_result',
+      'endpointId': 'host-1',
+      'connected': true,
+    });
+    await _flushEvents();
+
+    final initialSyncRequests = fixture.bridge.sentPayloads
+        .map(
+          (payload) =>
+              SessionClockSyncRequestMessage.tryParse(payload.messageJson),
+        )
+        .whereType<SessionClockSyncRequestMessage>()
+        .toList();
+    expect(initialSyncRequests, hasLength(10));
+    final syncRequest = initialSyncRequests.first;
+    nowElapsedNanos = 1300000000;
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'payload_received',
+      'endpointId': 'host-1',
+      'message': SessionClockSyncResponseMessage(
+        clientSendElapsedNanos: syncRequest.clientSendElapsedNanos,
+        hostReceiveElapsedNanos: 5050000000,
+        hostSendElapsedNanos: 5050000010,
+      ).toJsonString(),
+    });
+    await _flushEvents();
+
+    fixture.nativeBridge.emitEvent(<String, dynamic>{
+      'type': 'native_state',
+      'hostSensorMinusElapsedNanos': 700000000,
+      'gpsUtcOffsetNanos': 3000000000,
+      'gpsFixElapsedRealtimeNanos': 1295000000,
+    });
+    fixture.nativeBridge.emitEvent(<String, dynamic>{
+      'type': 'native_frame_stats',
+      'frameSensorNanos': 2000000000,
+      'rawScore': 0.01,
+      'baseline': 0.01,
+      'effectiveScore': 0.0,
+      'gpsUtcOffsetNanos': 3000000000,
+      'gpsFixElapsedRealtimeNanos': 1295000000,
+    });
+    await _flushEvents();
+    fixture.bridge.sentPayloads.clear();
+
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'payload_received',
+      'endpointId': 'host-1',
+      'message': SessionSnapshotMessage(
+        stage: SessionStage.monitoring,
+        monitoringActive: true,
+        devices: const <SessionDevice>[
+          SessionDevice(
+            id: 'local-device',
+            name: 'Client',
+            role: SessionDeviceRole.start,
+            isLocal: false,
+          ),
+          SessionDevice(
+            id: 'host-1',
+            name: 'Host',
+            role: SessionDeviceRole.stop,
+            isLocal: false,
+          ),
+        ],
+        timeline: SessionRaceTimeline.idle(),
+        hostSensorMinusElapsedNanos: 120000000,
+        hostGpsUtcOffsetNanos: 2800000000,
+        hostGpsFixAgeNanos: 1000000,
+        selfDeviceId: 'local-device',
+      ).toJsonString(),
+    });
+    await _flushEvents();
+    fixture.bridge.sentPayloads.clear();
+
+    await fixture.controller.onLocalMotionPulse(
+      const MotionTriggerEvent(
+        triggerSensorNanos: 2000000000,
+        score: 0.1,
+        type: MotionTriggerType.start,
+        splitIndex: 0,
+      ),
+    );
+
+    final triggerRequests = fixture.bridge.sentPayloads
+        .map(
+          (payload) =>
+              SessionTriggerRequestMessage.tryParse(payload.messageJson),
+        )
+        .whereType<SessionTriggerRequestMessage>()
+        .toList();
+    expect(triggerRequests, isNotEmpty);
+    expect(triggerRequests.last.mappedHostSensorNanos, 1620000000);
+    expect(fixture.controller.monitoringSyncModeLabel, 'GPS');
+    expect(fixture.controller.monitoringLatencyMs, isNull);
+    fixture.dispose();
+  });
+
+  test('host rebroadcasts snapshot when host GPS offset changes', () async {
+    final fixture = _ControllerFixture.create();
+    await fixture.controller.createLobby();
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'connection_result',
+      'endpointId': 'peer-1',
+      'connected': true,
+    });
+    await _flushEvents();
+    fixture.controller.goToLobby();
+    fixture.controller.assignRole('local-device', SessionDeviceRole.start);
+    fixture.controller.assignRole('peer-1', SessionDeviceRole.stop);
+    await fixture.controller.startMonitoring();
+    await _flushEvents();
+    fixture.bridge.sentPayloads.clear();
+
+    fixture.nativeBridge.emitEvent(<String, dynamic>{
+      'type': 'native_state',
+      'hostSensorMinusElapsedNanos': 500000000,
+      'gpsUtcOffsetNanos': 4000000000,
+      'gpsFixElapsedRealtimeNanos': 2500000000,
+    });
+    fixture.nativeBridge.emitEvent(<String, dynamic>{
+      'type': 'native_frame_stats',
+      'frameSensorNanos': 3000000000,
+      'rawScore': 0.01,
+      'baseline': 0.01,
+      'effectiveScore': 0.0,
+      'gpsUtcOffsetNanos': 4000000000,
+      'gpsFixElapsedRealtimeNanos': 2500000000,
+    });
+    await _flushEvents();
+
+    final firstSnapshots = fixture.bridge.sentPayloads
+        .map((payload) => SessionSnapshotMessage.tryParse(payload.messageJson))
+        .whereType<SessionSnapshotMessage>()
+        .toList();
+    expect(firstSnapshots, isNotEmpty);
+    expect(firstSnapshots.last.hostGpsUtcOffsetNanos, 4000000000);
+    fixture.bridge.sentPayloads.clear();
+
+    fixture.nativeBridge.emitEvent(<String, dynamic>{
+      'type': 'native_state',
+      'hostSensorMinusElapsedNanos': 500000000,
+      'gpsUtcOffsetNanos': 4100000000,
+      'gpsFixElapsedRealtimeNanos': 3500000000,
+    });
+    fixture.nativeBridge.emitEvent(<String, dynamic>{
+      'type': 'native_frame_stats',
+      'frameSensorNanos': 5000000000,
+      'rawScore': 0.01,
+      'baseline': 0.01,
+      'effectiveScore': 0.0,
+      'gpsUtcOffsetNanos': 4100000000,
+      'gpsFixElapsedRealtimeNanos': 3500000000,
+    });
+    await _flushEvents();
+
+    final secondSnapshots = fixture.bridge.sentPayloads
+        .map((payload) => SessionSnapshotMessage.tryParse(payload.messageJson))
+        .whereType<SessionSnapshotMessage>()
+        .toList();
+    expect(secondSnapshots, isNotEmpty);
+    expect(secondSnapshots.last.hostGpsUtcOffsetNanos, 4100000000);
+    fixture.dispose();
+  });
 
   test(
     'client trigger is rejected when there is no valid clock sync',
@@ -444,6 +1052,11 @@ void main() {
           .toList();
       expect(triggerRequests, isEmpty);
       expect(fixture.controller.errorText, contains('no valid clock lock'));
+      expect(fixture.controller.isClockLockWarningVisible, isTrue);
+      expect(
+        fixture.controller.clockLockWarningText,
+        contains('being dropped'),
+      );
       fixture.dispose();
     },
   );
@@ -699,7 +1312,7 @@ void main() {
     },
   );
 
-  test('client trigger is rejected when clock sync RTT exceeds 20ms', () async {
+  test('client trigger is rejected when clock sync RTT exceeds 100ms', () async {
     int nowElapsedNanos = 1000000000;
     final fixture = _ControllerFixture.create(
       nowElapsedNanos: () => nowElapsedNanos,
@@ -750,17 +1363,31 @@ void main() {
         .toList();
     expect(syncRequests, hasLength(10));
 
-    nowElapsedNanos = syncRequests.first.clientSendElapsedNanos + 30000000;
-    fixture.bridge.emitEvent(<String, dynamic>{
-      'type': 'payload_received',
-      'endpointId': 'host-1',
-      'message': SessionClockSyncResponseMessage(
-        clientSendElapsedNanos: syncRequests.first.clientSendElapsedNanos,
-        hostReceiveElapsedNanos: 5000000000,
-        hostSendElapsedNanos: 5000000010,
-      ).toJsonString(),
-    });
-    await _flushEvents();
+    for (final request in syncRequests) {
+      final highRttClientReceiveElapsedNanos =
+          request.clientSendElapsedNanos + 130000000;
+      fixture.nativeBridge.emitEvent(<String, dynamic>{
+        'type': 'native_frame_stats',
+        'frameSensorNanos': highRttClientReceiveElapsedNanos + 500000000,
+        'rawScore': 0.01,
+        'baseline': 0.01,
+        'effectiveScore': 0.0,
+      });
+      await _flushEvents();
+      nowElapsedNanos = highRttClientReceiveElapsedNanos;
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'host-1',
+        'message': SessionClockSyncResponseMessage(
+          clientSendElapsedNanos: request.clientSendElapsedNanos,
+          hostReceiveElapsedNanos: 5000000000,
+          hostSendElapsedNanos: 5000000010,
+        ).toJsonString(),
+      });
+      await _flushEvents();
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(fixture.controller.clockLockWarningText, isNotNull);
     fixture.bridge.sentPayloads.clear();
 
     await fixture.controller.onLocalMotionPulse(
@@ -780,9 +1407,100 @@ void main() {
         .whereType<SessionTriggerRequestMessage>()
         .toList();
     expect(triggerRequests, isEmpty);
-    expect(fixture.controller.errorText, contains('RTT'));
+    expect(fixture.controller.isClockLockWarningVisible, isTrue);
     fixture.dispose();
   });
+
+  test(
+    'client runs second sync burst when first best RTT is above 20ms target',
+    () async {
+      int nowElapsedNanos = 1000000000;
+      final fixture = _ControllerFixture.create(
+        nowElapsedNanos: () => nowElapsedNanos,
+      );
+      await fixture.controller.joinLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'host-1',
+        'connected': true,
+      });
+      await _flushEvents();
+      fixture.nativeBridge.emitEvent(<String, dynamic>{
+        'type': 'native_state',
+        'hostSensorMinusElapsedNanos': 500000000,
+      });
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'host-1',
+        'message': SessionSnapshotMessage(
+          stage: SessionStage.monitoring,
+          monitoringActive: true,
+          devices: const <SessionDevice>[
+            SessionDevice(
+              id: 'local-device',
+              name: 'Client',
+              role: SessionDeviceRole.start,
+              isLocal: false,
+            ),
+            SessionDevice(
+              id: 'host-1',
+              name: 'Host',
+              role: SessionDeviceRole.stop,
+              isLocal: false,
+            ),
+          ],
+          timeline: SessionRaceTimeline.idle(),
+          hostSensorMinusElapsedNanos: 120000000,
+          selfDeviceId: 'local-device',
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      final firstBurstRequests = fixture.bridge.sentPayloads
+          .map(
+            (payload) =>
+                SessionClockSyncRequestMessage.tryParse(payload.messageJson),
+          )
+          .whereType<SessionClockSyncRequestMessage>()
+          .toList();
+      expect(firstBurstRequests, hasLength(10));
+
+      for (final request in firstBurstRequests) {
+        final firstBurstClientReceiveElapsedNanos =
+            request.clientSendElapsedNanos + 40000000;
+        fixture.nativeBridge.emitEvent(<String, dynamic>{
+          'type': 'native_frame_stats',
+          'frameSensorNanos': firstBurstClientReceiveElapsedNanos + 500000000,
+          'rawScore': 0.01,
+          'baseline': 0.01,
+          'effectiveScore': 0.0,
+        });
+        await _flushEvents();
+        nowElapsedNanos = firstBurstClientReceiveElapsedNanos;
+        fixture.bridge.emitEvent(<String, dynamic>{
+          'type': 'payload_received',
+          'endpointId': 'host-1',
+          'message': SessionClockSyncResponseMessage(
+            clientSendElapsedNanos: request.clientSendElapsedNanos,
+            hostReceiveElapsedNanos: 5000000000,
+            hostSendElapsedNanos: 5000000010,
+          ).toJsonString(),
+        });
+        await _flushEvents();
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 650));
+
+      final allRequests = fixture.bridge.sentPayloads
+          .map(
+            (payload) =>
+                SessionClockSyncRequestMessage.tryParse(payload.messageJson),
+          )
+          .whereType<SessionClockSyncRequestMessage>()
+          .toList();
+      expect(allRequests.length, greaterThanOrEqualTo(20));
+      fixture.dispose();
+    },
+  );
 
   test(
     'client uses the lowest RTT sample from a sync burst for trigger mapping',
@@ -982,6 +1700,7 @@ void main() {
         .toList();
     expect(triggerRequests, isEmpty);
     expect(fixture.controller.errorText, contains('no valid clock lock'));
+    expect(fixture.controller.isClockLockWarningVisible, isTrue);
     fixture.dispose();
   });
 
@@ -1089,12 +1808,14 @@ class _ControllerFixture {
   _ControllerFixture({
     required this.bridge,
     required this.nativeBridge,
+    required this.wakeLockBridge,
     required this.motionController,
     required this.controller,
   });
 
   final _FakeNearbyBridge bridge;
   final _FakeNativeSensorBridge nativeBridge;
+  final _FakeWakeLockBridge wakeLockBridge;
   final MotionDetectionController motionController;
   final RaceSessionController controller;
 
@@ -1105,6 +1826,7 @@ class _ControllerFixture {
   }) {
     final bridge = _FakeNearbyBridge();
     final nativeBridge = _FakeNativeSensorBridge();
+    final wakeLockBridge = _FakeWakeLockBridge();
     final motionController = MotionDetectionController(
       repository: LocalRepository(),
       nativeSensorBridge: nativeBridge,
@@ -1115,10 +1837,12 @@ class _ControllerFixture {
       startMonitoringAction: startMonitoringAction ?? () async {},
       stopMonitoringAction: stopMonitoringAction ?? () async {},
       nowElapsedNanos: nowElapsedNanos,
+      wakeLockBridge: wakeLockBridge,
     );
     return _ControllerFixture(
       bridge: bridge,
       nativeBridge: nativeBridge,
+      wakeLockBridge: wakeLockBridge,
       motionController: motionController,
       controller: controller,
     );
@@ -1129,6 +1853,38 @@ class _ControllerFixture {
     motionController.dispose();
     bridge.dispose();
     nativeBridge.dispose();
+  }
+}
+
+class _FakeWakeLockBridge extends WakeLockBridge {
+  int enableCalls = 0;
+  int disableCalls = 0;
+  int toggleCalls = 0;
+
+  void resetCounts() {
+    enableCalls = 0;
+    disableCalls = 0;
+    toggleCalls = 0;
+  }
+
+  @override
+  Future<void> enable() async {
+    enableCalls += 1;
+  }
+
+  @override
+  Future<void> disable() async {
+    disableCalls += 1;
+  }
+
+  @override
+  Future<void> toggle({required bool enable}) async {
+    toggleCalls += 1;
+    if (enable) {
+      enableCalls += 1;
+    } else {
+      disableCalls += 1;
+    }
   }
 }
 

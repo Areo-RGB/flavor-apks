@@ -107,6 +107,15 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
     private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "requestPermissions" -> requestPermissions(result)
+            "getPermissionStatus" -> {
+                val denied = deniedPermissions()
+                result.success(
+                    mapOf(
+                        "granted" to denied.isEmpty(),
+                        "denied" to denied,
+                    ),
+                )
+            }
             "startHosting" -> {
                 val serviceId = stringArg(call, "serviceId", result) ?: return
                 val endpointName = stringArg(call, "endpointName", result) ?: return

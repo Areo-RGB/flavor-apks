@@ -19,6 +19,7 @@ class MotionDetectionController extends ChangeNotifier {
       _onNativeEvent,
     );
     unawaited(_loadInitialState());
+    unawaited(warmupGpsSync());
   }
 
   final LocalRepository _repository;
@@ -37,6 +38,8 @@ class MotionDetectionController extends ChangeNotifier {
   int _streamFrameCount = 0;
   int _processedFrameCount = 0;
   int? _sensorMinusElapsedNanos;
+  int? _gpsUtcOffsetNanos;
+  int? _gpsFixElapsedRealtimeNanos;
   String? _errorText;
   bool _isDisposed = false;
 
@@ -51,6 +54,8 @@ class MotionDetectionController extends ChangeNotifier {
   List<int> get currentSplitElapsedNanos =>
       List.unmodifiable(_runSnapshot.splitElapsedNanos);
   int? get sensorMinusElapsedNanos => _sensorMinusElapsedNanos;
+  int? get gpsUtcOffsetNanos => _gpsUtcOffsetNanos;
+  int? get gpsFixElapsedRealtimeNanos => _gpsFixElapsedRealtimeNanos;
 
   String get runStatusLabel {
     if (_runSnapshot.isActive) {
@@ -85,6 +90,14 @@ class MotionDetectionController extends ChangeNotifier {
 
   Future<void> disposeCamera() async {
     await stopDetection();
+  }
+
+  Future<void> warmupGpsSync() async {
+    try {
+      await _nativeSensorBridge.warmupGpsSync();
+    } catch (_) {
+      // GPS warmup is opportunistic; monitoring and NTP fallback still work.
+    }
   }
 
   Future<void> startDetection() async {
@@ -177,6 +190,10 @@ class MotionDetectionController extends ChangeNotifier {
     }
     if (type == 'native_state') {
       _sensorMinusElapsedNanos = _readInt(event['hostSensorMinusElapsedNanos']);
+      _gpsUtcOffsetNanos = _readInt(event['gpsUtcOffsetNanos']);
+      _gpsFixElapsedRealtimeNanos = _readInt(
+        event['gpsFixElapsedRealtimeNanos'],
+      );
       notifyListeners();
       return;
     }
@@ -198,6 +215,11 @@ class MotionDetectionController extends ChangeNotifier {
       _sensorMinusElapsedNanos =
           _readInt(event['hostSensorMinusElapsedNanos']) ??
           _sensorMinusElapsedNanos;
+      _gpsUtcOffsetNanos =
+          _readInt(event['gpsUtcOffsetNanos']) ?? _gpsUtcOffsetNanos;
+      _gpsFixElapsedRealtimeNanos =
+          _readInt(event['gpsFixElapsedRealtimeNanos']) ??
+          _gpsFixElapsedRealtimeNanos;
       _latestStats = MotionFrameStats(
         rawScore: rawScore,
         baseline: baseline,

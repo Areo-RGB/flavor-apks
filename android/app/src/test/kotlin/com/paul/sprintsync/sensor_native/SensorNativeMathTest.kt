@@ -60,6 +60,26 @@ class SensorNativeMathTest {
     }
 
     @Test
+    fun `sensor utc helpers round-trip using gps offset`() {
+        val sensorNanos = 12_345_678_901L
+        val sensorMinusElapsedNanos = 98_765_432L
+        val gpsUtcOffsetNanos = 1_700_000_000_000_000_000L
+
+        val utcNanos = SensorTimeMath.sensorToUtcNanos(
+            sensorNanos = sensorNanos,
+            sensorMinusElapsedNanos = sensorMinusElapsedNanos,
+            gpsUtcOffsetNanos = gpsUtcOffsetNanos,
+        )
+        val mappedBackSensorNanos = SensorTimeMath.utcToSensorNanos(
+            utcNanos = utcNanos,
+            sensorMinusElapsedNanos = sensorMinusElapsedNanos,
+            gpsUtcOffsetNanos = gpsUtcOffsetNanos,
+        )
+
+        assertEquals(sensorNanos, mappedBackSensorNanos)
+    }
+
+    @Test
     fun `selectHighestFrameRateBounds prefers highest upper then lower`() {
         val bounds = setOf(
             24 to 30,

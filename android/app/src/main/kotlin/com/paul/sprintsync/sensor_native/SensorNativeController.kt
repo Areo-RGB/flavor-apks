@@ -1,6 +1,10 @@
 package com.paul.sprintsync.sensor_native
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -44,7 +48,12 @@ class SensorNativeController(
     private var processedFrameCount = 0L
     @Volatile
     private var hostSensorMinusElapsedNanos: Long? = null
+    @Volatile
+    private var gpsUtcOffsetNanos: Long? = null
+    @Volatile
+    private var gpsFixElapsedRealtimeNanos: Long? = null
     private var cameraProvider: ProcessCameraProvider? = null
+    private var locationManager: LocationManager? = null
     private var previewView: PreviewView? = null
     private var pendingPreviewRebindRunnable: Runnable? = null
     private var previewRebindAttemptCount = 0
@@ -58,6 +67,30 @@ class SensorNativeController(
             emitError = ::emitError,
         )
     }
+    private val gpsLocationListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            val utcNanos = location.time * 1_000_000L
+            val elapsedNanos = location.elapsedRealtimeNanos
+            gpsUtcOffsetNanos = utcNanos - elapsedNanos
+            gpsFixElapsedRealtimeNanos = elapsedNanos
+            emitState(if (monitoring) "monitoring" else "idle")
+        }
+
+        override fun onProviderDisabled(provider: String) {
+            gpsUtcOffsetNanos = null
+            gpsFixElapsedRealtimeNanos = null
+            emitState(if (monitoring) "monitoring" else "idle")
+        }
+
+        override fun onProviderEnabled(provider: String) {
+            // no-op
+        }
+
+        @Deprecated("Deprecated in API")
+        override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {
+            // no-op
+        }
+    }
     fun configure(binaryMessenger: BinaryMessenger) {
         MethodChannel(binaryMessenger, METHOD_CHANNEL_NAME).setMethodCallHandler(::onMethodCall)
         EventChannel(binaryMessenger, EVENT_CHANNEL_NAME).setStreamHandler(this)
@@ -69,6 +102,7 @@ class SensorNativeController(
     }
     fun dispose() {
         cancelPreviewRebindRetries()
+        stopGpsUpdates()
         stopNativeMonitoringInternal()
         analyzerExecutor.shutdown()
     }
@@ -135,6 +169,11 @@ class SensorNativeController(
     private fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "startNativeMonitoring" -> startNativeMonitoring(call, result)
+            "warmupGpsSync" -> {
+                startGpsUpdatesIfAvailable()
+                emitState(if (monitoring) "monitoring" else "idle")
+                result.success(null)
+            }
             "stopNativeMonitoring" -> {
                 stopNativeMonitoringInternal()
                 result.success(null)
@@ -168,9 +207,12 @@ class SensorNativeController(
         streamFrameCount = 0L
         processedFrameCount = 0L
         hostSensorMinusElapsedNanos = null
+        gpsUtcOffsetNanos = null
+        gpsFixElapsedRealtimeNanos = null
         offsetSmoother.reset()
         detectionMath.resetRun()
         frameDiffer.reset()
+        startGpsUpdatesIfAvailable()
         val providerFuture = ProcessCameraProvider.getInstance(activity)
         providerFuture.addListener(
             {
@@ -199,6 +241,7 @@ class SensorNativeController(
     private fun stopNativeMonitoringInternal() {
         cancelPreviewRebindRetries()
         monitoring = false
+        stopGpsUpdates()
         cameraSession.stop(cameraProvider)
         cameraProvider = null
         streamFrameCount = 0L
@@ -283,6 +326,46 @@ class SensorNativeController(
         pendingPreviewRebindRunnable = null
         previewRebindAttemptCount = 0
     }
+
+    private fun startGpsUpdatesIfAvailable() {
+        val locMgr = activity.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        locationManager = locMgr
+        if (locMgr == null) {
+            return
+        }
+        val fineLocationGranted = ContextCompat.checkSelfPermission(
+            activity,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!fineLocationGranted) {
+            return
+        }
+        try {
+            locMgr.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER,
+                1000L,
+                0f,
+                gpsLocationListener,
+                Looper.getMainLooper(),
+            )
+        } catch (error: SecurityException) {
+            Log.w(TAG, "GPS updates unavailable: missing runtime permission.", error)
+        } catch (error: IllegalArgumentException) {
+            Log.w(TAG, "GPS provider unavailable for location updates.", error)
+        }
+    }
+
+    private fun stopGpsUpdates() {
+        try {
+            locationManager?.removeUpdates(gpsLocationListener)
+        } catch (_: SecurityException) {
+            // ignore cleanup failures
+        }
+        locationManager = null
+        gpsUtcOffsetNanos = null
+        gpsFixElapsedRealtimeNanos = null
+    }
+
     private fun emitFrameStats(stats: NativeFrameStats, sensorMinusElapsedNanos: Long?) {
         emitEvent(
             mapOf(
@@ -294,6 +377,8 @@ class SensorNativeController(
                 "streamFrameCount" to streamFrameCount,
                 "processedFrameCount" to processedFrameCount,
                 "hostSensorMinusElapsedNanos" to sensorMinusElapsedNanos,
+                "gpsUtcOffsetNanos" to gpsUtcOffsetNanos,
+                "gpsFixElapsedRealtimeNanos" to gpsFixElapsedRealtimeNanos,
             ),
         )
     }
@@ -315,6 +400,8 @@ class SensorNativeController(
                 "state" to state,
                 "monitoring" to monitoring,
                 "hostSensorMinusElapsedNanos" to hostSensorMinusElapsedNanos,
+                "gpsUtcOffsetNanos" to gpsUtcOffsetNanos,
+                "gpsFixElapsedRealtimeNanos" to gpsFixElapsedRealtimeNanos,
             ),
         )
     }
