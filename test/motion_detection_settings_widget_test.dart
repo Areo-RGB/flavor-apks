@@ -45,6 +45,11 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('0.00s'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('stopwatch_camera_status_text')),
+      findsOneWidget,
+    );
+    expect(find.text('Camera: --.- fps · INIT'), findsOneWidget);
 
     controller.dispose();
   });
@@ -171,13 +176,13 @@ void main() {
     expect(compactPreviewContainer.widthFactor, closeTo(0.34, 0.001));
     expect(
       find.byKey(const ValueKey<String>('preview_fps_overlay')),
-      findsOneWidget,
+      findsNothing,
     );
     expect(
       find.byKey(const ValueKey<String>('preview_fps_overlay_text')),
-      findsOneWidget,
+      findsNothing,
     );
-    expect(find.text('--.- fps · INIT'), findsOneWidget);
+    expect(find.text('Camera: --.- fps · INIT'), findsOneWidget);
 
     final alignFinder = find.byKey(
       const ValueKey<String>('preview_tripwire_alignment'),
@@ -207,7 +212,7 @@ void main() {
       'targetFpsUpper': 120,
     });
     await tester.pump(const Duration(milliseconds: 10));
-    expect(find.text('118.7 fps · HS'), findsOneWidget);
+    expect(find.text('Camera: 118.7 fps · HS · target 120'), findsOneWidget);
 
     controller.dispose();
   });
@@ -241,6 +246,28 @@ void main() {
       find.byKey(const ValueKey<String>('preview_tripwire_line')),
       findsNothing,
     );
+    expect(
+      find.byKey(const ValueKey<String>('stopwatch_camera_status_text')),
+      findsOneWidget,
+    );
+    expect(find.text('Camera: --.- fps · INIT'), findsOneWidget);
+
+    controller.ingestFrameStats(
+      const MotionFrameStats(
+        rawScore: 0.01,
+        baseline: 0.005,
+        effectiveScore: 0.005,
+        frameSensorNanos: 3000000000,
+        streamFrameCount: 20,
+        processedFrameCount: 20,
+        observedFps: 60.1,
+        cameraFpsMode: 'normal',
+        targetFpsUpper: 60,
+      ),
+      forwardToSync: false,
+    );
+    await tester.pump(const Duration(milliseconds: 10));
+    expect(find.text('Camera: 60.1 fps · NORMAL · target 60'), findsOneWidget);
 
     controller.dispose();
   });

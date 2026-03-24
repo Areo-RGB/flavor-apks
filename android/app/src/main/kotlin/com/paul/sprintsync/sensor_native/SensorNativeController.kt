@@ -18,6 +18,9 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 
 class SensorNativeController(
@@ -34,9 +37,11 @@ class SensorNativeController(
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val analyzerExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val frameDiffer = RoiFrameDiffer()
     private val offsetSmoother = SensorOffsetSmoother()
     private val fpsMonitor = SensorNativeFpsMonitor(lowFpsThreshold = HS_FALLBACK_TRIGGER_FPS)
+    private val analysisInFlight = AtomicBoolean(false)
 
     @Volatile
     private var eventSink: EventChannel.EventSink? = null
@@ -134,6 +139,7 @@ class SensorNativeController(
         cancelPreviewRebindRetries()
         stopGpsUpdates()
         stopNativeMonitoringInternal()
+        analyzerExecutor.shutdownNow()
     }
 
     fun attachPreviewSurface(targetPreviewView: TextureView) {
@@ -170,29 +176,66 @@ class SensorNativeController(
     }
 
     private fun onImageAvailable(image: Image) {
+        if (!monitoring) {
+            image.close()
+            return
+        }
+
+        val frameSensorNanos = image.timestamp
+        val smoothedOffset = updateStreamTelemetry(frameSensorNanos)
+        val activeConfig = config
+        val shouldProcessFrame =
+            (streamFrameCount % activeConfig.processEveryNFrames.toLong()) == 0L
+        if (!shouldProcessFrame) {
+            image.close()
+            return
+        }
+        if (!analysisInFlight.compareAndSet(false, true)) {
+            image.close()
+            return
+        }
+
+        try {
+            analyzerExecutor.execute {
+                processFrameForDetection(
+                    image = image,
+                    frameSensorNanos = frameSensorNanos,
+                    smoothedOffset = smoothedOffset,
+                    activeConfig = activeConfig,
+                )
+            }
+        } catch (_: RejectedExecutionException) {
+            analysisInFlight.set(false)
+            image.close()
+        }
+    }
+
+    private fun updateStreamTelemetry(frameSensorNanos: Long): Long {
+        streamFrameCount += 1
+        val offsetSample = frameSensorNanos - SystemClock.elapsedRealtimeNanos()
+        val smoothedOffset = offsetSmoother.update(offsetSample)
+        val fpsObservation = fpsMonitor.update(
+            frameSensorNanos = frameSensorNanos,
+            mode = activeCameraFpsMode,
+        )
+        observedFps = fpsObservation.observedFps
+        if (fpsObservation.shouldDowngradeToNormal) {
+            requestHsFallbackToNormal()
+        }
+        hostSensorMinusElapsedNanos = smoothedOffset
+        return smoothedOffset
+    }
+
+    private fun processFrameForDetection(
+        image: Image,
+        frameSensorNanos: Long,
+        smoothedOffset: Long,
+        activeConfig: NativeMonitoringConfig,
+    ) {
         try {
             if (!monitoring) {
                 return
             }
-            streamFrameCount += 1
-            val frameSensorNanos = image.timestamp
-            val offsetSample = frameSensorNanos - SystemClock.elapsedRealtimeNanos()
-            val smoothedOffset = offsetSmoother.update(offsetSample)
-            val fpsObservation = fpsMonitor.update(
-                frameSensorNanos = frameSensorNanos,
-                mode = activeCameraFpsMode,
-            )
-            observedFps = fpsObservation.observedFps
-            if (fpsObservation.shouldDowngradeToNormal) {
-                requestHsFallbackToNormal()
-            }
-            hostSensorMinusElapsedNanos = smoothedOffset
-
-            val activeConfig = config
-            if ((streamFrameCount % activeConfig.processEveryNFrames.toLong()) != 0L) {
-                return
-            }
-
             val lumaPlane = image.planes.firstOrNull() ?: return
             val rawScore = frameDiffer.scoreLumaPlane(
                 lumaBuffer = lumaPlane.buffer,
@@ -213,6 +256,7 @@ class SensorNativeController(
         } catch (error: Exception) {
             emitError("Native frame analysis failed: ${error.localizedMessage ?: "unknown"}")
         } finally {
+            analysisInFlight.set(false)
             image.close()
         }
     }
@@ -340,6 +384,7 @@ class SensorNativeController(
         targetFpsUpper = 0
         observedFps = null
         hsDowngradeTriggered = false
+        analysisInFlight.set(false)
         frameDiffer.reset()
         offsetSmoother.reset()
         fpsMonitor.reset()
