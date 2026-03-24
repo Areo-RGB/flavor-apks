@@ -14,6 +14,7 @@ class SessionDevice {
     required this.name,
     required this.role,
     this.cameraFacing = SessionCameraFacing.rear,
+    this.highSpeedEnabled = false,
     required this.isLocal,
   });
 
@@ -21,6 +22,7 @@ class SessionDevice {
   final String name;
   final SessionDeviceRole role;
   final SessionCameraFacing cameraFacing;
+  final bool highSpeedEnabled;
   final bool isLocal;
 
   SessionDevice copyWith({
@@ -28,6 +30,7 @@ class SessionDevice {
     String? name,
     SessionDeviceRole? role,
     SessionCameraFacing? cameraFacing,
+    bool? highSpeedEnabled,
     bool? isLocal,
   }) {
     return SessionDevice(
@@ -35,6 +38,7 @@ class SessionDevice {
       name: name ?? this.name,
       role: role ?? this.role,
       cameraFacing: cameraFacing ?? this.cameraFacing,
+      highSpeedEnabled: highSpeedEnabled ?? this.highSpeedEnabled,
       isLocal: isLocal ?? this.isLocal,
     );
   }
@@ -45,6 +49,7 @@ class SessionDevice {
       'name': name,
       'role': role.name,
       'cameraFacing': cameraFacing.name,
+      'highSpeedEnabled': highSpeedEnabled,
       'isLocal': isLocal,
     };
   }
@@ -59,6 +64,7 @@ class SessionDevice {
     final cameraFacing =
         sessionCameraFacingFromName(source['cameraFacing']?.toString()) ??
         SessionCameraFacing.rear;
+    final highSpeedEnabled = source['highSpeedEnabled'] == true;
     if (id == null || id.isEmpty || name == null || role == null) {
       return null;
     }
@@ -67,6 +73,7 @@ class SessionDevice {
       name: name,
       role: role,
       cameraFacing: cameraFacing,
+      highSpeedEnabled: highSpeedEnabled,
       isLocal: source['isLocal'] == true,
     );
   }

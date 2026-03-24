@@ -1,5 +1,6 @@
 package com.paul.sprintsync.sensor_native
 
+import android.util.Range
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -80,6 +81,38 @@ class SensorNativeMathTest {
     }
 
     @Test
+    fun `scorePrecroppedLuma returns stable normalized diff`() {
+        val differ = RoiFrameDiffer()
+        val initialScore = differ.scorePrecroppedLuma(
+            luma = byteArrayOf(10, 20, 30, 40),
+            sampleCount = 4,
+        )
+        assertEquals(0.0, initialScore, 0.0)
+
+        val secondScore = differ.scorePrecroppedLuma(
+            luma = byteArrayOf(20, 20, 30, 60),
+            sampleCount = 4,
+        )
+        val expected = (10 + 0 + 0 + 20) / (4.0 * 255.0)
+        assertEquals(expected, secondScore, 1e-6)
+    }
+
+    @Test
+    fun `fps monitor reports no downgrade in normal mode and downgrade in low hs fps`() {
+        val monitor = SensorNativeFpsMonitor(lowFpsThreshold = 80.0, warmupFrames = 3)
+        var observation = monitor.update(frameSensorNanos = 0L, mode = NativeCameraFpsMode.NORMAL)
+        assertFalse(observation.shouldDowngradeToNormal)
+        observation = monitor.update(frameSensorNanos = 16_666_667L, mode = NativeCameraFpsMode.NORMAL)
+        assertFalse(observation.shouldDowngradeToNormal)
+
+        monitor.reset()
+        monitor.update(frameSensorNanos = 0L, mode = NativeCameraFpsMode.HS120)
+        monitor.update(frameSensorNanos = 50_000_000L, mode = NativeCameraFpsMode.HS120)
+        val lowHs = monitor.update(frameSensorNanos = 100_000_000L, mode = NativeCameraFpsMode.HS120)
+        assertTrue(lowHs.shouldDowngradeToNormal)
+    }
+
+    @Test
     fun `selectHighestFrameRateBounds prefers highest upper then lower`() {
         val bounds = setOf(
             24 to 30,
@@ -99,6 +132,22 @@ class SensorNativeMathTest {
     fun `selectHighestFrameRateBounds returns null for null or empty`() {
         assertNull(SensorNativeCameraPolicy.selectHighestFrameRateBounds(null))
         assertNull(SensorNativeCameraPolicy.selectHighestFrameRateBounds(emptySet()))
+    }
+
+    @Test
+    fun `selectPreferredHsBounds prioritizes fixed 120 then highest fixed`() {
+        val ranges = listOf(
+            30 to 120,
+            120 to 120,
+            60 to 240,
+        )
+        val selected = SensorNativeCameraPolicy.selectPreferredHsBounds(ranges)
+        assertEquals(120, selected?.first)
+        assertEquals(120, selected?.second)
+
+        val noFixed120 = listOf(30 to 120, 240 to 240)
+        val selectedNoFixed120 = SensorNativeCameraPolicy.selectPreferredHsBounds(noFixed120)
+        assertEquals(240, selectedNoFixed120?.second)
     }
 
     @Test

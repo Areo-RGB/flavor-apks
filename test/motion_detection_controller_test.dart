@@ -240,6 +240,7 @@ void main() {
       await controller.startDetection();
       expect(bridge.startConfigs, isNotEmpty);
       expect(bridge.startConfigs.last['cameraFacing'], 'rear');
+      expect(bridge.startConfigs.last['highSpeedEnabled'], isFalse);
 
       await controller.updateCameraFacing(MotionCameraFacing.front);
 
@@ -248,6 +249,32 @@ void main() {
       expect(bridge.updateConfigs.last['cameraFacing'], 'front');
       final savedConfig = await LocalRepository().loadMotionConfig();
       expect(savedConfig.cameraFacing, MotionCameraFacing.front);
+
+      controller.dispose();
+    },
+  );
+
+  test(
+    'updateHighSpeedEnabled persists and pushes native config while streaming',
+    () async {
+      final bridge = _FakeNativeSensorBridge();
+      final controller = MotionDetectionController(
+        repository: LocalRepository(),
+        nativeSensorBridge: bridge,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+
+      await controller.startDetection();
+      expect(bridge.startConfigs, isNotEmpty);
+      expect(bridge.startConfigs.last['highSpeedEnabled'], isFalse);
+
+      await controller.updateHighSpeedEnabled(true);
+
+      expect(controller.config.highSpeedEnabled, isTrue);
+      expect(bridge.updateConfigs, isNotEmpty);
+      expect(bridge.updateConfigs.last['highSpeedEnabled'], isTrue);
+      final savedConfig = await LocalRepository().loadMotionConfig();
+      expect(savedConfig.highSpeedEnabled, isTrue);
 
       controller.dispose();
     },
@@ -293,6 +320,95 @@ void main() {
       expect(controller.cameraFpsMode, 'normal');
       expect(controller.targetFpsUpper, 60);
 
+      controller.dispose();
+    },
+  );
+
+  test(
+    'native frame stats prefers native observed FPS when provided',
+    () async {
+      final bridge = _FakeNativeSensorBridge();
+      final controller = MotionDetectionController(
+        repository: LocalRepository(),
+        nativeSensorBridge: bridge,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+
+      bridge.emitEvent(<String, dynamic>{
+        'type': 'native_frame_stats',
+        'frameSensorNanos': 1000000000,
+        'rawScore': 0.01,
+        'baseline': 0.01,
+        'effectiveScore': 0.01,
+        'streamFrameCount': 1,
+        'processedFrameCount': 1,
+        'observedFps': 117.3,
+        'cameraFpsMode': 'hs120',
+        'targetFpsUpper': 120,
+      });
+      bridge.emitEvent(<String, dynamic>{
+        'type': 'native_frame_stats',
+        'frameSensorNanos': 1100000000,
+        'rawScore': 0.01,
+        'baseline': 0.01,
+        'effectiveScore': 0.01,
+        'streamFrameCount': 2,
+        'processedFrameCount': 2,
+        'observedFps': 119.2,
+        'cameraFpsMode': 'hs120',
+        'targetFpsUpper': 120,
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+
+      expect(controller.observedFps, isNotNull);
+      expect(controller.observedFps!, closeTo(119.2, 0.001));
+      expect(controller.cameraFpsMode, 'hs120');
+      expect(controller.targetFpsUpper, 120);
+
+      controller.dispose();
+    },
+  );
+
+  test(
+    'native frame stats smooths large normal-mode observed FPS swings',
+    () async {
+      final bridge = _FakeNativeSensorBridge();
+      final controller = MotionDetectionController(
+        repository: LocalRepository(),
+        nativeSensorBridge: bridge,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+
+      bridge.emitEvent(<String, dynamic>{
+        'type': 'native_frame_stats',
+        'frameSensorNanos': 1000000000,
+        'rawScore': 0.01,
+        'baseline': 0.01,
+        'effectiveScore': 0.01,
+        'streamFrameCount': 1,
+        'processedFrameCount': 1,
+        'observedFps': 60.0,
+        'cameraFpsMode': 'normal',
+        'targetFpsUpper': 60,
+      });
+      bridge.emitEvent(<String, dynamic>{
+        'type': 'native_frame_stats',
+        'frameSensorNanos': 1016666667,
+        'rawScore': 0.01,
+        'baseline': 0.01,
+        'effectiveScore': 0.01,
+        'streamFrameCount': 2,
+        'processedFrameCount': 2,
+        'observedFps': 20.0,
+        'cameraFpsMode': 'normal',
+        'targetFpsUpper': 60,
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+
+      expect(controller.observedFps, isNotNull);
+      expect(controller.observedFps!, greaterThan(50.0));
+      expect(controller.observedFps!, lessThan(60.0));
+      expect(controller.cameraFpsMode, 'normal');
       controller.dispose();
     },
   );

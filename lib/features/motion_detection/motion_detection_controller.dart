@@ -8,6 +8,9 @@ import 'package:sprint_sync/core/services/native_sensor_bridge.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
 
 class MotionDetectionController extends ChangeNotifier {
+  static const double _normalFpsUiEmaAlpha = 0.10;
+  static const double _normalFpsUiMaxStepPerFrame = 2.5;
+
   MotionDetectionController({
     required LocalRepository repository,
     NativeSensorBridge? nativeSensorBridge,
@@ -186,6 +189,16 @@ class MotionDetectionController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> updateHighSpeedEnabled(bool enabled) async {
+    if (_config.highSpeedEnabled == enabled) {
+      return;
+    }
+    _config = _config.copyWith(highSpeedEnabled: enabled);
+    await _repository.saveMotionConfig(_config);
+    await _pushNativeConfig();
+    notifyListeners();
+  }
+
   Future<void> _pushNativeConfig() async {
     if (!_isStreaming) {
       return;
@@ -217,6 +230,8 @@ class MotionDetectionController extends ChangeNotifier {
       final rawScore = _readDouble(event['rawScore']);
       final baseline = _readDouble(event['baseline']);
       final effective = _readDouble(event['effectiveScore']);
+      final nativeObservedFps = _readDouble(event['observedFps']);
+      final cameraFpsMode = event['cameraFpsMode']?.toString();
       if (frameSensorNanos == null ||
           rawScore == null ||
           baseline == null ||
@@ -227,25 +242,34 @@ class MotionDetectionController extends ChangeNotifier {
       final processedFrameCount = _readInt(event['processedFrameCount']);
       _streamFrameCount = streamFrameCount ?? (_streamFrameCount + 1);
       _processedFrameCount = processedFrameCount ?? (_processedFrameCount + 1);
-      final previousFrameSensorNanos = _lastFrameSensorNanos;
-      if (previousFrameSensorNanos != null) {
-        final deltaNanos = frameSensorNanos - previousFrameSensorNanos;
-        if (deltaNanos > 0) {
-          final instantFps = 1e9 / deltaNanos;
-          if (instantFps.isFinite && instantFps > 0) {
-            final current = _observedFps;
-            _observedFps = current == null
-                ? instantFps
-                : ((current * 0.8) + (instantFps * 0.2));
+      if (cameraFpsMode != null && cameraFpsMode.isNotEmpty) {
+        _cameraFpsMode = cameraFpsMode;
+      }
+      if (nativeObservedFps != null &&
+          nativeObservedFps.isFinite &&
+          nativeObservedFps > 0) {
+        if (_cameraFpsMode == 'normal') {
+          _observedFps = _smoothNormalObservedFps(nativeObservedFps);
+        } else {
+          _observedFps = nativeObservedFps;
+        }
+      } else {
+        final previousFrameSensorNanos = _lastFrameSensorNanos;
+        if (previousFrameSensorNanos != null) {
+          final deltaNanos = frameSensorNanos - previousFrameSensorNanos;
+          if (deltaNanos > 0) {
+            final instantFps = 1e9 / deltaNanos;
+            if (instantFps.isFinite && instantFps > 0) {
+              final current = _observedFps;
+              _observedFps = current == null
+                  ? instantFps
+                  : ((current * 0.8) + (instantFps * 0.2));
+            }
           }
         }
       }
       _lastFrameSensorNanos = frameSensorNanos;
       _targetFpsUpper = _readInt(event['targetFpsUpper']) ?? _targetFpsUpper;
-      final cameraFpsMode = event['cameraFpsMode']?.toString();
-      if (cameraFpsMode != null && cameraFpsMode.isNotEmpty) {
-        _cameraFpsMode = cameraFpsMode;
-      }
       _sensorMinusElapsedNanos =
           _readInt(event['hostSensorMinusElapsedNanos']) ??
           _sensorMinusElapsedNanos;
@@ -276,6 +300,19 @@ class MotionDetectionController extends ChangeNotifier {
         ingestTrigger(trigger);
       }
     }
+  }
+
+  double _smoothNormalObservedFps(double nativeObservedFps) {
+    final current = _observedFps;
+    if (current == null) {
+      return nativeObservedFps;
+    }
+    final blended =
+        (current * (1.0 - _normalFpsUiEmaAlpha)) +
+        (nativeObservedFps * _normalFpsUiEmaAlpha);
+    final lower = current - _normalFpsUiMaxStepPerFrame;
+    final upper = current + _normalFpsUiMaxStepPerFrame;
+    return blended.clamp(lower, upper).toDouble();
   }
 
   MotionTriggerEvent? _parseTriggerEvent(Map<String, dynamic> event) {

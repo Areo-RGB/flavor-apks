@@ -160,6 +160,90 @@ class RoiFrameDiffer {
         }
         return diffSum.toDouble() / (currentSized.size.toDouble() * 255.0)
     }
+
+    @Synchronized
+    fun scorePrecroppedLuma(
+        luma: ByteArray,
+        sampleCount: Int,
+    ): Double {
+        if (sampleCount <= 0) {
+            previousRoiLuma = null
+            return 0.0
+        }
+
+        val currentSized = if (sampleCount == luma.size) luma else luma.copyOf(sampleCount)
+        val previous = previousRoiLuma
+        previousRoiLuma = currentSized
+
+        if (previous == null || previous.size != currentSized.size) {
+            return 0.0
+        }
+
+        var diffSum = 0L
+        for (i in currentSized.indices) {
+            val now = currentSized[i].toInt() and 0xFF
+            val before = previous[i].toInt() and 0xFF
+            diffSum += abs(now - before)
+        }
+        return diffSum.toDouble() / (currentSized.size.toDouble() * 255.0)
+    }
+}
+
+data class NativeFpsObservation(
+    val observedFps: Double?,
+    val shouldDowngradeToNormal: Boolean,
+)
+
+class SensorNativeFpsMonitor(
+    private val lowFpsThreshold: Double,
+    private val emaAlpha: Double = 0.15,
+    private val warmupFrames: Int = 30,
+) {
+    private var frameCount = 0L
+    private var lastTimestampNanos: Long? = null
+    private var emaFps: Double? = null
+
+    @Synchronized
+    fun reset() {
+        frameCount = 0
+        lastTimestampNanos = null
+        emaFps = null
+    }
+
+    @Synchronized
+    fun update(
+        frameSensorNanos: Long,
+        mode: NativeCameraFpsMode,
+    ): NativeFpsObservation {
+        frameCount += 1
+        val previousTimestamp = lastTimestampNanos
+        lastTimestampNanos = frameSensorNanos
+        if (previousTimestamp == null) {
+            return NativeFpsObservation(observedFps = null, shouldDowngradeToNormal = false)
+        }
+
+        val deltaNanos = frameSensorNanos - previousTimestamp
+        if (deltaNanos <= 0) {
+            return NativeFpsObservation(observedFps = emaFps, shouldDowngradeToNormal = false)
+        }
+
+        val instantFps = 1e9 / deltaNanos.toDouble()
+        val current = emaFps
+        emaFps = if (current == null) {
+            instantFps
+        } else {
+            (current * (1.0 - emaAlpha)) + (instantFps * emaAlpha)
+        }
+
+        val shouldDowngrade = mode == NativeCameraFpsMode.HS120 &&
+            frameCount >= warmupFrames &&
+            (emaFps ?: 0.0) < lowFpsThreshold
+
+        return NativeFpsObservation(
+            observedFps = emaFps,
+            shouldDowngradeToNormal = shouldDowngrade,
+        )
+    }
 }
 
 class SensorOffsetSmoother {

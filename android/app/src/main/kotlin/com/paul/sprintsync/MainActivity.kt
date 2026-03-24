@@ -97,6 +97,13 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
         super.onPause()
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (::sensorNativeController.isInitialized) {
+            sensorNativeController.onHostResumed()
+        }
+    }
+
     override fun onDestroy() {
         if (::sensorNativeController.isInitialized) {
             sensorNativeController.dispose()

@@ -259,6 +259,8 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
   Widget _buildMonitoringScaffold(BuildContext context) {
     final latencyMs = controller.monitoringLatencyMs;
     final syncModeLabel = controller.monitoringSyncModeLabel;
+    final previewAvailable = !controller.localHighSpeedEnabled;
+    final effectiveShowPreview = previewAvailable && _showPreview;
     final latencyLabel = switch (syncModeLabel) {
       'NTP' => latencyMs == null ? '-' : '$latencyMs ms',
       'GPS' => 'GPS',
@@ -381,20 +383,30 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
                 const SizedBox(width: 8),
                 Switch(
                   key: const ValueKey<String>('monitoring_preview_toggle'),
-                  value: _showPreview,
-                  onChanged: (value) {
-                    setState(() {
-                      _showPreview = value;
-                    });
-                  },
+                  value: effectiveShowPreview,
+                  onChanged: previewAvailable
+                      ? (value) {
+                          setState(() {
+                            _showPreview = value;
+                          });
+                        }
+                      : null,
                 ),
+                if (!previewAvailable) ...[
+                  const SizedBox(width: 8),
+                  const Text(
+                    'Disabled in HS',
+                    key: ValueKey<String>('monitoring_preview_disabled_text'),
+                    style: TextStyle(color: Colors.grey, fontSize: 12),
+                  ),
+                ],
               ],
             ),
           ),
           Expanded(
             child: MotionDetectionScreen(
               controller: motionController,
-              showPreview: _showPreview,
+              showPreview: effectiveShowPreview,
             ),
           ),
         ],
@@ -453,6 +465,19 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
             },
           )
         : Text(sessionCameraFacingLabel(device.cameraFacing));
+    final highSpeedControl = canEdit
+        ? FilterChip(
+            key: ValueKey<String>('high_speed_toggle_${device.id}'),
+            selected: device.highSpeedEnabled,
+            label: Text(device.highSpeedEnabled ? 'HS On' : 'HS Off'),
+            onSelected: (selected) {
+              controller.assignHighSpeedEnabled(device.id, selected);
+            },
+          )
+        : Chip(
+            key: ValueKey<String>('high_speed_state_${device.id}'),
+            label: Text(device.highSpeedEnabled ? 'HS On' : 'HS Off'),
+          );
 
     return ListTile(
       dense: true,
@@ -461,7 +486,13 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
       subtitle: Text(device.id),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
-        children: [cameraFacingControl, const SizedBox(width: 8), roleControl],
+        children: [
+          cameraFacingControl,
+          const SizedBox(width: 8),
+          highSpeedControl,
+          const SizedBox(width: 8),
+          roleControl,
+        ],
       ),
     );
   }

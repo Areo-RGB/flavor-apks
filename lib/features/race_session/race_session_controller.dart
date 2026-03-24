@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
-import 'package:sprint_sync/core/services/newrelic_bridge.dart';
 import 'package:sprint_sync/core/services/race_session_motion_bridge.dart';
 import 'package:sprint_sync/core/services/nearby_bridge.dart';
 import 'package:sprint_sync/core/services/wake_lock_bridge.dart';
@@ -10,7 +9,7 @@ import 'package:sprint_sync/features/motion_detection/motion_detection_models.da
 import 'package:sprint_sync/features/race_session/race_session_models.dart';
 
 class RaceSessionController extends ChangeNotifier {
-  static const int _maxClockSyncRttNanos = 100000000;
+  static const int _maxClockSyncRttNanos = 250000000;
   static const int _targetClockSyncRttNanos = 20000000;
   static const int _clockSyncBurstCount = 10;
   static const int _clockSyncBurstTimeoutNanos = 500000000;
@@ -31,14 +30,12 @@ class RaceSessionController extends ChangeNotifier {
     Future<void> Function()? stopMonitoringAction,
     int Function()? nowElapsedNanos,
     WakeLockBridge? wakeLockBridge,
-    NewRelicBridge? newRelicBridge,
   }) : _nearbyBridge = nearbyBridge,
        _motionController = motionController,
        _startMonitoringAction = startMonitoringAction,
        _stopMonitoringAction = stopMonitoringAction,
        _nowElapsedNanos = nowElapsedNanos ?? _defaultElapsedNanos,
-       _wakeLockBridge = wakeLockBridge ?? WakeLockBridge(),
-       _newRelicBridge = newRelicBridge ?? const NewRelicBridge() {
+       _wakeLockBridge = wakeLockBridge ?? WakeLockBridge() {
     _eventsSubscription = _nearbyBridge.events.listen(_onNearbyEvent);
     _motionController.addListener(_onMotionControllerChanged);
     _devices[_localHostDeviceId] = const SessionDevice(
@@ -57,7 +54,6 @@ class RaceSessionController extends ChangeNotifier {
   final Future<void> Function()? _stopMonitoringAction;
   final int Function() _nowElapsedNanos;
   final WakeLockBridge _wakeLockBridge;
-  final NewRelicBridge _newRelicBridge;
   final Map<String, NearbyEndpoint> _discovered = <String, NearbyEndpoint>{};
   final Set<String> _connectedEndpointIds = <String>{};
   final Map<String, SessionDevice> _devices = <String, SessionDevice>{};
@@ -165,6 +161,9 @@ class RaceSessionController extends ChangeNotifier {
       _hasRequiredRoles();
   SessionDeviceRole get localRole =>
       _devices[_localDeviceId]?.role ?? SessionDeviceRole.unassigned;
+  bool get localHighSpeedEnabled =>
+      _devices[_localDeviceId]?.highSpeedEnabled ?? false;
+
   Future<void> requestPermissions() async {
     _busy = true;
     _errorText = null;
@@ -294,14 +293,26 @@ class RaceSessionController extends ChangeNotifier {
     _devices[deviceId] = device.copyWith(cameraFacing: cameraFacing);
     notifyListeners();
     if (deviceId == _localDeviceId) {
-      unawaited(_syncLocalCameraFacingFromDevices());
+      unawaited(_syncLocalMotionConfigFromDevices());
+    }
+    unawaited(_broadcastSnapshot());
+  }
+
+  void assignHighSpeedEnabled(String deviceId, bool highSpeedEnabled) {
+    if (!isHost || _monitoringActive) return;
+    final device = _devices[deviceId];
+    if (device == null || device.highSpeedEnabled == highSpeedEnabled) return;
+    _devices[deviceId] = device.copyWith(highSpeedEnabled: highSpeedEnabled);
+    notifyListeners();
+    if (deviceId == _localDeviceId) {
+      unawaited(_syncLocalMotionConfigFromDevices());
     }
     unawaited(_broadcastSnapshot());
   }
 
   Future<void> startMonitoring() async {
     if (!canStartMonitoring) return;
-    await _syncLocalCameraFacingFromDevices();
+    await _syncLocalMotionConfigFromDevices();
     _monitoringActive = true;
     _stage = SessionStage.monitoring;
     await _setWakeLockEnabled(true);
@@ -570,22 +581,7 @@ class RaceSessionController extends ChangeNotifier {
     int? statusCode,
     String? statusMessage,
     String? errorMessage,
-  }) {
-    unawaited(
-      _newRelicBridge.recordNearbyEvent(
-        action: action,
-        networkRole: _networkRole.name,
-        stage: _stage.name,
-        endpointId: endpointId,
-        endpointName: endpointName,
-        serviceId: serviceId,
-        connected: connected,
-        statusCode: statusCode,
-        statusMessage: statusMessage,
-        errorMessage: errorMessage,
-      ),
-    );
-  }
+  }) {}
 
   Future<void> _onPayload(String raw, {required String? endpointId}) async {
     final snapshot = SessionSnapshotMessage.tryParse(raw);
@@ -612,7 +608,7 @@ class RaceSessionController extends ChangeNotifier {
             return MapEntry(device.id, device.copyWith(isLocal: isLocal));
           }),
         );
-      await _syncLocalCameraFacingFromDevices();
+      await _syncLocalMotionConfigFromDevices();
       if (!wasMonitoring && _monitoringActive) {
         await _setWakeLockEnabled(true);
         _clearClockSyncLock();
@@ -1106,16 +1102,19 @@ class RaceSessionController extends ChangeNotifier {
     );
   }
 
-  Future<void> _syncLocalCameraFacingFromDevices() async {
+  Future<void> _syncLocalMotionConfigFromDevices() async {
     final localDevice = _devices[_localDeviceId];
     if (localDevice == null) {
       return;
     }
     final localFacing = _toMotionCameraFacing(localDevice.cameraFacing);
-    if (_motionController.config.cameraFacing == localFacing) {
-      return;
+    final currentConfig = _motionController.config;
+    if (currentConfig.cameraFacing != localFacing) {
+      await _motionController.updateCameraFacing(localFacing);
     }
-    await _motionController.updateCameraFacing(localFacing);
+    if (currentConfig.highSpeedEnabled != localDevice.highSpeedEnabled) {
+      await _motionController.updateHighSpeedEnabled(localDevice.highSpeedEnabled);
+    }
   }
 
   MotionCameraFacing _toMotionCameraFacing(SessionCameraFacing cameraFacing) {

@@ -1415,7 +1415,7 @@ void main() {
   );
 
   test(
-    'client trigger is rejected when clock sync RTT exceeds 100ms',
+    'client trigger is rejected when clock sync RTT exceeds 250ms',
     () async {
       int nowElapsedNanos = 1000000000;
       final fixture = _ControllerFixture.create(
@@ -1469,7 +1469,7 @@ void main() {
 
       for (final request in syncRequests) {
         final highRttClientReceiveElapsedNanos =
-            request.clientSendElapsedNanos + 130000000;
+            request.clientSendElapsedNanos + 280000000;
         fixture.nativeBridge.emitEvent(<String, dynamic>{
           'type': 'native_frame_stats',
           'frameSensorNanos': highRttClientReceiveElapsedNanos + 500000000,
@@ -1900,6 +1900,97 @@ void main() {
         fixture.motionController.config.cameraFacing,
         MotionCameraFacing.front,
       );
+      fixture.dispose();
+    },
+  );
+
+  test(
+    'host high-speed assignment updates device and snapshot payload',
+    () async {
+      final fixture = _ControllerFixture.create();
+      await fixture.controller.createLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'peer-1',
+        'connected': true,
+      });
+      await _flushEvents();
+      fixture.bridge.sentPayloads.clear();
+
+      fixture.controller.assignHighSpeedEnabled('local-device', true);
+      await _flushEvents();
+
+      final localDevice = fixture.controller.devices.firstWhere(
+        (device) => device.id == 'local-device',
+      );
+      expect(localDevice.highSpeedEnabled, isTrue);
+      final snapshots = fixture.bridge.sentPayloads
+          .map(
+            (payload) => SessionSnapshotMessage.tryParse(payload.messageJson),
+          )
+          .whereType<SessionSnapshotMessage>()
+          .toList();
+      expect(snapshots, isNotEmpty);
+      final localDeviceInSnapshot = snapshots.last.devices.firstWhere(
+        (device) => device.id == 'local-device',
+      );
+      expect(localDeviceInSnapshot.highSpeedEnabled, isTrue);
+      fixture.dispose();
+    },
+  );
+
+  test(
+    'client applies snapshot high-speed mode before monitoring starts',
+    () async {
+      bool? highSpeedAtStart;
+      late _ControllerFixture fixture;
+      fixture = _ControllerFixture.create(
+        startMonitoringAction: () async {
+          highSpeedAtStart = fixture.motionController.config.highSpeedEnabled;
+        },
+      );
+
+      await fixture.controller.joinLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'host-1',
+        'connected': true,
+      });
+      await _flushEvents();
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'host-1',
+        'message': SessionSnapshotMessage(
+          stage: SessionStage.monitoring,
+          monitoringActive: true,
+          devices: const <SessionDevice>[
+            SessionDevice(
+              id: 'local-device',
+              name: 'Client',
+              role: SessionDeviceRole.start,
+              cameraFacing: SessionCameraFacing.front,
+              highSpeedEnabled: true,
+              isLocal: false,
+            ),
+            SessionDevice(
+              id: 'host-1',
+              name: 'Host',
+              role: SessionDeviceRole.stop,
+              cameraFacing: SessionCameraFacing.rear,
+              highSpeedEnabled: false,
+              isLocal: false,
+            ),
+          ],
+          timeline: SessionRaceTimeline.idle(),
+          hostSensorMinusElapsedNanos: 120000000,
+          selfDeviceId: 'local-device',
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      expect(highSpeedAtStart, isTrue);
+      expect(fixture.motionController.config.highSpeedEnabled, isTrue);
       fixture.dispose();
     },
   );

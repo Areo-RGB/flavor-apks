@@ -52,6 +52,7 @@ void main() {
       name: 'Device 1',
       role: SessionDeviceRole.start,
       cameraFacing: SessionCameraFacing.front,
+      highSpeedEnabled: true,
       isLocal: false,
     );
 
@@ -60,9 +61,12 @@ void main() {
 
     expect(decoded, isNotNull);
     expect(decoded!.cameraFacing, SessionCameraFacing.front);
+    expect(decoded.highSpeedEnabled, isTrue);
   });
 
-  test('session device camera facing defaults to rear when missing', () {
+  test(
+    'session device camera facing defaults to rear and high speed to false when missing',
+    () {
     final decoded = SessionDevice.fromJson(<String, dynamic>{
       'id': 'device-1',
       'name': 'Device 1',
@@ -70,7 +74,9 @@ void main() {
       'isLocal': true,
     });
 
-    expect(decoded, isNotNull);
-    expect(decoded!.cameraFacing, SessionCameraFacing.rear);
-  });
+      expect(decoded, isNotNull);
+      expect(decoded!.cameraFacing, SessionCameraFacing.rear);
+      expect(decoded.highSpeedEnabled, isFalse);
+    },
+  );
 }

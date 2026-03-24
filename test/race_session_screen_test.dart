@@ -154,6 +154,10 @@ void main() {
       findsOneWidget,
     );
     expect(
+      find.byKey(const ValueKey<String>('high_speed_toggle_local-device')),
+      findsOneWidget,
+    );
+    expect(
       find.byKey(const ValueKey<String>('camera_facing_front_local-device')),
       findsOneWidget,
     );
@@ -167,6 +171,17 @@ void main() {
       (device) => device.id == 'local-device',
     );
     expect(localDevice.cameraFacing, SessionCameraFacing.front);
+    expect(localDevice.highSpeedEnabled, isFalse);
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('high_speed_toggle_local-device')),
+    );
+    await tester.pump(const Duration(milliseconds: 20));
+
+    final toggledLocalDevice = fixture.controller.devices.firstWhere(
+      (device) => device.id == 'local-device',
+    );
+    expect(toggledLocalDevice.highSpeedEnabled, isTrue);
 
     fixture.dispose();
   });
@@ -238,6 +253,65 @@ void main() {
 
     fixture.dispose();
   });
+
+  testWidgets(
+    'monitoring stage disables preview toggle and hides preview in HS mode',
+    (tester) async {
+      final fixture = _ScreenFixture.create();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RaceSessionScreen(
+            controller: fixture.controller,
+            motionController: fixture.motionController,
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 20));
+
+      await tester.tap(find.text('Host'));
+      await tester.pump(const Duration(milliseconds: 20));
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'peer-1',
+        'connected': true,
+      });
+      await tester.pump(const Duration(milliseconds: 20));
+
+      await tester.tap(find.text('Next'));
+      await tester.pump(const Duration(milliseconds: 20));
+
+      fixture.controller.assignRole('local-device', SessionDeviceRole.start);
+      fixture.controller.assignRole('peer-1', SessionDeviceRole.stop);
+      fixture.controller.assignHighSpeedEnabled('local-device', true);
+      await tester.pump(const Duration(milliseconds: 20));
+
+      await tester.tap(find.text('Start Monitoring'));
+      await tester.pump(const Duration(milliseconds: 120));
+
+      expect(find.text('Monitoring'), findsOneWidget);
+      final previewToggle = tester.widget<Switch>(
+        find.byKey(const ValueKey<String>('monitoring_preview_toggle')),
+      );
+      expect(previewToggle.value, isFalse);
+      expect(previewToggle.onChanged, isNull);
+      expect(
+        find.byKey(const ValueKey<String>('monitoring_preview_disabled_text')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('native_preview_card')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('preview_tripwire_line')),
+        findsNothing,
+      );
+
+      fixture.dispose();
+    },
+  );
 
   testWidgets(
     'monitoring shows warning banner when client clock lock is invalid',
