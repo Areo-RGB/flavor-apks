@@ -2011,67 +2011,64 @@ void main() {
     },
   );
 
-  test(
-    'client split trigger is sent when clock lock is invalid',
-    () async {
-      final fixture = _ControllerFixture.create();
-      await fixture.controller.joinLobby();
-      fixture.bridge.emitEvent(<String, dynamic>{
-        'type': 'connection_result',
-        'endpointId': 'host-1',
-        'connected': true,
-      });
-      await _flushEvents();
-      fixture.bridge.emitEvent(<String, dynamic>{
-        'type': 'payload_received',
-        'endpointId': 'host-1',
-        'message': SessionSnapshotMessage(
-          stage: SessionStage.monitoring,
-          monitoringActive: true,
-          devices: const <SessionDevice>[
-            SessionDevice(
-              id: 'local-device',
-              name: 'Client',
-              role: SessionDeviceRole.split,
-              isLocal: false,
-            ),
-            SessionDevice(
-              id: 'host-1',
-              name: 'Host',
-              role: SessionDeviceRole.stop,
-              isLocal: false,
-            ),
-          ],
-          timeline: SessionRaceTimeline.idle(),
-          hostSensorMinusElapsedNanos: 120000000,
-          selfDeviceId: 'local-device',
-        ).toJsonString(),
-      });
-      await _flushEvents();
-      fixture.bridge.sentPayloads.clear();
+  test('client split trigger is sent when clock lock is invalid', () async {
+    final fixture = _ControllerFixture.create();
+    await fixture.controller.joinLobby();
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'connection_result',
+      'endpointId': 'host-1',
+      'connected': true,
+    });
+    await _flushEvents();
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'payload_received',
+      'endpointId': 'host-1',
+      'message': SessionSnapshotMessage(
+        stage: SessionStage.monitoring,
+        monitoringActive: true,
+        devices: const <SessionDevice>[
+          SessionDevice(
+            id: 'local-device',
+            name: 'Client',
+            role: SessionDeviceRole.split,
+            isLocal: false,
+          ),
+          SessionDevice(
+            id: 'host-1',
+            name: 'Host',
+            role: SessionDeviceRole.stop,
+            isLocal: false,
+          ),
+        ],
+        timeline: SessionRaceTimeline.idle(),
+        hostSensorMinusElapsedNanos: 120000000,
+        selfDeviceId: 'local-device',
+      ).toJsonString(),
+    });
+    await _flushEvents();
+    fixture.bridge.sentPayloads.clear();
 
-      await fixture.controller.onLocalMotionPulse(
-        const MotionTriggerEvent(
-          triggerSensorNanos: 2000000000,
-          score: 0.1,
-          type: MotionTriggerType.split,
-          splitIndex: 1,
-        ),
-      );
+    await fixture.controller.onLocalMotionPulse(
+      const MotionTriggerEvent(
+        triggerSensorNanos: 2000000000,
+        score: 0.1,
+        type: MotionTriggerType.split,
+        splitIndex: 1,
+      ),
+    );
 
-      final triggerRequests = fixture.bridge.sentPayloads
-          .map(
-            (payload) =>
-                SessionTriggerRequestMessage.tryParse(payload.messageJson),
-          )
-          .whereType<SessionTriggerRequestMessage>()
-          .toList();
-      expect(triggerRequests, hasLength(1));
-      expect(triggerRequests.single.role, SessionDeviceRole.split);
-      expect(triggerRequests.single.mappedHostSensorNanos, isNull);
-      fixture.dispose();
-    },
-  );
+    final triggerRequests = fixture.bridge.sentPayloads
+        .map(
+          (payload) =>
+              SessionTriggerRequestMessage.tryParse(payload.messageJson),
+        )
+        .whereType<SessionTriggerRequestMessage>()
+        .toList();
+    expect(triggerRequests, hasLength(1));
+    expect(triggerRequests.single.role, SessionDeviceRole.split);
+    expect(triggerRequests.single.mappedHostSensorNanos, isNull);
+    fixture.dispose();
+  });
 
   test(
     'host high-speed assignment updates device and snapshot payload',
@@ -2109,7 +2106,7 @@ void main() {
   );
 
   test(
-    'client applies snapshot high-speed mode before monitoring starts',
+    'client keeps live monitoring high-speed disabled even if snapshot requests it',
     () async {
       bool? highSpeedAtStart;
       late _ControllerFixture fixture;
@@ -2158,8 +2155,344 @@ void main() {
       });
       await _flushEvents();
 
-      expect(highSpeedAtStart, isTrue);
-      expect(fixture.motionController.config.highSpeedEnabled, isTrue);
+      expect(highSpeedAtStart, isFalse);
+      expect(fixture.motionController.config.highSpeedEnabled, isFalse);
+      fixture.dispose();
+    },
+  );
+
+  test(
+    'host stop-role recording analysis requests backward scan direction',
+    () async {
+      final fixture = _ControllerFixture.create();
+      await fixture.controller.createLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'peer-1',
+        'connected': true,
+      });
+      await _flushEvents();
+      fixture.controller.goToLobby();
+      fixture.controller.assignRole('local-device', SessionDeviceRole.stop);
+      fixture.controller.assignRole('peer-1', SessionDeviceRole.start);
+      fixture.nativeBridge.analyzeResponseByTriggerType['stop'] =
+          <String, dynamic>{
+            'runId': fixture.controller.runId,
+            'triggerType': 'stop',
+            'splitIndex': 0,
+            'scanDirection': 'backward',
+            'resolved': true,
+            'localSensorNanos': 7000000000,
+          };
+      await fixture.controller.startRecording();
+      await _flushEvents();
+
+      await fixture.controller.stopRecording();
+      await _flushEvents();
+
+      expect(fixture.nativeBridge.analyzeRequests, hasLength(1));
+      expect(fixture.nativeBridge.analyzeRequests.single.triggerType, 'stop');
+      expect(
+        fixture.nativeBridge.analyzeRequests.single.scanDirection,
+        'backward',
+      );
+      fixture.dispose();
+    },
+  );
+
+  test(
+    'host stopRecording applies local and remote analysis to final timeline',
+    () async {
+      final fixture = _ControllerFixture.create();
+      await fixture.controller.createLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'peer-1',
+        'connected': true,
+      });
+      await _flushEvents();
+      fixture.controller.goToLobby();
+      fixture.controller.assignRole('local-device', SessionDeviceRole.start);
+      fixture.controller.assignRole('peer-1', SessionDeviceRole.stop);
+      fixture.nativeBridge.analyzeResponseByTriggerType['start'] =
+          <String, dynamic>{
+            'runId': fixture.controller.runId,
+            'triggerType': 'start',
+            'splitIndex': 0,
+            'scanDirection': 'forward',
+            'resolved': true,
+            'localSensorNanos': 5000000000,
+          };
+      await fixture.controller.startRecording();
+      await _flushEvents();
+
+      await fixture.controller.stopRecording();
+      await _flushEvents();
+      expect(fixture.controller.timeline.startedSensorNanos, 5000000000);
+      expect(fixture.controller.recordingStatusText, contains('(1/2)'));
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'peer-1',
+        'message': SessionRecordingAnalysisResultMessage(
+          runId: fixture.controller.runId,
+          role: SessionDeviceRole.stop,
+          resolved: true,
+          splitIndex: 0,
+          localSensorNanos: 6876000000,
+          mappedHostSensorNanos: 6876000000,
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      expect(fixture.controller.timeline.stopElapsedNanos, 1876000000);
+      expect(fixture.controller.stage, SessionStage.lobby);
+      expect(fixture.controller.recordingStatusText, contains('(2/2)'));
+      fixture.dispose();
+    },
+  );
+
+  test(
+    'host rejects stale refinement runId and applies current runId',
+    () async {
+      final fixture = _ControllerFixture.create();
+      await fixture.controller.createLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'peer-1',
+        'connected': true,
+      });
+      await _flushEvents();
+      fixture.controller.goToLobby();
+      fixture.controller.assignRole('peer-1', SessionDeviceRole.start);
+      fixture.controller.assignRole('local-device', SessionDeviceRole.stop);
+      await fixture.controller.startMonitoring();
+      await _flushEvents();
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'peer-1',
+        'message': const SessionTriggerRequestMessage(
+          role: SessionDeviceRole.start,
+          triggerSensorNanos: 100,
+          mappedHostSensorNanos: 5000000000,
+        ).toJsonString(),
+      });
+      await _flushEvents();
+      expect(fixture.controller.timeline.startedSensorNanos, 5000000000);
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'peer-1',
+        'message': const SessionTriggerRefinementMessage(
+          runId: 'stale_run',
+          role: SessionDeviceRole.start,
+          provisionalHostSensorNanos: 5000000000,
+          refinedHostSensorNanos: 4990000000,
+          splitIndex: 0,
+        ).toJsonString(),
+      });
+      await _flushEvents();
+      expect(fixture.controller.timeline.startedSensorNanos, 5000000000);
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'peer-1',
+        'message': SessionTriggerRefinementMessage(
+          runId: fixture.controller.runId,
+          role: SessionDeviceRole.start,
+          provisionalHostSensorNanos: 5000000000,
+          refinedHostSensorNanos: 4990000000,
+          splitIndex: 0,
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      expect(fixture.controller.timeline.startedSensorNanos, 4990000000);
+      fixture.dispose();
+    },
+  );
+
+  test(
+    'client maps local recording analysis to host domain and sends recording result payload',
+    () async {
+      int nowElapsedNanos = 5000000000;
+      final fixture = _ControllerFixture.create(
+        nowElapsedNanos: () => nowElapsedNanos,
+      );
+      await fixture.controller.joinLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'host-1',
+        'connected': true,
+      });
+      await _flushEvents();
+
+      fixture.nativeBridge.emitEvent(<String, dynamic>{
+        'type': 'native_state',
+        'hostSensorMinusElapsedNanos': 700000000,
+        'gpsUtcOffsetNanos': 1000000000,
+        'gpsFixElapsedRealtimeNanos': 5000000000,
+      });
+      fixture.nativeBridge.emitEvent(<String, dynamic>{
+        'type': 'native_frame_stats',
+        'frameSensorNanos': 5700000000,
+        'rawScore': 0.01,
+        'baseline': 0.01,
+        'effectiveScore': 0.0,
+      });
+      await _flushEvents();
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'host-1',
+        'message': SessionSnapshotMessage(
+          stage: SessionStage.recording,
+          monitoringActive: false,
+          recordingActive: true,
+          devices: const <SessionDevice>[
+            SessionDevice(
+              id: 'local-device',
+              name: 'Client',
+              role: SessionDeviceRole.start,
+              isLocal: false,
+            ),
+            SessionDevice(
+              id: 'host-1',
+              name: 'Host',
+              role: SessionDeviceRole.stop,
+              isLocal: false,
+            ),
+          ],
+          timeline: SessionRaceTimeline.idle(),
+          runId: 'run_refine_client',
+          hostSensorMinusElapsedNanos: 120000000,
+          hostGpsUtcOffsetNanos: 900000000,
+          hostGpsFixAgeNanos: 0,
+          selfDeviceId: 'local-device',
+        ).toJsonString(),
+      });
+      await _flushEvents();
+      fixture.bridge.sentPayloads.clear();
+      fixture.nativeBridge.analyzeResponseByTriggerType['start'] =
+          <String, dynamic>{
+            'runId': 'run_refine_client',
+            'triggerType': 'start',
+            'splitIndex': 0,
+            'scanDirection': 'forward',
+            'resolved': true,
+            'localSensorNanos': 6000000000,
+          };
+
+      nowElapsedNanos = 5100000000;
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'host-1',
+        'message': SessionSnapshotMessage(
+          stage: SessionStage.lobby,
+          monitoringActive: false,
+          recordingActive: false,
+          devices: const <SessionDevice>[
+            SessionDevice(
+              id: 'local-device',
+              name: 'Client',
+              role: SessionDeviceRole.start,
+              isLocal: false,
+            ),
+            SessionDevice(
+              id: 'host-1',
+              name: 'Host',
+              role: SessionDeviceRole.stop,
+              isLocal: false,
+            ),
+          ],
+          timeline: SessionRaceTimeline.idle(),
+          runId: 'run_refine_client',
+          hostSensorMinusElapsedNanos: 120000000,
+          hostGpsUtcOffsetNanos: 900000000,
+          hostGpsFixAgeNanos: 1000000,
+          selfDeviceId: 'local-device',
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      final analysisMessages = fixture.bridge.sentPayloads
+          .map(
+            (payload) => SessionRecordingAnalysisResultMessage.tryParse(
+              payload.messageJson,
+            ),
+          )
+          .whereType<SessionRecordingAnalysisResultMessage>()
+          .toList();
+      expect(analysisMessages, hasLength(1));
+      expect(analysisMessages.single.runId, 'run_refine_client');
+      expect(analysisMessages.single.role, SessionDeviceRole.start);
+      expect(analysisMessages.single.resolved, isTrue);
+      expect(analysisMessages.single.mappedHostSensorNanos, 5520000000);
+      expect(
+        fixture.controller.recordingStatusText,
+        'Local analysis complete.',
+      );
+      fixture.dispose();
+    },
+  );
+
+  test(
+    'recording-only flow keeps post-race impact list unchanged when no live baseline exists',
+    () async {
+      final fixture = _ControllerFixture.create();
+      await fixture.controller.createLobby();
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'peer-1',
+        'connected': true,
+      });
+      await _flushEvents();
+      fixture.controller.goToLobby();
+      fixture.controller.assignRole('local-device', SessionDeviceRole.start);
+      fixture.controller.assignRole('peer-1', SessionDeviceRole.stop);
+      fixture.nativeBridge.analyzeResponseByTriggerType['start'] =
+          <String, dynamic>{
+            'runId': fixture.controller.runId,
+            'triggerType': 'start',
+            'splitIndex': 0,
+            'scanDirection': 'forward',
+            'resolved': true,
+            'localSensorNanos': 5000000000,
+          };
+      await fixture.controller.startRecording();
+      await _flushEvents();
+
+      await fixture.controller.stopRecording();
+      await _flushEvents();
+
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'payload_received',
+        'endpointId': 'peer-1',
+        'message': SessionRecordingAnalysisResultMessage(
+          runId: fixture.controller.runId,
+          role: SessionDeviceRole.stop,
+          resolved: true,
+          splitIndex: 0,
+          localSensorNanos: 7000000000,
+          mappedHostSensorNanos: 7000000000,
+        ).toJsonString(),
+      });
+      await _flushEvents();
+
+      final impacts = fixture.controller.refinementImpacts;
+      final startImpact = impacts.firstWhere(
+        (impact) => impact.label == 'Start',
+      );
+      final finishImpact = impacts.firstWhere(
+        (impact) => impact.label == 'Finish',
+      );
+      expect(startImpact.liveSensorNanos, 5000000000);
+      expect(startImpact.correctedSensorNanos, 5000000000);
+      expect(startImpact.changed, isFalse);
+      expect(finishImpact.liveElapsedNanos, 2000000000);
+      expect(finishImpact.correctedElapsedNanos, 2000000000);
+      expect(fixture.controller.hasRefinementImpact, isFalse);
       fixture.dispose();
     },
   );
@@ -2256,6 +2589,16 @@ class _FakeWakeLockBridge extends WakeLockBridge {
 class _FakeNativeSensorBridge extends NativeSensorBridge {
   final StreamController<Map<String, dynamic>> _eventsController =
       StreamController<Map<String, dynamic>>.broadcast();
+  Map<String, dynamic> refineResponse = <String, dynamic>{
+    'results': <dynamic>[],
+    'recordedFrameCount': 0,
+  };
+  final Map<String, Map<String, dynamic>> analyzeResponseByTriggerType =
+      <String, Map<String, dynamic>>{};
+  final List<_AnalyzeRecordingRequest> analyzeRequests =
+      <_AnalyzeRecordingRequest>[];
+  Object? refineError;
+  Object? analyzeError;
 
   @override
   Stream<Map<String, dynamic>> get events => _eventsController.stream;
@@ -2279,6 +2622,62 @@ class _FakeNativeSensorBridge extends NativeSensorBridge {
 
   @override
   Future<void> resetNativeRun() async {}
+
+  @override
+  Future<Map<String, dynamic>> refineHsTriggers({
+    required List<Map<String, dynamic>> requests,
+  }) async {
+    final error = refineError;
+    if (error != null) {
+      throw error;
+    }
+    return Map<String, dynamic>.from(refineResponse);
+  }
+
+  @override
+  Future<Map<String, dynamic>> startHighSpeedRecording({
+    required String runId,
+    required String cameraFacing,
+  }) async {
+    return <String, dynamic>{'started': true, 'runId': runId};
+  }
+
+  @override
+  Future<Map<String, dynamic>> stopHighSpeedRecording() async {
+    return <String, dynamic>{'stopped': true};
+  }
+
+  @override
+  Future<Map<String, dynamic>> analyzeHighSpeedRecording({
+    required String runId,
+    required String triggerType,
+    required int splitIndex,
+    required String scanDirection,
+  }) async {
+    analyzeRequests.add(
+      _AnalyzeRecordingRequest(
+        runId: runId,
+        triggerType: triggerType,
+        splitIndex: splitIndex,
+        scanDirection: scanDirection,
+      ),
+    );
+    final error = analyzeError;
+    if (error != null) {
+      throw error;
+    }
+    final responseByType = analyzeResponseByTriggerType[triggerType];
+    if (responseByType != null) {
+      return Map<String, dynamic>.from(responseByType);
+    }
+    return <String, dynamic>{
+      'runId': runId,
+      'triggerType': triggerType,
+      'splitIndex': splitIndex,
+      'scanDirection': scanDirection,
+      'resolved': false,
+    };
+  }
 
   void dispose() {
     _eventsController.close();
@@ -2346,4 +2745,18 @@ class _SentPayload {
 
   final String endpointId;
   final String messageJson;
+}
+
+class _AnalyzeRecordingRequest {
+  const _AnalyzeRecordingRequest({
+    required this.runId,
+    required this.triggerType,
+    required this.splitIndex,
+    required this.scanDirection,
+  });
+
+  final String runId;
+  final String triggerType;
+  final int splitIndex;
+  final String scanDirection;
 }

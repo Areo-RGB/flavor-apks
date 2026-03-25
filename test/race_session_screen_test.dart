@@ -9,6 +9,7 @@ import 'package:sprint_sync/core/services/native_sensor_bridge.dart';
 import 'package:sprint_sync/core/services/nearby_bridge.dart';
 import 'package:sprint_sync/core/services/wake_lock_bridge.dart';
 import 'package:sprint_sync/features/motion_detection/motion_detection_controller.dart';
+import 'package:sprint_sync/features/motion_detection/motion_detection_models.dart';
 import 'package:sprint_sync/features/race_session/race_session_controller.dart';
 import 'package:sprint_sync/features/race_session/race_session_models.dart';
 import 'package:sprint_sync/features/race_session/race_session_screen.dart';
@@ -154,10 +155,6 @@ void main() {
       findsOneWidget,
     );
     expect(
-      find.byKey(const ValueKey<String>('high_speed_toggle_local-device')),
-      findsOneWidget,
-    );
-    expect(
       find.byKey(const ValueKey<String>('camera_facing_front_local-device')),
       findsOneWidget,
     );
@@ -172,16 +169,6 @@ void main() {
     );
     expect(localDevice.cameraFacing, SessionCameraFacing.front);
     expect(localDevice.highSpeedEnabled, isFalse);
-
-    await tester.tap(
-      find.byKey(const ValueKey<String>('high_speed_toggle_local-device')),
-    );
-    await tester.pump(const Duration(milliseconds: 20));
-
-    final toggledLocalDevice = fixture.controller.devices.firstWhere(
-      (device) => device.id == 'local-device',
-    );
-    expect(toggledLocalDevice.highSpeedEnabled, isTrue);
 
     fixture.dispose();
   });
@@ -255,7 +242,7 @@ void main() {
   });
 
   testWidgets(
-    'monitoring stage disables preview toggle and hides preview in HS mode',
+    'monitoring stage keeps preview toggle enabled with separate HS recording mode',
     (tester) async {
       final fixture = _ScreenFixture.create();
 
@@ -284,7 +271,6 @@ void main() {
 
       fixture.controller.assignRole('local-device', SessionDeviceRole.start);
       fixture.controller.assignRole('peer-1', SessionDeviceRole.stop);
-      fixture.controller.assignHighSpeedEnabled('local-device', true);
       await tester.pump(const Duration(milliseconds: 20));
 
       await tester.tap(find.text('Start Monitoring'));
@@ -294,24 +280,68 @@ void main() {
       final previewToggle = tester.widget<Switch>(
         find.byKey(const ValueKey<String>('monitoring_preview_toggle')),
       );
-      expect(previewToggle.value, isFalse);
-      expect(previewToggle.onChanged, isNull);
+      expect(previewToggle.value, isTrue);
+      expect(previewToggle.onChanged, isNotNull);
       expect(
         find.byKey(const ValueKey<String>('monitoring_preview_disabled_text')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const ValueKey<String>('native_preview_card')),
         findsNothing,
       );
       expect(
         find.byKey(const ValueKey<String>('preview_tripwire_line')),
-        findsNothing,
+        findsOneWidget,
       );
 
       fixture.dispose();
     },
   );
+
+  testWidgets('recording stage is reachable from lobby via Start Recording', (
+    tester,
+  ) async {
+    final fixture = _ScreenFixture.create();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RaceSessionScreen(
+          controller: fixture.controller,
+          motionController: fixture.motionController,
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 20));
+
+    await tester.tap(find.text('Host'));
+    await tester.pump(const Duration(milliseconds: 20));
+
+    fixture.bridge.emitEvent(<String, dynamic>{
+      'type': 'connection_result',
+      'endpointId': 'peer-1',
+      'connected': true,
+    });
+    await tester.pump(const Duration(milliseconds: 20));
+
+    await tester.tap(find.text('Next'));
+    await tester.pump(const Duration(milliseconds: 20));
+
+    fixture.controller.assignRole('local-device', SessionDeviceRole.start);
+    fixture.controller.assignRole('peer-1', SessionDeviceRole.stop);
+    await tester.pump(const Duration(milliseconds: 20));
+
+    await tester.tap(find.text('Start Recording'));
+    await tester.pump(const Duration(milliseconds: 120));
+
+    expect(
+      find.byKey(const ValueKey<String>('recording_stage_title')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('stop_recording_button')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Recording in progress'), findsOneWidget);
+
+    fixture.dispose();
+  });
 
   testWidgets(
     'monitoring shows warning banner when client clock lock is invalid',
@@ -371,6 +401,83 @@ void main() {
         find.textContaining('Triggers from this device are being dropped'),
         findsOneWidget,
       );
+
+      fixture.dispose();
+    },
+  );
+
+  testWidgets(
+    'lobby shows post-race section with no correction delta when unchanged',
+    (tester) async {
+      final fixture = _ScreenFixture.create();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RaceSessionScreen(
+            controller: fixture.controller,
+            motionController: fixture.motionController,
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 20));
+
+      await tester.tap(find.text('Host'));
+      await tester.pump(const Duration(milliseconds: 20));
+      fixture.bridge.emitEvent(<String, dynamic>{
+        'type': 'connection_result',
+        'endpointId': 'peer-1',
+        'connected': true,
+      });
+      await tester.pump(const Duration(milliseconds: 20));
+      await tester.tap(find.text('Next'));
+      await tester.pump(const Duration(milliseconds: 20));
+
+      fixture.controller.assignRole('local-device', SessionDeviceRole.start);
+      fixture.controller.assignRole('peer-1', SessionDeviceRole.stop);
+      await tester.pump(const Duration(milliseconds: 20));
+
+      await tester.tap(find.text('Start Monitoring'));
+      await tester.pump(const Duration(milliseconds: 120));
+
+      await fixture.controller.onLocalMotionPulse(
+        const MotionTriggerEvent(
+          triggerSensorNanos: 5000000000,
+          score: 0.2,
+          type: MotionTriggerType.start,
+          splitIndex: 0,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 20));
+
+      fixture.nativeBridge.refineResponse = <String, dynamic>{
+        'results': <Map<String, dynamic>>[
+          <String, dynamic>{
+            'triggerType': 'start',
+            'splitIndex': 0,
+            'provisionalSensorNanos': 5000000000,
+            'refinedSensorNanos': 4990000000,
+            'refined': true,
+          },
+        ],
+        'recordedFrameCount': 1200,
+      };
+
+      await tester.tap(
+        find.byKey(const ValueKey<String>('stop_monitoring_button')),
+      );
+      await tester.pump(const Duration(milliseconds: 120));
+
+      expect(
+        find.byKey(const ValueKey<String>('lobby_refinement_status_text')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Refinement: Refinement complete.'), findsOne);
+      expect(find.text('Started Sensor Nanos: 5000000000'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey<String>('post_race_analysis_title')),
+        findsOneWidget,
+      );
+      expect(find.text('No correction deltas recorded yet.'), findsOneWidget);
 
       fixture.dispose();
     },
@@ -440,6 +547,11 @@ class _NoopWakeLockBridge extends WakeLockBridge {
 class _FakeNativeSensorBridge extends NativeSensorBridge {
   final StreamController<Map<String, dynamic>> _eventsController =
       StreamController<Map<String, dynamic>>.broadcast();
+  Map<String, dynamic> refineResponse = <String, dynamic>{
+    'results': <dynamic>[],
+    'recordedFrameCount': 0,
+  };
+  Object? refineError;
 
   @override
   Stream<Map<String, dynamic>> get events => _eventsController.stream;
@@ -459,6 +571,46 @@ class _FakeNativeSensorBridge extends NativeSensorBridge {
 
   @override
   Future<void> resetNativeRun() async {}
+
+  @override
+  Future<Map<String, dynamic>> refineHsTriggers({
+    required List<Map<String, dynamic>> requests,
+  }) async {
+    final error = refineError;
+    if (error != null) {
+      throw error;
+    }
+    return Map<String, dynamic>.from(refineResponse);
+  }
+
+  @override
+  Future<Map<String, dynamic>> startHighSpeedRecording({
+    required String runId,
+    required String cameraFacing,
+  }) async {
+    return <String, dynamic>{'started': true, 'runId': runId};
+  }
+
+  @override
+  Future<Map<String, dynamic>> stopHighSpeedRecording() async {
+    return <String, dynamic>{'stopped': true};
+  }
+
+  @override
+  Future<Map<String, dynamic>> analyzeHighSpeedRecording({
+    required String runId,
+    required String triggerType,
+    required int splitIndex,
+    required String scanDirection,
+  }) async {
+    return <String, dynamic>{
+      'runId': runId,
+      'triggerType': triggerType,
+      'splitIndex': splitIndex,
+      'scanDirection': scanDirection,
+      'resolved': false,
+    };
+  }
 
   void dispose() {
     _eventsController.close();

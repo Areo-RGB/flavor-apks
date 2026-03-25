@@ -13,6 +13,11 @@ enum class NativeCameraFpsMode(val wireName: String) {
     HS120("hs120"),
 }
 
+enum class HsScanDirection(val wireName: String) {
+    FORWARD("forward"),
+    BACKWARD("backward"),
+}
+
 data class NativeMonitoringConfig(
     val threshold: Double,
     val roiCenterX: Double,
@@ -92,6 +97,105 @@ data class NativeFrameStats(
     val triggerEvent: NativeTriggerEvent?,
 )
 
+object HsRecordingPolicy {
+    const val MAX_SECONDS = 10
+    const val TARGET_FPS = 120
+    const val DEFAULT_CAPACITY_FRAMES = MAX_SECONDS * TARGET_FPS
+    const val LIVE_ANALYSIS_STRIDE = 4
+    const val DEFAULT_REFINEMENT_WINDOW_NANOS = 250_000_000L
+}
+
+data class HsRecordedRoiFrame(
+    val timestampNanos: Long,
+    val luma: ByteArray,
+    val sampleCount: Int,
+)
+
+class HsRoiRecordingBuffer(
+    capacityFrames: Int = HsRecordingPolicy.DEFAULT_CAPACITY_FRAMES,
+) {
+    private val boundedCapacityFrames = max(1, capacityFrames)
+    private val frames = ArrayDeque<HsRecordedRoiFrame>(boundedCapacityFrames)
+
+    @Synchronized
+    fun append(frame: HsRecordedRoiFrame) {
+        val safeSampleCount = min(frame.sampleCount, frame.luma.size)
+        if (safeSampleCount <= 0) {
+            return
+        }
+        while (frames.size >= boundedCapacityFrames) {
+            frames.removeFirst()
+        }
+        val safeFrame = HsRecordedRoiFrame(
+            timestampNanos = frame.timestampNanos,
+            luma = frame.luma.copyOf(safeSampleCount),
+            sampleCount = safeSampleCount,
+        )
+        frames.addLast(safeFrame)
+    }
+
+    @Synchronized
+    fun clear() {
+        frames.clear()
+    }
+
+    @Synchronized
+    fun snapshot(): List<HsRecordedRoiFrame> {
+        return frames.map { frame ->
+            HsRecordedRoiFrame(
+                timestampNanos = frame.timestampNanos,
+                luma = frame.luma.copyOf(frame.sampleCount),
+                sampleCount = frame.sampleCount,
+            )
+        }
+    }
+}
+
+data class HsTriggerRefinementRequest(
+    val triggerSensorNanos: Long,
+    val triggerType: String,
+    val splitIndex: Int,
+    val windowNanos: Long? = null,
+)
+
+data class HsTriggerRefinementResult(
+    val triggerType: String,
+    val splitIndex: Int,
+    val provisionalSensorNanos: Long,
+    val refinedSensorNanos: Long,
+    val refined: Boolean,
+    val rawScore: Double? = null,
+    val baseline: Double? = null,
+    val effectiveScore: Double? = null,
+)
+
+data class HsRecordedVideoArtifact(
+    val runId: String,
+    val outputPath: String,
+    val encodedPtsUs: List<Long>,
+    val captureSensorNanos: List<Long>,
+)
+
+data class HsOfflineAnalysisMetric(
+    val sensorNanos: Long,
+    val rawScore: Double,
+    val baseline: Double,
+    val effectiveScore: Double,
+)
+
+data class HsOfflineAnalysisResult(
+    val runId: String,
+    val triggerType: String,
+    val splitIndex: Int,
+    val scanDirection: HsScanDirection,
+    val resolved: Boolean,
+    val localSensorNanos: Long?,
+    val rawScore: Double? = null,
+    val baseline: Double? = null,
+    val effectiveScore: Double? = null,
+    val diagnostics: String? = null,
+)
+
 private fun clampDouble(value: Double, minValue: Double, maxValue: Double): Double {
     return min(max(value, minValue), maxValue)
 }
@@ -100,6 +204,10 @@ private fun clampInt(value: Int, minValue: Int, maxValue: Int): Int {
     return min(max(value, minValue), maxValue)
 }
 
-private fun nativeCameraFacingFromWire(value: String?): NativeCameraFacing? {
+internal fun nativeCameraFacingFromWire(value: String?): NativeCameraFacing? {
     return NativeCameraFacing.values().firstOrNull { it.wireName == value }
+}
+
+internal fun hsScanDirectionFromWire(value: String?): HsScanDirection? {
+    return HsScanDirection.values().firstOrNull { it.wireName == value }
 }

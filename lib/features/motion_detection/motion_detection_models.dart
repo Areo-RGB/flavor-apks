@@ -4,6 +4,152 @@ enum MotionTriggerType { start, stop, split }
 
 enum MotionCameraFacing { rear, front }
 
+enum HsRefinementLifecycle { idle, running, done, error }
+
+enum HsScanDirection { forward, backward }
+
+class HsTriggerRefinementRequest {
+  const HsTriggerRefinementRequest({
+    required this.triggerSensorNanos,
+    required this.triggerType,
+    required this.splitIndex,
+    this.windowNanos,
+  });
+
+  final int triggerSensorNanos;
+  final MotionTriggerType triggerType;
+  final int splitIndex;
+  final int? windowNanos;
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      'triggerSensorNanos': triggerSensorNanos,
+      'triggerType': triggerType.name,
+      'splitIndex': splitIndex,
+      if (windowNanos != null) 'windowNanos': windowNanos,
+    };
+  }
+}
+
+class HsTriggerRefinementResult {
+  const HsTriggerRefinementResult({
+    required this.triggerType,
+    required this.splitIndex,
+    required this.provisionalSensorNanos,
+    required this.refinedSensorNanos,
+    required this.refined,
+    this.rawScore,
+    this.baseline,
+    this.effectiveScore,
+  });
+
+  final MotionTriggerType triggerType;
+  final int splitIndex;
+  final int provisionalSensorNanos;
+  final int refinedSensorNanos;
+  final bool refined;
+  final double? rawScore;
+  final double? baseline;
+  final double? effectiveScore;
+
+  static HsTriggerRefinementResult? fromJson(Map<String, dynamic> json) {
+    final triggerTypeName = json['triggerType']?.toString();
+    final triggerType = switch (triggerTypeName) {
+      'start' => MotionTriggerType.start,
+      'stop' => MotionTriggerType.stop,
+      'split' => MotionTriggerType.split,
+      _ => null,
+    };
+    final splitIndex = (json['splitIndex'] as num?)?.toInt();
+    final provisionalSensorNanos = (json['provisionalSensorNanos'] as num?)
+        ?.toInt();
+    final refinedSensorNanos = (json['refinedSensorNanos'] as num?)?.toInt();
+    final refined = json['refined'];
+    if (triggerType == null ||
+        splitIndex == null ||
+        provisionalSensorNanos == null ||
+        refinedSensorNanos == null ||
+        refined is! bool) {
+      return null;
+    }
+    return HsTriggerRefinementResult(
+      triggerType: triggerType,
+      splitIndex: splitIndex,
+      provisionalSensorNanos: provisionalSensorNanos,
+      refinedSensorNanos: refinedSensorNanos,
+      refined: refined,
+      rawScore: (json['rawScore'] as num?)?.toDouble(),
+      baseline: (json['baseline'] as num?)?.toDouble(),
+      effectiveScore: (json['effectiveScore'] as num?)?.toDouble(),
+    );
+  }
+}
+
+class HsOfflineRecordingAnalysisResult {
+  const HsOfflineRecordingAnalysisResult({
+    required this.runId,
+    required this.triggerType,
+    required this.splitIndex,
+    required this.scanDirection,
+    required this.resolved,
+    this.localSensorNanos,
+    this.rawScore,
+    this.baseline,
+    this.effectiveScore,
+    this.diagnostics,
+  });
+
+  final String runId;
+  final MotionTriggerType triggerType;
+  final int splitIndex;
+  final HsScanDirection scanDirection;
+  final bool resolved;
+  final int? localSensorNanos;
+  final double? rawScore;
+  final double? baseline;
+  final double? effectiveScore;
+  final String? diagnostics;
+
+  static HsOfflineRecordingAnalysisResult? fromJson(Map<String, dynamic> json) {
+    final triggerTypeName = json['triggerType']?.toString();
+    final triggerType = switch (triggerTypeName) {
+      'start' => MotionTriggerType.start,
+      'stop' => MotionTriggerType.stop,
+      'split' => MotionTriggerType.split,
+      _ => null,
+    };
+    final runId = json['runId']?.toString();
+    final splitIndex = (json['splitIndex'] as num?)?.toInt();
+    final resolved = json['resolved'];
+    final scanDirectionName = json['scanDirection']?.toString();
+    final scanDirection = switch (scanDirectionName) {
+      'backward' => HsScanDirection.backward,
+      'forward' => HsScanDirection.forward,
+      _ => null,
+    };
+    if (runId == null ||
+        runId.isEmpty ||
+        triggerType == null ||
+        splitIndex == null ||
+        resolved is! bool ||
+        scanDirection == null) {
+      return null;
+    }
+    return HsOfflineRecordingAnalysisResult(
+      runId: runId,
+      triggerType: triggerType,
+      splitIndex: splitIndex,
+      scanDirection: scanDirection,
+      resolved: resolved,
+      localSensorNanos: (json['localSensorNanos'] as num?)?.toInt(),
+      rawScore: (json['rawScore'] as num?)?.toDouble(),
+      baseline: (json['baseline'] as num?)?.toDouble(),
+      effectiveScore: (json['effectiveScore'] as num?)?.toDouble(),
+      diagnostics: json['diagnostics']?.toString(),
+    );
+  }
+}
+
 class MotionRunSnapshot {
   const MotionRunSnapshot({
     required this.isActive,

@@ -23,6 +23,11 @@ class RaceSessionController extends ChangeNotifier {
     return _elapsedClock.elapsedMicroseconds * 1000;
   }
 
+  static String _buildRunId() {
+    final micros = DateTime.now().microsecondsSinceEpoch;
+    return 'run_$micros';
+  }
+
   RaceSessionController({
     required NearbyBridge nearbyBridge,
     required MotionDetectionController motionController,
@@ -61,11 +66,20 @@ class RaceSessionController extends ChangeNotifier {
   SessionStage _stage = SessionStage.setup;
   SessionNetworkRole _networkRole = SessionNetworkRole.none;
   SessionRaceTimeline _timeline = SessionRaceTimeline.idle();
+  String _runId = _buildRunId();
   String _localDeviceId = _localHostDeviceId;
   bool _busy = false;
   bool _permissionsGranted = false;
   bool _permissionsStatusKnown = false;
   bool _monitoringActive = false;
+  bool _recordingActive = false;
+  bool _recordingAwaitingResults = false;
+  Timer? _recordingFinalizeTimer;
+  String? _recordingStatusText;
+  static const int _recordingFinalizeTimeoutMs = 20000;
+  final Map<SessionDeviceRole, SessionRecordingAnalysisResultMessage>
+  _recordingResultsByRole =
+      <SessionDeviceRole, SessionRecordingAnalysisResultMessage>{};
   int? _hostMinusClientElapsedNanos;
   int? _hostClockRoundTripNanos;
   int? _lastClockSyncElapsedNanos;
@@ -86,10 +100,24 @@ class RaceSessionController extends ChangeNotifier {
   int? _lastSensorElapsedSampleCapturedAtNanos;
   bool _wakeLockEnabled = false;
   bool _localMonitoringCaptureActive = false;
+  bool _localHighSpeedRecordingActive = false;
   String? _errorText;
+  String? _refinementStatusText;
+  int? _hostStartSensorNanos;
+  int? _hostStopSensorNanos;
+  final Map<int, int> _hostSplitSensorNanosByIndex = <int, int>{};
+  int? _hostLiveStartSensorNanos;
+  int? _hostLiveStopSensorNanos;
+  final Map<int, int> _hostLiveSplitSensorNanosByIndex = <int, int>{};
+  final Map<String, int> _hostProvisionalHostSensorByTriggerKey =
+      <String, int>{};
+  final Map<String, _ClientHostRefinementMapping>
+  _clientHostRefinementMappingByTriggerKey =
+      <String, _ClientHostRefinementMapping>{};
   SessionStage get stage => _stage;
   SessionNetworkRole get networkRole => _networkRole;
   SessionRaceTimeline get timeline => _timeline;
+  String get runId => _runId;
   bool get isHost => _networkRole == SessionNetworkRole.host;
   bool get isClient => _networkRole == SessionNetworkRole.client;
   bool get busy => _busy;
@@ -98,7 +126,77 @@ class RaceSessionController extends ChangeNotifier {
   bool get shouldShowPermissionsButton =>
       _permissionsStatusKnown && !_permissionsGranted;
   bool get monitoringActive => _monitoringActive;
+  bool get recordingActive => _recordingActive;
   String? get errorText => _errorText;
+  String? get refinementStatusText => _refinementStatusText;
+  String? get recordingStatusText => _recordingStatusText;
+  List<SessionRefinementImpact> get refinementImpacts {
+    final liveStartSensorNanos = _hostLiveStartSensorNanos;
+    final correctedStartSensorNanos = _hostStartSensorNanos;
+    if (liveStartSensorNanos == null || correctedStartSensorNanos == null) {
+      return const <SessionRefinementImpact>[];
+    }
+
+    final impacts = <SessionRefinementImpact>[
+      SessionRefinementImpact(
+        label: 'Start',
+        liveSensorNanos: liveStartSensorNanos,
+        correctedSensorNanos: correctedStartSensorNanos,
+        liveElapsedNanos: 0,
+        correctedElapsedNanos: 0,
+      ),
+    ];
+
+    final splitIndexes = _hostLiveSplitSensorNanosByIndex.keys.toList()..sort();
+    for (final splitIndex in splitIndexes) {
+      final liveSplitSensorNanos = _hostLiveSplitSensorNanosByIndex[splitIndex];
+      if (liveSplitSensorNanos == null) {
+        continue;
+      }
+      final correctedSplitSensorNanos =
+          _hostSplitSensorNanosByIndex[splitIndex] ?? liveSplitSensorNanos;
+      impacts.add(
+        SessionRefinementImpact(
+          label: 'Split $splitIndex',
+          liveSensorNanos: liveSplitSensorNanos,
+          correctedSensorNanos: correctedSplitSensorNanos,
+          liveElapsedNanos: math.max(
+            0,
+            liveSplitSensorNanos - liveStartSensorNanos,
+          ),
+          correctedElapsedNanos: math.max(
+            0,
+            correctedSplitSensorNanos - correctedStartSensorNanos,
+          ),
+        ),
+      );
+    }
+
+    final liveStopSensorNanos = _hostLiveStopSensorNanos;
+    if (liveStopSensorNanos != null) {
+      final correctedStopSensorNanos =
+          _hostStopSensorNanos ?? liveStopSensorNanos;
+      impacts.add(
+        SessionRefinementImpact(
+          label: 'Finish',
+          liveSensorNanos: liveStopSensorNanos,
+          correctedSensorNanos: correctedStopSensorNanos,
+          liveElapsedNanos: math.max(
+            0,
+            liveStopSensorNanos - liveStartSensorNanos,
+          ),
+          correctedElapsedNanos: math.max(
+            0,
+            correctedStopSensorNanos - correctedStartSensorNanos,
+          ),
+        ),
+      );
+    }
+    return impacts;
+  }
+
+  bool get hasRefinementImpact =>
+      refinementImpacts.any((impact) => impact.changed);
   bool get isClockLockWarningVisible =>
       isClient &&
       _monitoringActive &&
@@ -157,12 +255,19 @@ class RaceSessionController extends ChangeNotifier {
       isHost &&
       _stage == SessionStage.lobby &&
       !_monitoringActive &&
+      !_recordingActive &&
+      totalDeviceCount >= 2 &&
+      _hasRequiredRoles();
+  bool get canStartRecording =>
+      isHost &&
+      _stage == SessionStage.lobby &&
+      !_monitoringActive &&
+      !_recordingActive &&
       totalDeviceCount >= 2 &&
       _hasRequiredRoles();
   SessionDeviceRole get localRole =>
       _devices[_localDeviceId]?.role ?? SessionDeviceRole.unassigned;
-  bool get localHighSpeedEnabled =>
-      _devices[_localDeviceId]?.highSpeedEnabled ?? false;
+  bool get localHighSpeedEnabled => false;
 
   Future<void> requestPermissions() async {
     _busy = true;
@@ -313,11 +418,14 @@ class RaceSessionController extends ChangeNotifier {
   Future<void> startMonitoring() async {
     if (!canStartMonitoring) return;
     await _syncLocalMotionConfigFromDevices();
+    _runId = _buildRunId();
     _monitoringActive = true;
     _stage = SessionStage.monitoring;
     await _setWakeLockEnabled(true);
-    _timeline = SessionRaceTimeline.idle();
+    _resetHostTriggerTimeline();
+    _refinementStatusText = null;
     _motionController.resetRace();
+    _motionController.clearHsRefinementState();
     notifyListeners();
     await _startLocalMonitoringCaptureIfAssigned();
     await _broadcastSnapshot();
@@ -325,6 +433,9 @@ class RaceSessionController extends ChangeNotifier {
 
   Future<void> stopMonitoring() async {
     if (!isHost || !_monitoringActive) return;
+    _refinementStatusText = 'Refinement running...';
+    notifyListeners();
+    await _runLocalPostRaceRefinementAsHost();
     await _stopLocalMonitoringCaptureIfRunning();
     _monitoringActive = false;
     _stage = SessionStage.lobby;
@@ -333,10 +444,54 @@ class RaceSessionController extends ChangeNotifier {
     await _broadcastSnapshot();
   }
 
+  Future<void> startRecording() async {
+    if (!canStartRecording) return;
+    await _syncLocalMotionConfigFromDevices();
+    _runId = _buildRunId();
+    _refinementStatusText = null;
+    _recordingActive = true;
+    _recordingAwaitingResults = false;
+    _recordingStatusText = 'Recording in progress...';
+    _recordingResultsByRole.clear();
+    _stage = SessionStage.recording;
+    _resetHostTriggerTimeline();
+    _motionController.resetRace();
+    _cancelRecordingFinalizeTimer();
+    await _setWakeLockEnabled(true);
+    notifyListeners();
+    await _startLocalHighSpeedRecordingIfAssigned();
+    await _broadcastSnapshot();
+  }
+
+  Future<void> stopRecording() async {
+    if (!isHost || !_recordingActive) return;
+    _recordingActive = false;
+    _recordingAwaitingResults = true;
+    _recordingStatusText = 'Analyzing recordings...';
+    _cancelRecordingFinalizeTimer();
+    notifyListeners();
+    await _broadcastSnapshot();
+
+    await _stopLocalHighSpeedRecordingIfRunning();
+    await _runLocalRecordingAnalysisAsHost();
+    _scheduleRecordingFinalizeTimeout();
+    await _finalizeRecordingIfComplete();
+  }
+
   Future<void> resetRun() async {
     if (!isHost) return;
-    _timeline = SessionRaceTimeline.idle();
+    _runId = _buildRunId();
+    _resetHostTriggerTimeline();
+    _refinementStatusText = null;
+    _recordingStatusText = null;
+    _recordingResultsByRole.clear();
+    _recordingAwaitingResults = false;
+    _recordingActive = false;
+    _cancelRecordingFinalizeTimer();
     _motionController.resetRace();
+    _motionController.clearHsRefinementState();
+    _hostProvisionalHostSensorByTriggerKey.clear();
+    _clientHostRefinementMappingByTriggerKey.clear();
     notifyListeners();
     await _broadcastSnapshot();
   }
@@ -357,6 +512,10 @@ class RaceSessionController extends ChangeNotifier {
       return;
     }
     if (isHost) {
+      _recordLocalProvisionalTrigger(
+        role: localRole,
+        triggerSensorNanos: trigger.triggerSensorNanos,
+      );
       await _applyRoleEvent(
         role: localRole,
         triggerSensorNanos: trigger.triggerSensorNanos,
@@ -366,6 +525,10 @@ class RaceSessionController extends ChangeNotifier {
     if (isClient &&
         _connectedEndpointIds.isNotEmpty &&
         localRole != SessionDeviceRole.unassigned) {
+      _recordLocalProvisionalTrigger(
+        role: localRole,
+        triggerSensorNanos: trigger.triggerSensorNanos,
+      );
       final mappedHostSensorNanos = _mapClientSensorToHostSensor(
         trigger.triggerSensorNanos,
       );
@@ -389,6 +552,11 @@ class RaceSessionController extends ChangeNotifier {
         notifyListeners();
         return;
       }
+      _recordClientHostProvisionalMapping(
+        role: localRole,
+        provisionalLocalSensorNanos: trigger.triggerSensorNanos,
+        provisionalHostSensorNanos: mappedHostSensorNanos,
+      );
       await _nearbyBridge.sendBytes(
         endpointId: _connectedEndpointIds.first,
         messageJson: SessionTriggerRequestMessage(
@@ -423,53 +591,34 @@ class RaceSessionController extends ChangeNotifier {
     required int triggerSensorNanos,
   }) async {
     if (role == SessionDeviceRole.unassigned) return;
-    final startedSensorNanos = _timeline.startedSensorNanos;
     if (role == SessionDeviceRole.start) {
-      if (_timeline.hasStarted) return;
-      _timeline = _timeline.copyWith(
-        startedSensorNanos: triggerSensorNanos,
-        splitElapsedNanos: <int>[],
-        clearStopElapsedNanos: true,
-      );
-      _motionController.ingestTrigger(
-        MotionTriggerEvent(
-          triggerSensorNanos: triggerSensorNanos,
-          score: 0,
-          type: MotionTriggerType.start,
-          splitIndex: 0,
-        ),
-        forwardToSync: false,
-      );
+      if (_hostStartSensorNanos != null) return;
+      _hostLiveStartSensorNanos = triggerSensorNanos;
+      _hostStartSensorNanos = triggerSensorNanos;
+      _hostStopSensorNanos = null;
+      _hostSplitSensorNanosByIndex.clear();
+      _hostLiveStopSensorNanos = null;
+      _hostLiveSplitSensorNanosByIndex.clear();
+      _hostProvisionalHostSensorByTriggerKey[_triggerKey(role, 0)] =
+          triggerSensorNanos;
     } else if (role == SessionDeviceRole.split) {
-      if (!_timeline.isRunning || startedSensorNanos == null) return;
-      if (_timeline.splitElapsedNanos.isNotEmpty) return;
-      final elapsedNanos = math.max(0, triggerSensorNanos - startedSensorNanos);
-      _timeline = _timeline.copyWith(
-        splitElapsedNanos: <int>[..._timeline.splitElapsedNanos, elapsedNanos],
-      );
-      _motionController.ingestTrigger(
-        MotionTriggerEvent(
-          triggerSensorNanos: triggerSensorNanos,
-          score: 0,
-          type: MotionTriggerType.split,
-          splitIndex: _timeline.splitElapsedNanos.length,
-        ),
-        forwardToSync: false,
-      );
+      if (_hostStartSensorNanos == null || _hostStopSensorNanos != null) return;
+      if (_hostSplitSensorNanosByIndex.isNotEmpty) return;
+      const splitIndex = 1;
+      _hostLiveSplitSensorNanosByIndex[splitIndex] = triggerSensorNanos;
+      _hostSplitSensorNanosByIndex[splitIndex] = triggerSensorNanos;
+      _hostProvisionalHostSensorByTriggerKey[_triggerKey(role, splitIndex)] =
+          triggerSensorNanos;
     } else if (role == SessionDeviceRole.stop) {
-      if (!_timeline.isRunning || startedSensorNanos == null) return;
-      final elapsedNanos = math.max(0, triggerSensorNanos - startedSensorNanos);
-      _timeline = _timeline.copyWith(stopElapsedNanos: elapsedNanos);
-      _motionController.ingestTrigger(
-        MotionTriggerEvent(
-          triggerSensorNanos: triggerSensorNanos,
-          score: 0,
-          type: MotionTriggerType.stop,
-          splitIndex: 0,
-        ),
-        forwardToSync: false,
-      );
+      if (_hostStartSensorNanos == null) return;
+      if (_hostStopSensorNanos != null) return;
+      _hostLiveStopSensorNanos = triggerSensorNanos;
+      _hostStopSensorNanos = triggerSensorNanos;
+      _hostProvisionalHostSensorByTriggerKey[_triggerKey(role, 0)] =
+          triggerSensorNanos;
     }
+    _rebuildTimelineFromHostTriggers();
+    _syncMotionControllerFromTimeline();
     notifyListeners();
     if (isHost) await _broadcastSnapshot();
   }
@@ -600,9 +749,12 @@ class RaceSessionController extends ChangeNotifier {
     final snapshot = SessionSnapshotMessage.tryParse(raw);
     if (snapshot != null && isClient) {
       final wasMonitoring = _monitoringActive;
+      final wasRecording = _recordingActive;
       final previousTimeline = _timeline;
+      _runId = snapshot.runId ?? _runId;
       _stage = snapshot.stage;
       _monitoringActive = snapshot.monitoringActive;
+      _recordingActive = snapshot.recordingActive;
       _timeline = snapshot.timeline;
       final previousHostSensorMinusElapsedNanos = _hostSensorMinusElapsedNanos;
       final previousHostGpsUtcOffsetNanos = _hostGpsUtcOffsetNanos;
@@ -623,6 +775,8 @@ class RaceSessionController extends ChangeNotifier {
         );
       await _syncLocalMotionConfigFromDevices();
       if (!wasMonitoring && _monitoringActive) {
+        _refinementStatusText = null;
+        _clientHostRefinementMappingByTriggerKey.clear();
         await _setWakeLockEnabled(true);
         _clearClockSyncLock();
         await _startLocalMonitoringCaptureIfAssigned();
@@ -630,7 +784,26 @@ class RaceSessionController extends ChangeNotifier {
           unawaited(_requestClockSync());
         }
       } else if (wasMonitoring && !_monitoringActive) {
+        await _runLocalPostRaceRefinementAsClient();
         await _stopLocalMonitoringCaptureIfRunning();
+        await _setWakeLockEnabled(false);
+      }
+      if (!wasRecording && _recordingActive) {
+        _recordingStatusText = 'Recording in progress...';
+        _recordingResultsByRole.clear();
+        await _setWakeLockEnabled(true);
+        await _startLocalHighSpeedRecordingIfAssigned();
+        if (_shouldRunNtpSync() && !_isClockLockValid()) {
+          unawaited(_requestClockSync());
+        }
+      } else if (wasRecording && !_recordingActive) {
+        _recordingStatusText = 'Analyzing recordings...';
+        await _stopLocalHighSpeedRecordingIfRunning();
+        await _runLocalRecordingAnalysisAsClient();
+      }
+      if ((wasMonitoring || wasRecording) &&
+          !_monitoringActive &&
+          !_recordingActive) {
         await _setWakeLockEnabled(false);
       }
       final timelineChanged =
@@ -699,6 +872,61 @@ class RaceSessionController extends ChangeNotifier {
       );
       return;
     }
+    final recordingAnalysis = SessionRecordingAnalysisResultMessage.tryParse(
+      raw,
+    );
+    if (recordingAnalysis != null && isHost) {
+      if (!_recordingAwaitingResults || recordingAnalysis.runId != _runId) {
+        return;
+      }
+      if (endpointId != null) {
+        final endpointRole =
+            _devices[endpointId]?.role ?? SessionDeviceRole.unassigned;
+        if (endpointRole != recordingAnalysis.role) {
+          return;
+        }
+      }
+      _recordingResultsByRole[recordingAnalysis.role] = recordingAnalysis;
+      if (recordingAnalysis.resolved &&
+          recordingAnalysis.mappedHostSensorNanos != null) {
+        _applyHostSensorForRole(
+          role: recordingAnalysis.role,
+          splitIndex: recordingAnalysis.splitIndex,
+          hostSensorNanos: recordingAnalysis.mappedHostSensorNanos!,
+        );
+      }
+      _updateRecordingStatusText();
+      notifyListeners();
+      await _broadcastSnapshot();
+      await _finalizeRecordingIfComplete();
+      return;
+    }
+    final triggerRefinement = SessionTriggerRefinementMessage.tryParse(raw);
+    if (triggerRefinement != null && isHost) {
+      if (triggerRefinement.runId != _runId) {
+        return;
+      }
+      if (endpointId != null) {
+        final endpointRole =
+            _devices[endpointId]?.role ?? SessionDeviceRole.unassigned;
+        if (endpointRole != triggerRefinement.role) {
+          return;
+        }
+      }
+      final applied = _applyHostTriggerRefinement(
+        role: triggerRefinement.role,
+        splitIndex: triggerRefinement.splitIndex,
+        provisionalHostSensorNanos:
+            triggerRefinement.provisionalHostSensorNanos,
+        refinedHostSensorNanos: triggerRefinement.refinedHostSensorNanos,
+      );
+      if (applied) {
+        _refinementStatusText = 'Refinement complete.';
+        notifyListeners();
+        await _broadcastSnapshot();
+      }
+      return;
+    }
     final triggerRequest = SessionTriggerRequestMessage.tryParse(raw);
     if (triggerRequest != null && isHost && endpointId != null) {
       final role = _devices[endpointId]?.role ?? SessionDeviceRole.unassigned;
@@ -720,6 +948,276 @@ class RaceSessionController extends ChangeNotifier {
         );
       }
       return;
+    }
+  }
+
+  void _recordLocalProvisionalTrigger({
+    required SessionDeviceRole role,
+    required int triggerSensorNanos,
+  }) {
+    final splitIndex = role == SessionDeviceRole.split ? 1 : 0;
+    final motionType = _motionTriggerTypeForRole(role);
+    if (motionType == null) {
+      return;
+    }
+    _motionController.recordProvisionalTrigger(
+      type: motionType,
+      splitIndex: splitIndex,
+      triggerSensorNanos: triggerSensorNanos,
+    );
+  }
+
+  void _recordClientHostProvisionalMapping({
+    required SessionDeviceRole role,
+    required int provisionalLocalSensorNanos,
+    required int provisionalHostSensorNanos,
+  }) {
+    final splitIndex = role == SessionDeviceRole.split ? 1 : 0;
+    _clientHostRefinementMappingByTriggerKey[_triggerKey(
+      role,
+      splitIndex,
+    )] = _ClientHostRefinementMapping(
+      provisionalLocalSensorNanos: provisionalLocalSensorNanos,
+      provisionalHostSensorNanos: provisionalHostSensorNanos,
+    );
+  }
+
+  Future<void> _runLocalPostRaceRefinementAsHost() async {
+    if (!isHost) {
+      return;
+    }
+    final requests = _buildLocalRefinementRequestsForRole(localRole);
+    if (requests.isEmpty) {
+      _refinementStatusText = 'Refinement complete.';
+      notifyListeners();
+      return;
+    }
+    final results = await _motionController.refineHsTriggers(
+      requests: requests,
+    );
+    var appliedAny = false;
+    for (final result in results) {
+      final role = _sessionRoleFromMotionTriggerType(result.triggerType);
+      if (role == null) {
+        continue;
+      }
+      final splitIndex = role == SessionDeviceRole.split
+          ? result.splitIndex
+          : 0;
+      final applied = _applyHostTriggerRefinement(
+        role: role,
+        splitIndex: splitIndex,
+        provisionalHostSensorNanos: result.provisionalSensorNanos,
+        refinedHostSensorNanos: result.refinedSensorNanos,
+      );
+      appliedAny = appliedAny || applied;
+    }
+    if (appliedAny) {
+      _syncMotionControllerFromTimeline();
+    }
+    _refinementStatusText =
+        _motionController.hsRefinementLifecycle == HsRefinementLifecycle.error
+        ? 'Refinement failed.'
+        : 'Refinement complete.';
+    notifyListeners();
+  }
+
+  Future<void> _runLocalPostRaceRefinementAsClient() async {
+    if (!isClient || localRole == SessionDeviceRole.unassigned) {
+      _refinementStatusText = null;
+      return;
+    }
+    final endpointId = _connectedEndpointIds.isEmpty
+        ? null
+        : _connectedEndpointIds.first;
+    if (endpointId == null) {
+      _refinementStatusText = null;
+      return;
+    }
+    final requests = _buildLocalRefinementRequestsForRole(localRole);
+    if (requests.isEmpty) {
+      _refinementStatusText = 'Refinement complete.';
+      notifyListeners();
+      return;
+    }
+    _refinementStatusText = 'Refinement running...';
+    notifyListeners();
+    final results = await _motionController.refineHsTriggers(
+      requests: requests,
+    );
+    for (final result in results) {
+      final role = _sessionRoleFromMotionTriggerType(result.triggerType);
+      if (role == null) {
+        continue;
+      }
+      final splitIndex = role == SessionDeviceRole.split
+          ? result.splitIndex
+          : 0;
+      final mapping =
+          _clientHostRefinementMappingByTriggerKey[_triggerKey(
+            role,
+            splitIndex,
+          )];
+      if (mapping == null) {
+        continue;
+      }
+      final refinedHostSensorNanos =
+          mapping.provisionalHostSensorNanos +
+          (result.refinedSensorNanos - mapping.provisionalLocalSensorNanos);
+      await _nearbyBridge.sendBytes(
+        endpointId: endpointId,
+        messageJson: SessionTriggerRefinementMessage(
+          runId: _runId,
+          role: role,
+          provisionalHostSensorNanos: mapping.provisionalHostSensorNanos,
+          refinedHostSensorNanos: refinedHostSensorNanos,
+          splitIndex: splitIndex,
+        ).toJsonString(),
+      );
+    }
+    _refinementStatusText =
+        _motionController.hsRefinementLifecycle == HsRefinementLifecycle.error
+        ? 'Refinement failed.'
+        : 'Refinement complete.';
+    notifyListeners();
+  }
+
+  List<HsTriggerRefinementRequest> _buildLocalRefinementRequestsForRole(
+    SessionDeviceRole role,
+  ) {
+    if (!_motionController.config.highSpeedEnabled) {
+      return const <HsTriggerRefinementRequest>[];
+    }
+    final motionType = _motionTriggerTypeForRole(role);
+    if (motionType == null) {
+      return const <HsTriggerRefinementRequest>[];
+    }
+    final splitIndex = role == SessionDeviceRole.split ? 1 : 0;
+    final provisionalSensorNanos = _motionController
+        .provisionalTriggerSensorNanos(
+          type: motionType,
+          splitIndex: splitIndex,
+        );
+    if (provisionalSensorNanos == null) {
+      return const <HsTriggerRefinementRequest>[];
+    }
+    return <HsTriggerRefinementRequest>[
+      HsTriggerRefinementRequest(
+        triggerSensorNanos: provisionalSensorNanos,
+        triggerType: motionType,
+        splitIndex: splitIndex,
+      ),
+    ];
+  }
+
+  bool _applyHostTriggerRefinement({
+    required SessionDeviceRole role,
+    required int splitIndex,
+    required int provisionalHostSensorNanos,
+    required int refinedHostSensorNanos,
+  }) {
+    final key = _triggerKey(role, splitIndex);
+    final expectedProvisional = _hostProvisionalHostSensorByTriggerKey[key];
+    if (expectedProvisional == null ||
+        expectedProvisional != provisionalHostSensorNanos) {
+      return false;
+    }
+    switch (role) {
+      case SessionDeviceRole.start:
+        if (_hostStartSensorNanos == null) {
+          return false;
+        }
+        if (_hostStartSensorNanos == refinedHostSensorNanos) {
+          return false;
+        }
+        _hostStartSensorNanos = refinedHostSensorNanos;
+        break;
+      case SessionDeviceRole.split:
+        if (!_hostSplitSensorNanosByIndex.containsKey(splitIndex)) {
+          return false;
+        }
+        if (_hostSplitSensorNanosByIndex[splitIndex] ==
+            refinedHostSensorNanos) {
+          return false;
+        }
+        _hostSplitSensorNanosByIndex[splitIndex] = refinedHostSensorNanos;
+        break;
+      case SessionDeviceRole.stop:
+        if (_hostStopSensorNanos == null) {
+          return false;
+        }
+        if (_hostStopSensorNanos == refinedHostSensorNanos) {
+          return false;
+        }
+        _hostStopSensorNanos = refinedHostSensorNanos;
+        break;
+      case SessionDeviceRole.unassigned:
+        return false;
+    }
+    _rebuildTimelineFromHostTriggers();
+    _syncMotionControllerFromTimeline();
+    return true;
+  }
+
+  void _resetHostTriggerTimeline() {
+    _hostLiveStartSensorNanos = null;
+    _hostLiveStopSensorNanos = null;
+    _hostLiveSplitSensorNanosByIndex.clear();
+    _hostStartSensorNanos = null;
+    _hostStopSensorNanos = null;
+    _hostSplitSensorNanosByIndex.clear();
+    _hostProvisionalHostSensorByTriggerKey.clear();
+    _timeline = SessionRaceTimeline.idle();
+  }
+
+  void _rebuildTimelineFromHostTriggers() {
+    final startSensorNanos = _hostStartSensorNanos;
+    if (startSensorNanos == null) {
+      _timeline = SessionRaceTimeline.idle();
+      return;
+    }
+    final splitElapsedNanos = _hostSplitSensorNanosByIndex.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+    final normalizedSplits = splitElapsedNanos
+        .map((entry) => math.max(0, entry.value - startSensorNanos))
+        .toList(growable: false);
+    final stopSensorNanos = _hostStopSensorNanos;
+    _timeline = SessionRaceTimeline(
+      startedSensorNanos: startSensorNanos,
+      splitElapsedNanos: normalizedSplits,
+      stopElapsedNanos: stopSensorNanos == null
+          ? null
+          : math.max(0, stopSensorNanos - startSensorNanos),
+    );
+  }
+
+  String _triggerKey(SessionDeviceRole role, int splitIndex) {
+    return '${role.name}:$splitIndex';
+  }
+
+  MotionTriggerType? _motionTriggerTypeForRole(SessionDeviceRole role) {
+    switch (role) {
+      case SessionDeviceRole.start:
+        return MotionTriggerType.start;
+      case SessionDeviceRole.split:
+        return MotionTriggerType.split;
+      case SessionDeviceRole.stop:
+        return MotionTriggerType.stop;
+      case SessionDeviceRole.unassigned:
+        return null;
+    }
+  }
+
+  SessionDeviceRole? _sessionRoleFromMotionTriggerType(
+    MotionTriggerType triggerType,
+  ) {
+    switch (triggerType) {
+      case MotionTriggerType.start:
+        return SessionDeviceRole.start;
+      case MotionTriggerType.split:
+        return SessionDeviceRole.split;
+      case MotionTriggerType.stop:
+        return SessionDeviceRole.stop;
     }
   }
 
@@ -1103,8 +1601,10 @@ class RaceSessionController extends ChangeNotifier {
         messageJson: SessionSnapshotMessage(
           stage: _stage,
           monitoringActive: _monitoringActive,
+          recordingActive: _recordingActive,
           devices: deviceSnapshot,
           timeline: _timeline,
+          runId: _runId,
           hostSensorMinusElapsedNanos: hostSensorMinusElapsedNanos,
           hostGpsUtcOffsetNanos: hostGpsUtcOffsetNanos,
           hostGpsFixAgeNanos: hostGpsFixAgeNanos,
@@ -1129,8 +1629,8 @@ class RaceSessionController extends ChangeNotifier {
     if (currentConfig.cameraFacing != localFacing) {
       await _motionController.updateCameraFacing(localFacing);
     }
-    if (currentConfig.highSpeedEnabled != localDevice.highSpeedEnabled) {
-      await _motionController.updateHighSpeedEnabled(localDevice.highSpeedEnabled);
+    if (currentConfig.highSpeedEnabled) {
+      await _motionController.updateHighSpeedEnabled(false);
     }
   }
 
@@ -1220,6 +1720,235 @@ class RaceSessionController extends ChangeNotifier {
     }
   }
 
+  Future<void> _startLocalHighSpeedRecordingIfAssigned() async {
+    if (localRole == SessionDeviceRole.unassigned) {
+      _localHighSpeedRecordingActive = false;
+      return;
+    }
+    await _motionController.startHighSpeedRecording(runId: _runId);
+    _localHighSpeedRecordingActive = true;
+  }
+
+  Future<void> _stopLocalHighSpeedRecordingIfRunning() async {
+    if (!_localHighSpeedRecordingActive) {
+      return;
+    }
+    try {
+      await _motionController.stopHighSpeedRecording();
+    } finally {
+      _localHighSpeedRecordingActive = false;
+    }
+  }
+
+  Set<SessionDeviceRole> _expectedRecordingRoles() {
+    final expected = <SessionDeviceRole>{};
+    for (final device in _devices.values) {
+      if (device.role == SessionDeviceRole.unassigned) {
+        continue;
+      }
+      expected.add(device.role);
+    }
+    return expected;
+  }
+
+  MotionTriggerType? _triggerTypeForRole(SessionDeviceRole role) {
+    switch (role) {
+      case SessionDeviceRole.start:
+        return MotionTriggerType.start;
+      case SessionDeviceRole.split:
+        return MotionTriggerType.split;
+      case SessionDeviceRole.stop:
+        return MotionTriggerType.stop;
+      case SessionDeviceRole.unassigned:
+        return null;
+    }
+  }
+
+  HsScanDirection _scanDirectionForRole(SessionDeviceRole role) {
+    if (role == SessionDeviceRole.stop) {
+      return HsScanDirection.backward;
+    }
+    return HsScanDirection.forward;
+  }
+
+  Future<SessionRecordingAnalysisResultMessage?>
+  _runLocalRecordingAnalysisForRole(SessionDeviceRole role) async {
+    if (role == SessionDeviceRole.unassigned) {
+      return null;
+    }
+    final triggerType = _triggerTypeForRole(role);
+    if (triggerType == null) {
+      return null;
+    }
+    final splitIndex = role == SessionDeviceRole.split ? 1 : 0;
+    final analysis = await _motionController.analyzeHighSpeedRecording(
+      runId: _runId,
+      triggerType: triggerType,
+      splitIndex: splitIndex,
+      scanDirection: _scanDirectionForRole(role),
+    );
+    if (analysis == null) {
+      return SessionRecordingAnalysisResultMessage(
+        runId: _runId,
+        role: role,
+        resolved: false,
+        splitIndex: splitIndex,
+        diagnostics: 'No analysis response.',
+      );
+    }
+    final mappedHostSensorNanos =
+        (analysis.resolved && analysis.localSensorNanos != null)
+        ? (isHost
+              ? analysis.localSensorNanos
+              : _mapClientSensorToHostSensor(analysis.localSensorNanos!))
+        : null;
+    return SessionRecordingAnalysisResultMessage(
+      runId: _runId,
+      role: role,
+      resolved: analysis.resolved && mappedHostSensorNanos != null,
+      splitIndex: splitIndex,
+      localSensorNanos: analysis.localSensorNanos,
+      mappedHostSensorNanos: mappedHostSensorNanos,
+      diagnostics: analysis.diagnostics,
+    );
+  }
+
+  Future<void> _runLocalRecordingAnalysisAsHost() async {
+    final role = localRole;
+    final localResult = await _runLocalRecordingAnalysisForRole(role);
+    if (localResult == null) {
+      return;
+    }
+    _recordingResultsByRole[role] = localResult;
+    if (localResult.resolved && localResult.mappedHostSensorNanos != null) {
+      _applyHostSensorForRole(
+        role: localResult.role,
+        splitIndex: localResult.splitIndex,
+        hostSensorNanos: localResult.mappedHostSensorNanos!,
+      );
+    }
+    _updateRecordingStatusText();
+    notifyListeners();
+  }
+
+  Future<void> _runLocalRecordingAnalysisAsClient() async {
+    if (!isClient || localRole == SessionDeviceRole.unassigned) {
+      return;
+    }
+    final endpointId = _connectedEndpointIds.isEmpty
+        ? null
+        : _connectedEndpointIds.first;
+    if (endpointId == null) {
+      return;
+    }
+    final localResult = await _runLocalRecordingAnalysisForRole(localRole);
+    if (localResult == null) {
+      return;
+    }
+    await _nearbyBridge.sendBytes(
+      endpointId: endpointId,
+      messageJson: localResult.toJsonString(),
+    );
+    _recordingStatusText = localResult.resolved
+        ? 'Local analysis complete.'
+        : 'Local analysis unresolved.';
+    notifyListeners();
+  }
+
+  void _applyHostSensorForRole({
+    required SessionDeviceRole role,
+    required int splitIndex,
+    required int hostSensorNanos,
+  }) {
+    switch (role) {
+      case SessionDeviceRole.start:
+        _hostLiveStartSensorNanos ??= hostSensorNanos;
+        _hostStartSensorNanos = hostSensorNanos;
+        break;
+      case SessionDeviceRole.split:
+        _hostLiveSplitSensorNanosByIndex[splitIndex] ??= hostSensorNanos;
+        _hostSplitSensorNanosByIndex[splitIndex] = hostSensorNanos;
+        break;
+      case SessionDeviceRole.stop:
+        _hostLiveStopSensorNanos ??= hostSensorNanos;
+        _hostStopSensorNanos = hostSensorNanos;
+        break;
+      case SessionDeviceRole.unassigned:
+        return;
+    }
+    _rebuildTimelineFromHostTriggers();
+    _syncMotionControllerFromTimeline();
+  }
+
+  void _updateRecordingStatusText() {
+    final expected = _expectedRecordingRoles();
+    if (expected.isEmpty) {
+      _recordingStatusText = 'No assigned roles to analyze.';
+      return;
+    }
+    final resolvedCount = expected.where((role) {
+      final result = _recordingResultsByRole[role];
+      return result != null && result.resolved;
+    }).length;
+    final total = expected.length;
+    if (_recordingAwaitingResults) {
+      _recordingStatusText = 'Analyzing recordings ($resolvedCount/$total)...';
+    } else {
+      _recordingStatusText =
+          'Recording analysis complete ($resolvedCount/$total).';
+    }
+  }
+
+  bool get _hasAllRecordingResults {
+    final expected = _expectedRecordingRoles();
+    if (expected.isEmpty) {
+      return true;
+    }
+    for (final role in expected) {
+      if (!_recordingResultsByRole.containsKey(role)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void _scheduleRecordingFinalizeTimeout() {
+    _cancelRecordingFinalizeTimer();
+    _recordingFinalizeTimer = Timer(
+      const Duration(milliseconds: _recordingFinalizeTimeoutMs),
+      () {
+        if (!_recordingAwaitingResults) {
+          return;
+        }
+        unawaited(_finalizeRecordingFlow());
+      },
+    );
+  }
+
+  void _cancelRecordingFinalizeTimer() {
+    _recordingFinalizeTimer?.cancel();
+    _recordingFinalizeTimer = null;
+  }
+
+  Future<void> _finalizeRecordingIfComplete() async {
+    if (_hasAllRecordingResults) {
+      await _finalizeRecordingFlow();
+    }
+  }
+
+  Future<void> _finalizeRecordingFlow() async {
+    if (!_recordingAwaitingResults) {
+      return;
+    }
+    _recordingAwaitingResults = false;
+    _cancelRecordingFinalizeTimer();
+    _updateRecordingStatusText();
+    _stage = SessionStage.lobby;
+    await _setWakeLockEnabled(false);
+    notifyListeners();
+    await _broadcastSnapshot();
+  }
+
   bool _hasRequiredRoles() {
     int starts = 0;
     int stops = 0;
@@ -1237,7 +1966,16 @@ class RaceSessionController extends ChangeNotifier {
   Future<void> _resetSession(SessionNetworkRole networkRole) async {
     _networkRole = networkRole;
     _stage = SessionStage.setup;
-    _timeline = SessionRaceTimeline.idle();
+    _runId = _buildRunId();
+    _resetHostTriggerTimeline();
+    _refinementStatusText = null;
+    _recordingStatusText = null;
+    _recordingResultsByRole.clear();
+    _recordingAwaitingResults = false;
+    _recordingActive = false;
+    _cancelRecordingFinalizeTimer();
+    _hostProvisionalHostSensorByTriggerKey.clear();
+    _clientHostRefinementMappingByTriggerKey.clear();
     _monitoringActive = false;
     await _setWakeLockEnabled(false, force: true);
     _clearClockSyncLock();
@@ -1263,6 +2001,7 @@ class RaceSessionController extends ChangeNotifier {
       );
     _localDeviceId = _localHostDeviceId;
     _motionController.resetRace();
+    _motionController.clearHsRefinementState();
   }
 
   void _clearClockSyncLock() {
@@ -1280,8 +2019,45 @@ class RaceSessionController extends ChangeNotifier {
   @override
   void dispose() {
     unawaited(_setWakeLockEnabled(false, force: true));
+    _cancelRecordingFinalizeTimer();
+    if (_localHighSpeedRecordingActive) {
+      unawaited(_motionController.stopHighSpeedRecording());
+      _localHighSpeedRecordingActive = false;
+    }
     _motionController.removeListener(_onMotionControllerChanged);
     _eventsSubscription?.cancel();
     super.dispose();
   }
+}
+
+class _ClientHostRefinementMapping {
+  const _ClientHostRefinementMapping({
+    required this.provisionalLocalSensorNanos,
+    required this.provisionalHostSensorNanos,
+  });
+
+  final int provisionalLocalSensorNanos;
+  final int provisionalHostSensorNanos;
+}
+
+class SessionRefinementImpact {
+  const SessionRefinementImpact({
+    required this.label,
+    required this.liveSensorNanos,
+    required this.correctedSensorNanos,
+    required this.liveElapsedNanos,
+    required this.correctedElapsedNanos,
+  });
+
+  final String label;
+  final int liveSensorNanos;
+  final int correctedSensorNanos;
+  final int liveElapsedNanos;
+  final int correctedElapsedNanos;
+
+  bool get changed =>
+      liveSensorNanos != correctedSensorNanos ||
+      liveElapsedNanos != correctedElapsedNanos;
+
+  int get deltaElapsedNanos => correctedElapsedNanos - liveElapsedNanos;
 }

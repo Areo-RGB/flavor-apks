@@ -10,6 +10,189 @@ import org.junit.Test
 
 class SensorNativeMathTest {
     @Test
+    fun `hs roi recording buffer keeps latest frames within capacity`() {
+        val buffer = HsRoiRecordingBuffer(capacityFrames = 3)
+        buffer.append(HsRecordedRoiFrame(100L, byteArrayOf(1, 2), sampleCount = 2))
+        buffer.append(HsRecordedRoiFrame(110L, byteArrayOf(3, 4), sampleCount = 2))
+        buffer.append(HsRecordedRoiFrame(120L, byteArrayOf(5, 6), sampleCount = 2))
+        buffer.append(HsRecordedRoiFrame(130L, byteArrayOf(7, 8), sampleCount = 2))
+
+        val snapshot = buffer.snapshot()
+        assertEquals(3, snapshot.size)
+        assertEquals(110L, snapshot[0].timestampNanos)
+        assertEquals(120L, snapshot[1].timestampNanos)
+        assertEquals(130L, snapshot[2].timestampNanos)
+    }
+
+    @Test
+    fun `hs live analysis uses fixed stride of four`() {
+        assertFalse(HsAnalysisPolicy.shouldAnalyzeLiveFrame(1))
+        assertFalse(HsAnalysisPolicy.shouldAnalyzeLiveFrame(2))
+        assertFalse(HsAnalysisPolicy.shouldAnalyzeLiveFrame(3))
+        assertTrue(HsAnalysisPolicy.shouldAnalyzeLiveFrame(4))
+        assertFalse(HsAnalysisPolicy.shouldAnalyzeLiveFrame(5))
+        assertTrue(HsAnalysisPolicy.shouldAnalyzeLiveFrame(8))
+    }
+
+    @Test
+    fun `post race refiner selects first threshold crossing inside window`() {
+        val frames = listOf(
+            HsRecordedRoiFrame(100L, byteArrayOf(10, 10, 10, 10), sampleCount = 4),
+            HsRecordedRoiFrame(108L, byteArrayOf(10, 10, 10, 10), sampleCount = 4),
+            HsRecordedRoiFrame(116L, byteArrayOf(30, 30, 30, 30), sampleCount = 4),
+            HsRecordedRoiFrame(124L, byteArrayOf(60, 60, 60, 60), sampleCount = 4),
+        )
+        val requests = listOf(
+            HsTriggerRefinementRequest(
+                triggerSensorNanos = 124L,
+                triggerType = "split",
+                splitIndex = 1,
+                windowNanos = 20L,
+            ),
+        )
+
+        val results = HsPostRaceRefiner.refineRequests(
+            recordedFrames = frames,
+            requests = requests,
+            config = NativeMonitoringConfig.defaults(),
+            defaultWindowNanos = 250_000_000L,
+        )
+
+        assertEquals(1, results.size)
+        assertTrue(results[0].refined)
+        assertEquals(116L, results[0].refinedSensorNanos)
+        assertEquals(124L, results[0].provisionalSensorNanos)
+    }
+
+    @Test
+    fun `post race refiner keeps provisional timestamp when no crossing exists`() {
+        val frames = listOf(
+            HsRecordedRoiFrame(100L, byteArrayOf(10, 10, 10, 10), sampleCount = 4),
+            HsRecordedRoiFrame(108L, byteArrayOf(10, 10, 10, 10), sampleCount = 4),
+            HsRecordedRoiFrame(116L, byteArrayOf(10, 10, 10, 10), sampleCount = 4),
+        )
+        val requests = listOf(
+            HsTriggerRefinementRequest(
+                triggerSensorNanos = 116L,
+                triggerType = "split",
+                splitIndex = 1,
+            ),
+        )
+
+        val results = HsPostRaceRefiner.refineRequests(
+            recordedFrames = frames,
+            requests = requests,
+            config = NativeMonitoringConfig.defaults(),
+            defaultWindowNanos = 250_000_000L,
+        )
+
+        assertEquals(1, results.size)
+        assertFalse(results[0].refined)
+        assertEquals(116L, results[0].refinedSensorNanos)
+    }
+
+    @Test
+    fun `post race refiner scales threshold for hs adjacent-frame cadence`() {
+        val frames = listOf(
+            HsRecordedRoiFrame(100L, byteArrayOf(10, 10, 10, 10), sampleCount = 4),
+            HsRecordedRoiFrame(108L, byteArrayOf(10, 10, 10, 10), sampleCount = 4),
+            HsRecordedRoiFrame(116L, byteArrayOf(12, 12, 12, 12), sampleCount = 4),
+            HsRecordedRoiFrame(124L, byteArrayOf(12, 12, 12, 12), sampleCount = 4),
+        )
+        val requests = listOf(
+            HsTriggerRefinementRequest(
+                triggerSensorNanos = 124L,
+                triggerType = "split",
+                splitIndex = 1,
+                windowNanos = 20L,
+            ),
+        )
+
+        val strictConfig = NativeMonitoringConfig.defaults().copy(threshold = 0.02)
+        val results = HsPostRaceRefiner.refineRequests(
+            recordedFrames = frames,
+            requests = requests,
+            config = strictConfig,
+            defaultWindowNanos = 250_000_000L,
+        )
+
+        assertEquals(1, results.size)
+        assertTrue(results[0].refined)
+        assertEquals(116L, results[0].refinedSensorNanos)
+    }
+
+    @Test
+    fun `offline selector backward scan returns latest threshold crossing`() {
+        val metrics = listOf(
+            HsOfflineAnalysisMetric(
+                sensorNanos = 1_000L,
+                rawScore = 0.010,
+                baseline = 0.001,
+                effectiveScore = 0.009,
+            ),
+            HsOfflineAnalysisMetric(
+                sensorNanos = 2_000L,
+                rawScore = 0.035,
+                baseline = 0.004,
+                effectiveScore = 0.031,
+            ),
+            HsOfflineAnalysisMetric(
+                sensorNanos = 3_000L,
+                rawScore = 0.018,
+                baseline = 0.006,
+                effectiveScore = 0.012,
+            ),
+            HsOfflineAnalysisMetric(
+                sensorNanos = 4_000L,
+                rawScore = 0.040,
+                baseline = 0.007,
+                effectiveScore = 0.033,
+            ),
+        )
+
+        val selected = HsOfflineMetricSelector.selectFirstThresholdCrossing(
+            metrics = metrics,
+            threshold = 0.02,
+            direction = HsScanDirection.BACKWARD,
+        )
+
+        assertNotNull(selected)
+        assertEquals(4_000L, selected?.sensorNanos)
+    }
+
+    @Test
+    fun `offline selector backward scan unresolved when no crossing exists`() {
+        val metrics = listOf(
+            HsOfflineAnalysisMetric(
+                sensorNanos = 1_000L,
+                rawScore = 0.008,
+                baseline = 0.002,
+                effectiveScore = 0.006,
+            ),
+            HsOfflineAnalysisMetric(
+                sensorNanos = 2_000L,
+                rawScore = 0.009,
+                baseline = 0.003,
+                effectiveScore = 0.006,
+            ),
+            HsOfflineAnalysisMetric(
+                sensorNanos = 3_000L,
+                rawScore = 0.010,
+                baseline = 0.004,
+                effectiveScore = 0.006,
+            ),
+        )
+
+        val selected = HsOfflineMetricSelector.selectFirstThresholdCrossing(
+            metrics = metrics,
+            threshold = 0.02,
+            direction = HsScanDirection.BACKWARD,
+        )
+
+        assertNull(selected)
+    }
+
+    @Test
     fun `detection math emits split triggers with cooldown and rearm parity`() {
         val engine = NativeDetectionMath(NativeMonitoringConfig.defaults())
 

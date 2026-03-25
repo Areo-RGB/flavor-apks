@@ -67,16 +67,62 @@ void main() {
   test(
     'session device camera facing defaults to rear and high speed to false when missing',
     () {
-    final decoded = SessionDevice.fromJson(<String, dynamic>{
-      'id': 'device-1',
-      'name': 'Device 1',
-      'role': SessionDeviceRole.stop.name,
-      'isLocal': true,
-    });
+      final decoded = SessionDevice.fromJson(<String, dynamic>{
+        'id': 'device-1',
+        'name': 'Device 1',
+        'role': SessionDeviceRole.stop.name,
+        'isLocal': true,
+      });
 
       expect(decoded, isNotNull);
       expect(decoded!.cameraFacing, SessionCameraFacing.rear);
       expect(decoded.highSpeedEnabled, isFalse);
     },
   );
+
+  test('snapshot serializes and parses runId', () {
+    const message = SessionSnapshotMessage(
+      stage: SessionStage.monitoring,
+      monitoringActive: true,
+      devices: <SessionDevice>[
+        SessionDevice(
+          id: 'local-device',
+          name: 'Local',
+          role: SessionDeviceRole.start,
+          isLocal: true,
+        ),
+      ],
+      timeline: SessionRaceTimeline(
+        startedSensorNanos: 1000,
+        splitElapsedNanos: <int>[200],
+      ),
+      runId: 'run_123',
+    );
+
+    final decoded = SessionSnapshotMessage.tryParse(message.toJsonString());
+
+    expect(decoded, isNotNull);
+    expect(decoded!.runId, 'run_123');
+  });
+
+  test('trigger refinement message serializes and parses', () {
+    const message = SessionTriggerRefinementMessage(
+      runId: 'run_42',
+      role: SessionDeviceRole.split,
+      provisionalHostSensorNanos: 5000,
+      refinedHostSensorNanos: 4980,
+      splitIndex: 1,
+    );
+
+    final decoded = SessionTriggerRefinementMessage.tryParse(
+      message.toJsonString(),
+    );
+
+    expect(decoded, isNotNull);
+    expect(decoded!.runId, 'run_42');
+    expect(decoded.role, SessionDeviceRole.split);
+    expect(decoded.provisionalHostSensorNanos, 5000);
+    expect(decoded.refinedHostSensorNanos, 4980);
+    expect(decoded.splitIndex, 1);
+  });
 }

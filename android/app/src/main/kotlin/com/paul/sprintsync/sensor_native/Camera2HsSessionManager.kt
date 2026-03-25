@@ -24,6 +24,10 @@ internal class Camera2HsSessionManager(
     private val emitError: (String) -> Unit,
     private val emitDiagnostic: (String) -> Unit,
 ) {
+    companion object {
+        private const val MAX_HS_OUTPUT_SURFACES = 1
+    }
+
     private val cameraManager: CameraManager =
         activity.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
@@ -183,6 +187,14 @@ internal class Camera2HsSessionManager(
         }
         try {
             val surfaces = listOf(extractor.getSurface())
+            if (surfaces.size > MAX_HS_OUTPUT_SURFACES) {
+                val message = "HS constrained session requires <=$MAX_HS_OUTPUT_SURFACES surface(s), got ${surfaces.size}."
+                emitDiagnostic("hs_surface_guard_violation: $message")
+                if (startHandled.compareAndSet(false, true)) {
+                    onStartError(message)
+                }
+                return
+            }
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
                 if (startHandled.compareAndSet(false, true)) {
                     onStartError("Constrained high-speed session requires API 23+.")

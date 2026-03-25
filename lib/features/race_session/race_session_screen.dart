@@ -37,6 +37,8 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
             return _buildLobbyScaffold(context);
           case SessionStage.monitoring:
             return _buildMonitoringScaffold(context);
+          case SessionStage.recording:
+            return _buildRecordingScaffold(context);
         }
       },
     );
@@ -209,6 +211,19 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
                   ...controller.devices.map((device) {
                     return _buildRoleRow(device);
                   }),
+                  if (controller.refinementStatusText != null ||
+                      controller.recordingStatusText != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      controller.recordingStatusText != null
+                          ? 'Recording: ${controller.recordingStatusText}'
+                          : 'Refinement: ${controller.refinementStatusText}',
+                      key: const ValueKey<String>(
+                        'lobby_refinement_status_text',
+                      ),
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -236,6 +251,14 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
                             : null,
                         icon: const Icon(Icons.videocam),
                         label: const Text('Start Monitoring'),
+                      ),
+                      FilledButton.icon(
+                        key: const ValueKey<String>('start_recording_button'),
+                        onPressed: controller.canStartRecording
+                            ? controller.startRecording
+                            : null,
+                        icon: const Icon(Icons.fiber_manual_record),
+                        label: const Text('Start Recording'),
                       ),
                       if (controller.isHost && controller.timeline.hasStarted)
                         FilledButton.icon(
@@ -331,6 +354,17 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
                       'Sync: $syncModeLabel · Latency: $latencyLabel',
                       style: const TextStyle(fontSize: 12, color: Colors.grey),
                     ),
+                    if (controller.refinementStatusText != null)
+                      Text(
+                        'Refinement: ${controller.refinementStatusText}',
+                        key: const ValueKey<String>(
+                          'monitoring_refinement_status_text',
+                        ),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
+                      ),
                   ],
                 ),
                 if (clockLockWarningText != null) ...[
@@ -414,6 +448,60 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
     );
   }
 
+  Widget _buildRecordingScaffold(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text(
+          'HS Recording',
+          key: ValueKey<String>('recording_stage_title'),
+        ),
+        actions: [
+          if (controller.isHost)
+            TextButton(
+              key: const ValueKey<String>('stop_recording_button'),
+              onPressed: controller.recordingActive
+                  ? controller.stopRecording
+                  : null,
+              child: const Text('Stop'),
+            ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Recording Status',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    controller.recordingStatusText ??
+                        (controller.recordingActive
+                            ? 'Recording in progress...'
+                            : 'Waiting for analysis.'),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Role: ${sessionDeviceRoleLabel(controller.localRole)}',
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _buildTimelineCard(),
+        ],
+      ),
+    );
+  }
+
   Widget _buildRoleRow(SessionDevice device) {
     final canEdit = controller.isHost && !controller.monitoringActive;
     final allRoles = <SessionDeviceRole>[
@@ -465,20 +553,6 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
             },
           )
         : Text(sessionCameraFacingLabel(device.cameraFacing));
-    final highSpeedControl = canEdit
-        ? FilterChip(
-            key: ValueKey<String>('high_speed_toggle_${device.id}'),
-            selected: device.highSpeedEnabled,
-            label: Text(device.highSpeedEnabled ? 'HS On' : 'HS Off'),
-            onSelected: (selected) {
-              controller.assignHighSpeedEnabled(device.id, selected);
-            },
-          )
-        : Chip(
-            key: ValueKey<String>('high_speed_state_${device.id}'),
-            label: Text(device.highSpeedEnabled ? 'HS On' : 'HS Off'),
-          );
-
     return ListTile(
       dense: true,
       contentPadding: EdgeInsets.zero,
@@ -486,19 +560,17 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
       subtitle: Text(device.id),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
-        children: [
-          cameraFacingControl,
-          const SizedBox(width: 8),
-          highSpeedControl,
-          const SizedBox(width: 8),
-          roleControl,
-        ],
+        children: [cameraFacingControl, const SizedBox(width: 8), roleControl],
       ),
     );
   }
 
   Widget _buildTimelineCard() {
     final timeline = controller.timeline;
+    final refinementImpacts = controller.refinementImpacts;
+    final changedRefinementImpacts = refinementImpacts
+        .where((impact) => impact.changed)
+        .toList();
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -533,9 +605,53 @@ class _RaceSessionScreenState extends State<RaceSessionScreen> {
                 ),
               ],
             ],
+            if (controller.refinementStatusText != null ||
+                refinementImpacts.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              const Divider(height: 1),
+              const SizedBox(height: 8),
+              const Text(
+                'Post-Race Analysis',
+                key: ValueKey<String>('post_race_analysis_title'),
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              if (controller.refinementStatusText != null) ...[
+                const SizedBox(height: 4),
+                Text('Status: ${controller.refinementStatusText}'),
+              ],
+              if (changedRefinementImpacts.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                ...changedRefinementImpacts.map((impact) {
+                  final liveValue = impact.label == 'Start'
+                      ? '${impact.liveSensorNanos}'
+                      : formatDurationNanos(impact.liveElapsedNanos);
+                  final correctedValue = impact.label == 'Start'
+                      ? '${impact.correctedSensorNanos}'
+                      : formatDurationNanos(impact.correctedElapsedNanos);
+                  return Text(
+                    '${impact.label}: live $liveValue -> corrected $correctedValue (${_formatDeltaNanos(impact.deltaElapsedNanos)})',
+                    key: ValueKey<String>(
+                      'post_race_analysis_row_${impact.label}',
+                    ),
+                  );
+                }),
+              ] else ...[
+                const SizedBox(height: 6),
+                const Text(
+                  'No correction deltas recorded yet.',
+                  style: TextStyle(color: Colors.grey),
+                ),
+              ],
+            ],
           ],
         ),
       ),
     );
+  }
+
+  String _formatDeltaNanos(int deltaNanos) {
+    final deltaMs = deltaNanos / 1000000.0;
+    final sign = deltaMs >= 0 ? '+' : '';
+    return 'Δ ${sign}${deltaMs.toStringAsFixed(2)}ms';
   }
 }

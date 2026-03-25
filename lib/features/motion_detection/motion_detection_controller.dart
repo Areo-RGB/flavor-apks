@@ -49,6 +49,11 @@ class MotionDetectionController extends ChangeNotifier {
   int? _targetFpsUpper;
   String? _errorText;
   bool _isDisposed = false;
+  HsRefinementLifecycle _hsRefinementLifecycle = HsRefinementLifecycle.idle;
+  String? _hsRefinementErrorText;
+  List<HsTriggerRefinementResult> _hsRefinementResults =
+      <HsTriggerRefinementResult>[];
+  final Map<String, int> _provisionalTriggerSensorNanosByKey = <String, int>{};
 
   MotionDetectionConfig get config => _config;
   MotionFrameStats? get latestStats => _latestStats;
@@ -66,6 +71,10 @@ class MotionDetectionController extends ChangeNotifier {
   double? get observedFps => _observedFps;
   String? get cameraFpsMode => _cameraFpsMode;
   int? get targetFpsUpper => _targetFpsUpper;
+  HsRefinementLifecycle get hsRefinementLifecycle => _hsRefinementLifecycle;
+  String? get hsRefinementErrorText => _hsRefinementErrorText;
+  List<HsTriggerRefinementResult> get hsRefinementResults =>
+      List.unmodifiable(_hsRefinementResults);
 
   String get runStatusLabel {
     if (_runSnapshot.isActive) {
@@ -117,9 +126,12 @@ class MotionDetectionController extends ChangeNotifier {
     _observedFps = null;
     _cameraFpsMode = null;
     _targetFpsUpper = null;
+    _clearHsRefinementTracking(notify: false);
     notifyListeners();
     try {
-      await _nativeSensorBridge.startNativeMonitoring(config: _config.toJson());
+      await _nativeSensorBridge.startNativeMonitoring(
+        config: _liveMonitoringConfigJson(),
+      );
       _isStreaming = true;
     } catch (error) {
       _isStreaming = false;
@@ -141,6 +153,7 @@ class MotionDetectionController extends ChangeNotifier {
     _observedFps = null;
     _cameraFpsMode = null;
     _targetFpsUpper = null;
+    _clearHsRefinementTracking(notify: false);
     notifyListeners();
   }
 
@@ -203,7 +216,7 @@ class MotionDetectionController extends ChangeNotifier {
     if (!_isStreaming) {
       return;
     }
-    await _nativeSensorBridge.updateNativeConfig(config: _config.toJson());
+    await _nativeSensorBridge.updateNativeConfig(config: _liveMonitoringConfigJson());
   }
 
   void _onNativeEvent(Map<String, dynamic> event) {
@@ -399,6 +412,105 @@ class MotionDetectionController extends ChangeNotifier {
     }
   }
 
+  void recordProvisionalTrigger({
+    required MotionTriggerType type,
+    required int splitIndex,
+    required int triggerSensorNanos,
+  }) {
+    _provisionalTriggerSensorNanosByKey[_triggerKey(type, splitIndex)] =
+        triggerSensorNanos;
+  }
+
+  int? provisionalTriggerSensorNanos({
+    required MotionTriggerType type,
+    required int splitIndex,
+  }) {
+    return _provisionalTriggerSensorNanosByKey[_triggerKey(type, splitIndex)];
+  }
+
+  Future<List<HsTriggerRefinementResult>> refineHsTriggers({
+    required List<HsTriggerRefinementRequest> requests,
+  }) async {
+    if (requests.isEmpty) {
+      _hsRefinementLifecycle = HsRefinementLifecycle.done;
+      _hsRefinementErrorText = null;
+      _hsRefinementResults = <HsTriggerRefinementResult>[];
+      notifyListeners();
+      return <HsTriggerRefinementResult>[];
+    }
+    _hsRefinementLifecycle = HsRefinementLifecycle.running;
+    _hsRefinementErrorText = null;
+    notifyListeners();
+    try {
+      final response = await _nativeSensorBridge.refineHsTriggers(
+        requests: requests
+            .map((request) => Map<String, dynamic>.from(request.toJson()))
+            .toList(),
+      );
+      final parsedResults = <HsTriggerRefinementResult>[];
+      final rawResults = response['results'];
+      if (rawResults is List) {
+        for (final rawItem in rawResults) {
+          if (rawItem is! Map) {
+            continue;
+          }
+          final parsed = HsTriggerRefinementResult.fromJson(
+            Map<String, dynamic>.from(rawItem),
+          );
+          if (parsed != null) {
+            parsedResults.add(parsed);
+          }
+        }
+      }
+      _hsRefinementLifecycle = HsRefinementLifecycle.done;
+      _hsRefinementErrorText = null;
+      _hsRefinementResults = parsedResults;
+      notifyListeners();
+      return parsedResults;
+    } catch (error) {
+      _hsRefinementLifecycle = HsRefinementLifecycle.error;
+      _hsRefinementErrorText = error.toString();
+      _hsRefinementResults = <HsTriggerRefinementResult>[];
+      notifyListeners();
+      return <HsTriggerRefinementResult>[];
+    }
+  }
+
+  void clearHsRefinementState() {
+    _clearHsRefinementTracking(notify: true);
+  }
+
+  Future<void> startHighSpeedRecording({
+    required String runId,
+  }) async {
+    _errorText = null;
+    await _nativeSensorBridge.startHighSpeedRecording(
+      runId: runId,
+      cameraFacing: _config.cameraFacing.name,
+    );
+  }
+
+  Future<void> stopHighSpeedRecording() async {
+    _errorText = null;
+    await _nativeSensorBridge.stopHighSpeedRecording();
+  }
+
+  Future<HsOfflineRecordingAnalysisResult?> analyzeHighSpeedRecording({
+    required String runId,
+    required MotionTriggerType triggerType,
+    required int splitIndex,
+    required HsScanDirection scanDirection,
+  }) async {
+    _errorText = null;
+    final response = await _nativeSensorBridge.analyzeHighSpeedRecording(
+      runId: runId,
+      triggerType: triggerType.name,
+      splitIndex: splitIndex,
+      scanDirection: scanDirection.name,
+    );
+    return HsOfflineRecordingAnalysisResult.fromJson(response);
+  }
+
   void _addTriggerToHistory(MotionTriggerEvent trigger) {
     _triggerHistory.insert(0, trigger);
     if (_triggerHistory.length > 20) {
@@ -420,6 +532,26 @@ class MotionDetectionController extends ChangeNotifier {
       notifyListeners();
     }
     await _repository.saveLastRun(run);
+  }
+
+  String _triggerKey(MotionTriggerType type, int splitIndex) {
+    return '${type.name}:$splitIndex';
+  }
+
+  void _clearHsRefinementTracking({required bool notify}) {
+    _hsRefinementLifecycle = HsRefinementLifecycle.idle;
+    _hsRefinementErrorText = null;
+    _hsRefinementResults = <HsTriggerRefinementResult>[];
+    _provisionalTriggerSensorNanosByKey.clear();
+    if (notify) {
+      notifyListeners();
+    }
+  }
+
+  Map<String, dynamic> _liveMonitoringConfigJson() {
+    final json = Map<String, dynamic>.from(_config.toJson());
+    json['highSpeedEnabled'] = false;
+    return json;
   }
 
   @override

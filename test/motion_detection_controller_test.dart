@@ -255,7 +255,7 @@ void main() {
   );
 
   test(
-    'updateHighSpeedEnabled persists and pushes native config while streaming',
+    'updateHighSpeedEnabled persists config while live native stream stays normal mode',
     () async {
       final bridge = _FakeNativeSensorBridge();
       final controller = MotionDetectionController(
@@ -272,7 +272,7 @@ void main() {
 
       expect(controller.config.highSpeedEnabled, isTrue);
       expect(bridge.updateConfigs, isNotEmpty);
-      expect(bridge.updateConfigs.last['highSpeedEnabled'], isTrue);
+      expect(bridge.updateConfigs.last['highSpeedEnabled'], isFalse);
       final savedConfig = await LocalRepository().loadMotionConfig();
       expect(savedConfig.highSpeedEnabled, isTrue);
 
@@ -412,6 +412,75 @@ void main() {
       controller.dispose();
     },
   );
+
+  test('refineHsTriggers parses native results and marks done', () async {
+    final bridge = _FakeNativeSensorBridge()
+      ..refineResponse = <String, dynamic>{
+        'results': <Map<String, dynamic>>[
+          <String, dynamic>{
+            'triggerType': 'split',
+            'splitIndex': 1,
+            'provisionalSensorNanos': 1100,
+            'refinedSensorNanos': 1080,
+            'refined': true,
+            'rawScore': 0.12,
+            'baseline': 0.01,
+            'effectiveScore': 0.11,
+          },
+        ],
+        'recordedFrameCount': 120,
+      };
+    final controller = MotionDetectionController(
+      repository: LocalRepository(),
+      nativeSensorBridge: bridge,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+
+    final results = await controller.refineHsTriggers(
+      requests: const <HsTriggerRefinementRequest>[
+        HsTriggerRefinementRequest(
+          triggerSensorNanos: 1100,
+          triggerType: MotionTriggerType.split,
+          splitIndex: 1,
+        ),
+      ],
+    );
+
+    expect(bridge.refineRequests, hasLength(1));
+    expect(controller.hsRefinementLifecycle, HsRefinementLifecycle.done);
+    expect(controller.hsRefinementErrorText, isNull);
+    expect(results, hasLength(1));
+    expect(results.single.refined, isTrue);
+    expect(results.single.refinedSensorNanos, 1080);
+
+    controller.dispose();
+  });
+
+  test('refineHsTriggers marks error lifecycle on bridge failure', () async {
+    final bridge = _FakeNativeSensorBridge()
+      ..refineError = StateError('refine failed');
+    final controller = MotionDetectionController(
+      repository: LocalRepository(),
+      nativeSensorBridge: bridge,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+
+    final results = await controller.refineHsTriggers(
+      requests: const <HsTriggerRefinementRequest>[
+        HsTriggerRefinementRequest(
+          triggerSensorNanos: 1200,
+          triggerType: MotionTriggerType.start,
+          splitIndex: 0,
+        ),
+      ],
+    );
+
+    expect(results, isEmpty);
+    expect(controller.hsRefinementLifecycle, HsRefinementLifecycle.error);
+    expect(controller.hsRefinementErrorText, contains('refine failed'));
+
+    controller.dispose();
+  });
 }
 
 class _FakeNativeSensorBridge extends NativeSensorBridge {
@@ -419,6 +488,13 @@ class _FakeNativeSensorBridge extends NativeSensorBridge {
       StreamController<Map<String, dynamic>>.broadcast();
   final List<Map<String, dynamic>> startConfigs = <Map<String, dynamic>>[];
   final List<Map<String, dynamic>> updateConfigs = <Map<String, dynamic>>[];
+  final List<List<Map<String, dynamic>>> refineRequests =
+      <List<Map<String, dynamic>>>[];
+  Map<String, dynamic> refineResponse = <String, dynamic>{
+    'results': <dynamic>[],
+    'recordedFrameCount': 0,
+  };
+  Object? refineError;
   int resetCalls = 0;
 
   @override
@@ -448,5 +524,19 @@ class _FakeNativeSensorBridge extends NativeSensorBridge {
   @override
   Future<void> resetNativeRun() async {
     resetCalls += 1;
+  }
+
+  @override
+  Future<Map<String, dynamic>> refineHsTriggers({
+    required List<Map<String, dynamic>> requests,
+  }) async {
+    refineRequests.add(
+      requests.map((request) => Map<String, dynamic>.from(request)).toList(),
+    );
+    final error = refineError;
+    if (error != null) {
+      throw error;
+    }
+    return Map<String, dynamic>.from(refineResponse);
   }
 }
