@@ -312,6 +312,43 @@ class SensorNativeMathTest {
     }
 
     @Test
+    fun `selectPreferredNormalFrameRateBounds prefers upper 60 with highest lower`() {
+        val bounds = setOf(
+            24 to 30,
+            15 to 60,
+            30 to 60,
+            45 to 60,
+            30 to 120,
+        )
+
+        val selected = SensorNativeCameraPolicy.selectPreferredNormalFrameRateBounds(bounds)
+
+        assertEquals(45, selected?.first)
+        assertEquals(60, selected?.second)
+    }
+
+    @Test
+    fun `selectPreferredNormalFrameRateBounds falls back to highest when 60 unavailable`() {
+        val bounds = setOf(
+            24 to 30,
+            30 to 30,
+            30 to 90,
+            45 to 90,
+        )
+
+        val selected = SensorNativeCameraPolicy.selectPreferredNormalFrameRateBounds(bounds)
+
+        assertEquals(45, selected?.first)
+        assertEquals(90, selected?.second)
+    }
+
+    @Test
+    fun `selectPreferredNormalFrameRateBounds returns null for null or empty`() {
+        assertNull(SensorNativeCameraPolicy.selectPreferredNormalFrameRateBounds(null))
+        assertNull(SensorNativeCameraPolicy.selectPreferredNormalFrameRateBounds(emptySet()))
+    }
+
+    @Test
     fun `selectHighestFrameRateBounds returns null for null or empty`() {
         assertNull(SensorNativeCameraPolicy.selectHighestFrameRateBounds(null))
         assertNull(SensorNativeCameraPolicy.selectHighestFrameRateBounds(emptySet()))

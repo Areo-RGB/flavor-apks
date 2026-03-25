@@ -107,7 +107,7 @@ internal class SensorNativeCameraSession(
     }
 
     private fun applyUnlockedPolicy(binding: CameraBinding) {
-        val fpsRange = SensorNativeCameraPolicy.selectHighestFrameRateRange(
+        val fpsRange = SensorNativeCameraPolicy.selectPreferredNormalFrameRateRange(
             binding.camera.cameraInfo.supportedFrameRateRanges,
         )
         if (fpsRange == null) {
@@ -212,6 +212,7 @@ internal class SensorNativeCameraSession(
 
 internal object SensorNativeCameraPolicy {
     const val AE_AWB_WARMUP_MS = 400L
+    private const val NORMAL_TARGET_FPS_UPPER = 60
 
     data class CameraFacingSelection(
         val selected: NativeCameraFacing,
@@ -220,6 +221,33 @@ internal object SensorNativeCameraPolicy {
 
     fun shouldLockAeAwb(elapsedMs: Long): Boolean {
         return elapsedMs >= AE_AWB_WARMUP_MS
+    }
+
+    fun selectPreferredNormalFrameRateRange(ranges: Set<Range<Int>>?): Range<Int>? {
+        val selectedBounds = selectPreferredNormalFrameRateBounds(ranges?.map { it.lower to it.upper })
+        if (selectedBounds == null) {
+            return null
+        }
+        return Range(selectedBounds.first, selectedBounds.second)
+    }
+
+    fun selectPreferredNormalFrameRateBounds(
+        bounds: Iterable<Pair<Int, Int>>?,
+    ): Pair<Int, Int>? {
+        if (bounds == null) {
+            return null
+        }
+        val boundList = bounds.toList()
+        if (boundList.isEmpty()) {
+            return null
+        }
+        val exactTargetUpper = boundList
+            .filter { it.second == NORMAL_TARGET_FPS_UPPER }
+            .maxWithOrNull(compareBy<Pair<Int, Int>> { it.first })
+        if (exactTargetUpper != null) {
+            return exactTargetUpper
+        }
+        return selectHighestFrameRateBounds(boundList)
     }
 
     fun selectHighestFrameRateRange(ranges: Set<Range<Int>>?): Range<Int>? {

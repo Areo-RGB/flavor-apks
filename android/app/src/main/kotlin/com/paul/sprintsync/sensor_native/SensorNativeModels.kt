@@ -99,7 +99,7 @@ data class NativeFrameStats(
 
 object HsRecordingPolicy {
     const val MAX_SECONDS = 10
-    const val TARGET_FPS = 120
+    const val TARGET_FPS = 60
     const val DEFAULT_CAPACITY_FRAMES = MAX_SECONDS * TARGET_FPS
     const val LIVE_ANALYSIS_STRIDE = 4
     const val DEFAULT_REFINEMENT_WINDOW_NANOS = 250_000_000L

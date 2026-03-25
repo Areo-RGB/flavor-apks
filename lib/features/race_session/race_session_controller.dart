@@ -16,7 +16,6 @@ class RaceSessionController extends ChangeNotifier {
   static const int _clockSyncStaleAfterNanos = 5000000000;
   static const int _gpsOffsetStaleAfterNanos = 10000000000;
   static const int _gpsSnapshotRebroadcastMinIntervalNanos = 1000000000;
-  static const int _sensorElapsedProjectionMaxAgeNanos = 3000000000;
   static const int _chirpSyncSampleCount = 9;
   static const int _chirpSyncResultTimeoutNanos = 8000000000;
   static const int _chirpMaxAcceptedJitterNanos = 2000000;
@@ -100,8 +99,7 @@ class RaceSessionController extends ChangeNotifier {
   int? _lastBroadcastHostGpsUtcOffsetNanos;
   int? _lastBroadcastHostGpsFixAgeNanos;
   int? _lastGpsSnapshotBroadcastElapsedNanos;
-  int? _lastSensorElapsedSampleNanos;
-  int? _lastSensorElapsedSampleCapturedAtNanos;
+  int? _dartToAndroidElapsedOffsetNanos;
   bool _wakeLockEnabled = false;
   bool _localMonitoringCaptureActive = false;
   String? _errorText;
@@ -404,14 +402,7 @@ class RaceSessionController extends ChangeNotifier {
       return;
     }
     final endpointId = _connectedEndpointIds.first;
-    final clientSendElapsedNanos = _nowClockSyncElapsedNanos(
-      requireSensorDomainIfMonitoring: false,
-    );
-    if (clientSendElapsedNanos == null) {
-      _chirpSyncStatusText = 'Failed (clock unavailable)';
-      notifyListeners();
-      return;
-    }
+    final clientSendElapsedNanos = _nowElapsedNanos();
     final calibrationId = 'chirp_${DateTime.now().microsecondsSinceEpoch}';
     _chirpSyncInProgress = true;
     _activeChirpCalibrationId = calibrationId;
@@ -421,8 +412,11 @@ class RaceSessionController extends ChangeNotifier {
     try {
       final capabilities = await _nearbyBridge.getChirpCapabilities();
       if (capabilities['supported'] != true) {
-        _chirpSyncStatusText = 'Calibrating (degraded timestamp path)';
+        _chirpSyncInProgress = false;
+        _activeChirpCalibrationId = null;
+        _chirpSyncStatusText = 'Unavailable (audio timestamp unsupported)';
         notifyListeners();
+        return;
       }
       _chirpProfile = _resolveChirpProfile(capabilities);
       await _nearbyBridge.startChirpSync(
@@ -611,9 +605,13 @@ class RaceSessionController extends ChangeNotifier {
       return;
     }
     if (isHost) {
+      if (localRole == SessionDeviceRole.split &&
+          _hostSplitSensorNanosByIndex.isNotEmpty)
+        return;
       _recordLocalProvisionalTrigger(
         role: localRole,
         triggerSensorNanos: trigger.triggerSensorNanos,
+        splitIndex: trigger.splitIndex,
       );
       await _applyRoleEvent(
         role: localRole,
@@ -624,9 +622,13 @@ class RaceSessionController extends ChangeNotifier {
     if (isClient &&
         _connectedEndpointIds.isNotEmpty &&
         localRole != SessionDeviceRole.unassigned) {
+      if (localRole == SessionDeviceRole.split &&
+          _timeline.splitElapsedNanos.isNotEmpty)
+        return;
       _recordLocalProvisionalTrigger(
         role: localRole,
         triggerSensorNanos: trigger.triggerSensorNanos,
+        splitIndex: trigger.splitIndex,
       );
       final mappedHostSensorNanos = _mapClientSensorToHostSensor(
         trigger.triggerSensorNanos,
@@ -639,6 +641,7 @@ class RaceSessionController extends ChangeNotifier {
       }
       _recordClientHostProvisionalMapping(
         role: localRole,
+        splitIndex: trigger.splitIndex,
         provisionalLocalSensorNanos: trigger.triggerSensorNanos,
         provisionalHostSensorNanos: mappedHostSensorNanos,
       );
@@ -654,6 +657,20 @@ class RaceSessionController extends ChangeNotifier {
   }
 
   void _onMotionControllerChanged() {
+    final sensorMinusElapsed = _motionController.sensorMinusElapsedNanos;
+    final latestStats = _motionController.latestStats;
+    if (sensorMinusElapsed != null && latestStats != null) {
+      final androidElapsed = latestStats.frameSensorNanos - sensorMinusElapsed;
+      final dartElapsed = _nowElapsedNanos();
+      final instantOffset = androidElapsed - dartElapsed;
+      if (_dartToAndroidElapsedOffsetNanos == null) {
+        _dartToAndroidElapsedOffsetNanos = instantOffset;
+      } else {
+        _dartToAndroidElapsedOffsetNanos =
+            ((_dartToAndroidElapsedOffsetNanos! * 9) + instantOffset) ~/ 10;
+      }
+    }
+
     if (isHost && _monitoringActive && _connectedEndpointIds.isNotEmpty) {
       _maybeBroadcastSnapshotForGpsUpdate();
     }
@@ -689,7 +706,8 @@ class RaceSessionController extends ChangeNotifier {
     } else if (role == SessionDeviceRole.split) {
       if (_hostStartSensorNanos == null || _hostStopSensorNanos != null) return;
       if (_hostSplitSensorNanosByIndex.isNotEmpty) return;
-      const splitIndex = 1;
+
+      final splitIndex = _hostSplitSensorNanosByIndex.length + 1;
       _hostLiveSplitSensorNanosByIndex[splitIndex] = triggerSensorNanos;
       _hostSplitSensorNanosByIndex[splitIndex] = triggerSensorNanos;
       _hostProvisionalHostSensorByTriggerKey[_triggerKey(role, splitIndex)] =
@@ -932,26 +950,24 @@ class RaceSessionController extends ChangeNotifier {
     }
     final clockSyncRequest = SessionClockSyncRequestMessage.tryParse(raw);
     if (clockSyncRequest != null && isHost && endpointId != null) {
-      final requireSensorDomainIfMonitoring =
-          _requiresSensorDomainClockForHostSync();
-      final hostReceiveElapsedNanos = _nowClockSyncElapsedNanos(
-        requireSensorDomainIfMonitoring: requireSensorDomainIfMonitoring,
-      );
-      if (hostReceiveElapsedNanos == null) {
+      final dartToAndroidOffset = _dartToAndroidElapsedOffsetNanos ?? 0;
+      if (_requiresSensorDomainClockForHostSync() &&
+          _dartToAndroidElapsedOffsetNanos == null) {
         return;
       }
-      final hostSendElapsedNanos = _nowClockSyncElapsedNanos(
-        requireSensorDomainIfMonitoring: requireSensorDomainIfMonitoring,
-      );
-      if (hostSendElapsedNanos == null) {
-        return;
-      }
+      final hostReceiveDartElapsed = _nowElapsedNanos();
+      final hostReceiveAndroidElapsed =
+          hostReceiveDartElapsed + dartToAndroidOffset;
+
+      final hostSendDartElapsed = _nowElapsedNanos();
+      final hostSendAndroidElapsed = hostSendDartElapsed + dartToAndroidOffset;
+
       await _nearbyBridge.sendBytes(
         endpointId: endpointId,
         messageJson: SessionClockSyncResponseMessage(
           clientSendElapsedNanos: clockSyncRequest.clientSendElapsedNanos,
-          hostReceiveElapsedNanos: hostReceiveElapsedNanos,
-          hostSendElapsedNanos: hostSendElapsedNanos,
+          hostReceiveElapsedNanos: hostReceiveAndroidElapsed,
+          hostSendElapsedNanos: hostSendAndroidElapsed,
         ).toJsonString(),
       );
       return;
@@ -964,12 +980,7 @@ class RaceSessionController extends ChangeNotifier {
         return;
       }
       _activeClockSyncBurstResponseCount += 1;
-      final clientReceiveElapsedNanos = _nowClockSyncElapsedNanos(
-        requireSensorDomainIfMonitoring: true,
-      );
-      if (clientReceiveElapsedNanos == null) {
-        return;
-      }
+      final clientReceiveElapsedNanos = _nowElapsedNanos();
       _updateHostClockOffset(
         clientSendElapsedNanos: clockSyncResponse.clientSendElapsedNanos,
         hostReceiveElapsedNanos: clockSyncResponse.hostReceiveElapsedNanos,
@@ -1072,8 +1083,8 @@ class RaceSessionController extends ChangeNotifier {
   void _recordLocalProvisionalTrigger({
     required SessionDeviceRole role,
     required int triggerSensorNanos,
+    required int splitIndex,
   }) {
-    final splitIndex = role == SessionDeviceRole.split ? 1 : 0;
     final motionType = _motionTriggerTypeForRole(role);
     if (motionType == null) {
       return;
@@ -1087,10 +1098,10 @@ class RaceSessionController extends ChangeNotifier {
 
   void _recordClientHostProvisionalMapping({
     required SessionDeviceRole role,
+    required int splitIndex,
     required int provisionalLocalSensorNanos,
     required int provisionalHostSensorNanos,
   }) {
-    final splitIndex = role == SessionDeviceRole.split ? 1 : 0;
     _clientHostRefinementMappingByTriggerKey[_triggerKey(
       role,
       splitIndex,
@@ -1210,22 +1221,51 @@ class RaceSessionController extends ChangeNotifier {
     if (motionType == null) {
       return const <HsTriggerRefinementRequest>[];
     }
-    final splitIndex = role == SessionDeviceRole.split ? 1 : 0;
-    final provisionalSensorNanos = _motionController
-        .provisionalTriggerSensorNanos(
-          type: motionType,
-          splitIndex: splitIndex,
+
+    final requests = <HsTriggerRefinementRequest>[];
+
+    if (role == SessionDeviceRole.split) {
+      final keys = isHost
+          ? _hostProvisionalHostSensorByTriggerKey.keys
+          : _clientHostRefinementMappingByTriggerKey.keys;
+
+      for (final key in keys) {
+        if (key.startsWith('split:')) {
+          final splitIndex = int.parse(key.split(':')[1]);
+          final provisionalSensorNanos = _motionController
+              .provisionalTriggerSensorNanos(
+                type: motionType,
+                splitIndex: splitIndex,
+              );
+          if (provisionalSensorNanos != null) {
+            // ensure no duplicates
+            if (!requests.any((req) => req.splitIndex == splitIndex)) {
+              requests.add(
+                HsTriggerRefinementRequest(
+                  triggerSensorNanos: provisionalSensorNanos,
+                  triggerType: motionType,
+                  splitIndex: splitIndex,
+                ),
+              );
+            }
+          }
+        }
+      }
+    } else {
+      final provisionalSensorNanos = _motionController
+          .provisionalTriggerSensorNanos(type: motionType, splitIndex: 0);
+      if (provisionalSensorNanos != null) {
+        requests.add(
+          HsTriggerRefinementRequest(
+            triggerSensorNanos: provisionalSensorNanos,
+            triggerType: motionType,
+            splitIndex: 0,
+          ),
         );
-    if (provisionalSensorNanos == null) {
-      return const <HsTriggerRefinementRequest>[];
+      }
     }
-    return <HsTriggerRefinementRequest>[
-      HsTriggerRefinementRequest(
-        triggerSensorNanos: provisionalSensorNanos,
-        triggerType: motionType,
-        splitIndex: splitIndex,
-      ),
-    ];
+
+    return requests;
   }
 
   bool _applyHostTriggerRefinement({
@@ -1234,43 +1274,35 @@ class RaceSessionController extends ChangeNotifier {
     required int provisionalHostSensorNanos,
     required int refinedHostSensorNanos,
   }) {
-    final key = _triggerKey(role, splitIndex);
-    final expectedProvisional = _hostProvisionalHostSensorByTriggerKey[key];
-    if (expectedProvisional == null ||
-        expectedProvisional != provisionalHostSensorNanos) {
-      return false;
-    }
-    switch (role) {
-      case SessionDeviceRole.start:
-        if (_hostStartSensorNanos == null) {
-          return false;
+    if (role == SessionDeviceRole.start) {
+      final expectedProvisional =
+          _hostProvisionalHostSensorByTriggerKey[_triggerKey(role, 0)];
+      if (expectedProvisional != provisionalHostSensorNanos) return false;
+      if (_hostStartSensorNanos == refinedHostSensorNanos) return false;
+      _hostStartSensorNanos = refinedHostSensorNanos;
+    } else if (role == SessionDeviceRole.split) {
+      int? matchedSplitIndex;
+      for (final entry in _hostProvisionalHostSensorByTriggerKey.entries) {
+        if (entry.key.startsWith('split:') &&
+            entry.value == provisionalHostSensorNanos) {
+          matchedSplitIndex = int.parse(entry.key.split(':')[1]);
+          break;
         }
-        if (_hostStartSensorNanos == refinedHostSensorNanos) {
-          return false;
-        }
-        _hostStartSensorNanos = refinedHostSensorNanos;
-        break;
-      case SessionDeviceRole.split:
-        if (!_hostSplitSensorNanosByIndex.containsKey(splitIndex)) {
-          return false;
-        }
-        if (_hostSplitSensorNanosByIndex[splitIndex] ==
-            refinedHostSensorNanos) {
-          return false;
-        }
-        _hostSplitSensorNanosByIndex[splitIndex] = refinedHostSensorNanos;
-        break;
-      case SessionDeviceRole.stop:
-        if (_hostStopSensorNanos == null) {
-          return false;
-        }
-        if (_hostStopSensorNanos == refinedHostSensorNanos) {
-          return false;
-        }
-        _hostStopSensorNanos = refinedHostSensorNanos;
-        break;
-      case SessionDeviceRole.unassigned:
+      }
+      if (matchedSplitIndex == null) return false;
+      if (_hostSplitSensorNanosByIndex[matchedSplitIndex] ==
+          refinedHostSensorNanos) {
         return false;
+      }
+      _hostSplitSensorNanosByIndex[matchedSplitIndex] = refinedHostSensorNanos;
+    } else if (role == SessionDeviceRole.stop) {
+      final expectedProvisional =
+          _hostProvisionalHostSensorByTriggerKey[_triggerKey(role, 0)];
+      if (expectedProvisional != provisionalHostSensorNanos) return false;
+      if (_hostStopSensorNanos == refinedHostSensorNanos) return false;
+      _hostStopSensorNanos = refinedHostSensorNanos;
+    } else {
+      return false;
     }
     _rebuildTimelineFromHostTriggers();
     _syncMotionControllerFromTimeline();
@@ -1379,9 +1411,7 @@ class RaceSessionController extends ChangeNotifier {
       _chirpHostMinusClientElapsedNanos = offset;
       _chirpQualityNanos = jitterNanos;
       _chirpLockActive = true;
-      _chirpLastCalibratedElapsedNanos =
-          result.completedAtElapsedNanos ??
-          _nowClockSyncElapsedNanos(requireSensorDomainIfMonitoring: false);
+      _chirpLastCalibratedElapsedNanos = _nowElapsedNanos();
       final qualityUs = chirpQualityUs;
       _chirpSyncStatusText = qualityUs == null
           ? 'Calibrated'
@@ -1438,12 +1468,8 @@ class RaceSessionController extends ChangeNotifier {
 
   Future<({int? bestRttNanos, int responseCount, int highRttRejectCount})>
   _runClockSyncBurst({required String endpointId}) async {
-    final burstStartElapsedNanos = _nowClockSyncElapsedNanos(
-      requireSensorDomainIfMonitoring: true,
-    );
-    if (burstStartElapsedNanos == null) {
-      return (bestRttNanos: null, responseCount: 0, highRttRejectCount: 0);
-    }
+    final burstStartElapsedNanos = _nowElapsedNanos();
+
     if (_pendingClockSyncRequestSendNanos.isNotEmpty) {
       final activeBurstStartedElapsedNanos = _clockSyncBurstStartedElapsedNanos;
       final activeBurstAgeNanos = activeBurstStartedElapsedNanos == null
@@ -1463,10 +1489,7 @@ class RaceSessionController extends ChangeNotifier {
     for (var i = 0; i < _clockSyncBurstCount; i += 1) {
       final sampledClientSendElapsedNanos = i == 0
           ? burstStartElapsedNanos
-          : _nowClockSyncElapsedNanos(requireSensorDomainIfMonitoring: true);
-      if (sampledClientSendElapsedNanos == null) {
-        break;
-      }
+          : _nowElapsedNanos();
       var uniqueClientSendElapsedNanos = sampledClientSendElapsedNanos;
       while (_pendingClockSyncRequestSendNanos.contains(
         uniqueClientSendElapsedNanos,
@@ -1557,19 +1580,23 @@ class RaceSessionController extends ChangeNotifier {
     if (!_isClockLockValid()) {
       return null;
     }
-    final clientSensorMinusElapsedNanos =
-        _motionController.sensorMinusElapsedNanos;
     final hostSensorMinusElapsedNanos = _hostSensorMinusElapsedNanos;
     final hostMinusClientElapsedNanos = _currentHostMinusClientElapsedNanos();
-    if (clientSensorMinusElapsedNanos == null ||
+    final localSensorMinusElapsedNanos =
+        _motionController.sensorMinusElapsedNanos;
+    final dartToAndroidOffset = _dartToAndroidElapsedOffsetNanos ?? 0;
+
+    if (hostSensorMinusElapsedNanos == null ||
         hostMinusClientElapsedNanos == null ||
-        hostSensorMinusElapsedNanos == null) {
+        localSensorMinusElapsedNanos == null) {
       return null;
     }
-    final clientElapsedNanos =
-        clientSensorNanos - clientSensorMinusElapsedNanos;
-    final hostElapsedNanos = clientElapsedNanos + hostMinusClientElapsedNanos;
-    return hostElapsedNanos + hostSensorMinusElapsedNanos;
+
+    final clientAndroidElapsed =
+        clientSensorNanos - localSensorMinusElapsedNanos;
+    final clientDartElapsed = clientAndroidElapsed - dartToAndroidOffset;
+    final hostAndroidElapsed = clientDartElapsed + hostMinusClientElapsedNanos;
+    return hostAndroidElapsed + hostSensorMinusElapsedNanos;
   }
 
   int? _mapHostSensorToLocalSensor(int hostSensorNanos) {
@@ -1580,14 +1607,18 @@ class RaceSessionController extends ChangeNotifier {
     final hostMinusClientElapsedNanos = _currentHostMinusClientElapsedNanos();
     final localSensorMinusElapsedNanos =
         _motionController.sensorMinusElapsedNanos;
+    final dartToAndroidOffset = _dartToAndroidElapsedOffsetNanos ?? 0;
+
     if (hostSensorMinusElapsedNanos == null ||
         hostMinusClientElapsedNanos == null ||
         localSensorMinusElapsedNanos == null) {
       return null;
     }
-    final hostElapsedNanos = hostSensorNanos - hostSensorMinusElapsedNanos;
-    final localElapsedNanos = hostElapsedNanos - hostMinusClientElapsedNanos;
-    return localElapsedNanos + localSensorMinusElapsedNanos;
+
+    final hostAndroidElapsed = hostSensorNanos - hostSensorMinusElapsedNanos;
+    final clientDartElapsed = hostAndroidElapsed - hostMinusClientElapsedNanos;
+    final clientAndroidElapsed = clientDartElapsed + dartToAndroidOffset;
+    return clientAndroidElapsed + localSensorMinusElapsedNanos;
   }
 
   void _syncMotionControllerFromTimeline() {
@@ -1635,7 +1666,10 @@ class RaceSessionController extends ChangeNotifier {
     if (clientGpsUtcOffsetNanos == null || hostGpsUtcOffsetNanos == null) {
       return null;
     }
-    return clientGpsUtcOffsetNanos - hostGpsUtcOffsetNanos;
+    final hostMinusClientAndroidElapsed =
+        clientGpsUtcOffsetNanos - hostGpsUtcOffsetNanos;
+    final dartToAndroidOffset = _dartToAndroidElapsedOffsetNanos ?? 0;
+    return hostMinusClientAndroidElapsed + dartToAndroidOffset;
   }
 
   int? _chirpHostMinusClientElapsedNanosIfValid() {
@@ -1696,12 +1730,7 @@ class RaceSessionController extends ChangeNotifier {
     if (roundTripNanos > _maxClockSyncRttNanos) {
       return false;
     }
-    final nowElapsedNanos = _nowClockSyncElapsedNanos(
-      requireSensorDomainIfMonitoring: _monitoringActive,
-    );
-    if (nowElapsedNanos == null) {
-      return false;
-    }
+    final nowElapsedNanos = _nowElapsedNanos();
     final ageNanos = nowElapsedNanos - lastSyncElapsedNanos;
     if (ageNanos < 0) {
       return false;
@@ -1723,13 +1752,9 @@ class RaceSessionController extends ChangeNotifier {
     if (gpsFixElapsedRealtimeNanos == null) {
       return null;
     }
-    final nowElapsedNanos = _nowClockSyncElapsedNanos(
-      requireSensorDomainIfMonitoring: _monitoringActive,
-    );
-    if (nowElapsedNanos == null) {
-      return null;
-    }
-    final ageNanos = nowElapsedNanos - gpsFixElapsedRealtimeNanos;
+    final dartToAndroidOffset = _dartToAndroidElapsedOffsetNanos ?? 0;
+    final nowAndroidElapsed = _nowElapsedNanos() + dartToAndroidOffset;
+    final ageNanos = nowAndroidElapsed - gpsFixElapsedRealtimeNanos;
     if (ageNanos < 0) {
       return null;
     }
@@ -1738,49 +1763,13 @@ class RaceSessionController extends ChangeNotifier {
 
   int _estimateLocalSensorNanosNow() {
     final sensorMinusElapsedNanos = _motionController.sensorMinusElapsedNanos;
-    final nowElapsedNanos = _nowElapsedNanos();
+    final dartToAndroidOffset = _dartToAndroidElapsedOffsetNanos ?? 0;
+    final nowAndroidElapsed = _nowElapsedNanos() + dartToAndroidOffset;
+
     if (sensorMinusElapsedNanos == null) {
-      return nowElapsedNanos;
+      return nowAndroidElapsed;
     }
-    return nowElapsedNanos + sensorMinusElapsedNanos;
-  }
-
-  int? _sensorDerivedElapsedNanos() {
-    final sensorMinusElapsedNanos = _motionController.sensorMinusElapsedNanos;
-    final latestFrameSensorNanos =
-        _motionController.latestStats?.frameSensorNanos;
-    if (sensorMinusElapsedNanos != null && latestFrameSensorNanos != null) {
-      final sampledElapsedNanos =
-          latestFrameSensorNanos - sensorMinusElapsedNanos;
-      _lastSensorElapsedSampleNanos = sampledElapsedNanos;
-      _lastSensorElapsedSampleCapturedAtNanos = _nowElapsedNanos();
-      return sampledElapsedNanos;
-    }
-    final lastSampledElapsedNanos = _lastSensorElapsedSampleNanos;
-    final lastCapturedAtNanos = _lastSensorElapsedSampleCapturedAtNanos;
-    if (lastSampledElapsedNanos == null || lastCapturedAtNanos == null) {
-      return null;
-    }
-    final nowElapsedNanos = _nowElapsedNanos();
-    final sampleAgeNanos = nowElapsedNanos - lastCapturedAtNanos;
-    if (sampleAgeNanos < 0 ||
-        sampleAgeNanos > _sensorElapsedProjectionMaxAgeNanos) {
-      return null;
-    }
-    return lastSampledElapsedNanos + sampleAgeNanos;
-  }
-
-  int? _nowClockSyncElapsedNanos({
-    bool requireSensorDomainIfMonitoring = false,
-  }) {
-    final sensorElapsedNanos = _sensorDerivedElapsedNanos();
-    if (sensorElapsedNanos != null) {
-      return sensorElapsedNanos;
-    }
-    if (requireSensorDomainIfMonitoring && _monitoringActive) {
-      return null;
-    }
-    return _nowElapsedNanos();
+    return nowAndroidElapsed + sensorMinusElapsedNanos;
   }
 
   void _maybeBroadcastSnapshotForGpsUpdate() {
@@ -1792,12 +1781,8 @@ class RaceSessionController extends ChangeNotifier {
     if (!gpsStateChanged) {
       return;
     }
-    final nowElapsedNanos = _nowClockSyncElapsedNanos(
-      requireSensorDomainIfMonitoring: true,
-    );
-    if (nowElapsedNanos == null) {
-      return;
-    }
+    final nowElapsedNanos = _nowElapsedNanos();
+
     final lastBroadcastElapsedNanos = _lastGpsSnapshotBroadcastElapsedNanos;
     if (lastBroadcastElapsedNanos != null &&
         nowElapsedNanos - lastBroadcastElapsedNanos <
@@ -1833,9 +1818,7 @@ class RaceSessionController extends ChangeNotifier {
     }
     _lastBroadcastHostGpsUtcOffsetNanos = hostGpsUtcOffsetNanos;
     _lastBroadcastHostGpsFixAgeNanos = hostGpsFixAgeNanos;
-    _lastGpsSnapshotBroadcastElapsedNanos = _nowClockSyncElapsedNanos(
-      requireSensorDomainIfMonitoring: _monitoringActive,
-    );
+    _lastGpsSnapshotBroadcastElapsedNanos = _nowElapsedNanos();
   }
 
   Future<void> _syncLocalMotionConfigFromDevices() async {
@@ -2000,8 +1983,6 @@ class RaceSessionController extends ChangeNotifier {
     _lastBroadcastHostGpsUtcOffsetNanos = null;
     _lastBroadcastHostGpsFixAgeNanos = null;
     _lastGpsSnapshotBroadcastElapsedNanos = null;
-    _lastSensorElapsedSampleNanos = null;
-    _lastSensorElapsedSampleCapturedAtNanos = null;
     _discovered.clear();
     _connectedEndpointIds.clear();
     _devices

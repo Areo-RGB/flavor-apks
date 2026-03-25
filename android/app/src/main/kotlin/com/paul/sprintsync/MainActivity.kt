@@ -431,7 +431,15 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
     }
 
     private fun getChirpCapabilities(result: MethodChannel.Result) {
-        result.success(acousticChirpSyncEngine.getCapabilities().toMap())
+        Thread {
+            try {
+                val capabilities = acousticChirpSyncEngine.getCapabilities().toMap()
+                mainHandler.post { result.success(capabilities) }
+            } catch (error: Exception) {
+                val message = error.localizedMessage ?: "unknown"
+                mainHandler.post { result.error("capability_probe_failed", message, null) }
+            }
+        }.start()
     }
 
     private fun startChirpSync(call: MethodCall, result: MethodChannel.Result) {
