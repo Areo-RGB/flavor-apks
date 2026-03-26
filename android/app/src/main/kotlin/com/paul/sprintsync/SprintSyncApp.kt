@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -31,6 +30,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,6 +55,7 @@ import com.paul.sprintsync.sensor_native.SensorNativePreviewViewFactory
 
 data class SprintSyncUiState(
     val permissionGranted: Boolean = false,
+    val setupBusy: Boolean = false,
     val deniedPermissions: List<String> = emptyList(),
     val stage: SessionStage = SessionStage.SETUP,
     val networkRole: SessionNetworkRole = SessionNetworkRole.NONE,
@@ -178,7 +179,7 @@ fun SprintSyncApp(
                     item {
                         SetupActionsCard(
                             permissionGranted = uiState.permissionGranted,
-                            connectedCount = uiState.connectedEndpoints.size,
+                            setupBusy = uiState.setupBusy,
                             canGoToLobby = uiState.canGoToLobby,
                             onRequestPermissions = onRequestPermissions,
                             onStartHosting = onStartHosting,
@@ -190,12 +191,9 @@ fun SprintSyncApp(
                     }
                     if (uiState.discoveredEndpoints.isNotEmpty()) {
                         item {
-                            Text("Discovered Devices", style = MaterialTheme.typography.titleMedium)
-                        }
-                        items(uiState.discoveredEndpoints.toList(), key = { it.first }) { endpoint ->
-                            EndpointRow(
-                                endpointId = endpoint.first,
-                                endpointName = endpoint.second,
+                            DiscoveredDevicesCard(
+                                discoveredEndpoints = uiState.discoveredEndpoints,
+                                setupBusy = uiState.setupBusy,
                                 onConnect = onConnectEndpoint,
                             )
                         }
@@ -339,7 +337,7 @@ private fun StatusCard(uiState: SprintSyncUiState) {
 @Composable
 private fun SetupActionsCard(
     permissionGranted: Boolean,
-    connectedCount: Int,
+    setupBusy: Boolean,
     canGoToLobby: Boolean,
     onRequestPermissions: () -> Unit,
     onStartHosting: () -> Unit,
@@ -348,55 +346,65 @@ private fun SetupActionsCard(
     onStartDiscoveryPointToPoint: () -> Unit,
     onGoToLobby: () -> Unit,
 ) {
+    val setupActionsEnabled = !setupBusy
+
     Card {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Network Connection", fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!permissionGranted) {
-                    Button(onClick = onRequestPermissions) {
+                    Button(onClick = onRequestPermissions, enabled = setupActionsEnabled) {
                         Text("Permissions")
                     }
                 }
-                Button(onClick = onStartHosting) {
+                Button(onClick = onStartHosting, enabled = setupActionsEnabled) {
                     Text("Host")
                 }
-                Button(onClick = onStartDiscovery) {
-                    Text("Join")
+                Button(onClick = onStartHostingPointToPoint, enabled = setupActionsEnabled) {
+                    Text("Host 1:1")
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onStartHostingPointToPoint) {
-                    Text("Host 1:1")
+                Button(onClick = onStartDiscovery, enabled = setupActionsEnabled) {
+                    Text("Join")
                 }
-                OutlinedButton(onClick = onStartDiscoveryPointToPoint) {
+                Button(onClick = onStartDiscoveryPointToPoint, enabled = setupActionsEnabled) {
                     Text("Join 1:1")
                 }
-            }
-            OutlinedButton(onClick = onGoToLobby, enabled = canGoToLobby && connectedCount > 0) {
-                Text("Next")
+                if (canGoToLobby) {
+                    Button(onClick = onGoToLobby, enabled = setupActionsEnabled) {
+                        Text("Next")
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun EndpointRow(
-    endpointId: String,
-    endpointName: String,
+private fun DiscoveredDevicesCard(
+    discoveredEndpoints: Map<String, String>,
+    setupBusy: Boolean,
     onConnect: (String) -> Unit,
 ) {
     Card {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Column {
-                Text(endpointName, fontWeight = FontWeight.Medium)
-                Text(endpointId, style = MaterialTheme.typography.bodySmall)
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Discovered Devices", fontWeight = FontWeight.SemiBold)
+            discoveredEndpoints.forEach { (endpointId, endpointName) ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column {
+                        Text(endpointName, fontWeight = FontWeight.Medium)
+                        Text(endpointId, style = MaterialTheme.typography.bodySmall)
+                    }
+                    TextButton(onClick = { onConnect(endpointId) }, enabled = !setupBusy) {
+                        Text("Connect")
+                    }
+                }
             }
-            AssistChip(onClick = { onConnect(endpointId) }, label = { Text("Connect") })
         }
     }
 }

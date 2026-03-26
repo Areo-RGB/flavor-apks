@@ -85,82 +85,136 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 uiState = uiState.value,
                 previewViewFactory = previewViewFactory,
                 onRequestPermissions = {
-                    requestPermissionsIfNeeded {}
+                    if (uiState.value.setupBusy) return@SprintSyncApp
+                    setSetupBusy(true)
+                    requestPermissionsIfNeeded {
+                        setSetupBusy(false)
+                    }
                 },
                 onConnectEndpoint = { endpointId ->
-                    nearbyConnectionsManager.requestConnection(
-                        endpointId = endpointId,
-                        endpointName = localEndpointName(),
-                    ) { result ->
-                        result.exceptionOrNull()?.let { error ->
-                            appendEvent("connect error: ${error.localizedMessage ?: "unknown"}")
+                    if (uiState.value.setupBusy) return@SprintSyncApp
+                    setSetupBusy(true)
+                    try {
+                        nearbyConnectionsManager.requestConnection(
+                            endpointId = endpointId,
+                            endpointName = localEndpointName(),
+                        ) { result ->
+                            result.exceptionOrNull()?.let { error ->
+                                appendEvent("connect error: ${error.localizedMessage ?: "unknown"}")
+                            }
+                            setSetupBusy(false)
+                            syncControllerSummaries()
                         }
+                    } catch (error: Throwable) {
+                        appendEvent("connect error: ${error.localizedMessage ?: "unknown"}")
+                        setSetupBusy(false)
                         syncControllerSummaries()
                     }
                 },
                 onGoToLobby = {
+                    if (uiState.value.setupBusy) return@SprintSyncApp
                     raceSessionController.goToLobby()
                     syncControllerSummaries()
                 },
                 onStartHosting = {
+                    if (uiState.value.setupBusy) return@SprintSyncApp
+                    setSetupBusy(true)
                     requestPermissionsIfNeeded {
                         raceSessionController.setNetworkRole(SessionNetworkRole.HOST)
                         nearbyConnectionsManager.configureNativeClockSyncHost(
                             enabled = true,
                             requireSensorDomainClock = false,
                         )
-                        nearbyConnectionsManager.startHosting(
-                            serviceId = DEFAULT_SERVICE_ID,
-                            endpointName = localEndpointName(),
-                            strategy = NearbyTransportStrategy.STAR,
-                        ) { result ->
-                            result.exceptionOrNull()?.let { error ->
-                                appendEvent("host error: ${error.localizedMessage ?: "unknown"}")
+                        try {
+                            nearbyConnectionsManager.startHosting(
+                                serviceId = DEFAULT_SERVICE_ID,
+                                endpointName = localEndpointName(),
+                                strategy = NearbyTransportStrategy.STAR,
+                            ) { result ->
+                                result.exceptionOrNull()?.let { error ->
+                                    appendEvent("host error: ${error.localizedMessage ?: "unknown"}")
+                                }
+                                setSetupBusy(false)
+                                syncControllerSummaries()
                             }
+                        } catch (error: Throwable) {
+                            appendEvent("host error: ${error.localizedMessage ?: "unknown"}")
+                            setSetupBusy(false)
+                            syncControllerSummaries()
                         }
                     }
                 },
                 onStartHostingPointToPoint = {
+                    if (uiState.value.setupBusy) return@SprintSyncApp
+                    setSetupBusy(true)
                     requestPermissionsIfNeeded {
                         raceSessionController.setNetworkRole(SessionNetworkRole.HOST)
                         nearbyConnectionsManager.configureNativeClockSyncHost(
                             enabled = true,
                             requireSensorDomainClock = false,
                         )
-                        nearbyConnectionsManager.startHosting(
-                            serviceId = DEFAULT_SERVICE_ID,
-                            endpointName = localEndpointName(),
-                            strategy = NearbyTransportStrategy.POINT_TO_POINT,
-                        ) { result ->
-                            result.exceptionOrNull()?.let { error ->
-                                appendEvent("host p2p error: ${error.localizedMessage ?: "unknown"}")
+                        try {
+                            nearbyConnectionsManager.startHosting(
+                                serviceId = DEFAULT_SERVICE_ID,
+                                endpointName = localEndpointName(),
+                                strategy = NearbyTransportStrategy.POINT_TO_POINT,
+                            ) { result ->
+                                result.exceptionOrNull()?.let { error ->
+                                    appendEvent("host p2p error: ${error.localizedMessage ?: "unknown"}")
+                                }
+                                setSetupBusy(false)
+                                syncControllerSummaries()
                             }
+                        } catch (error: Throwable) {
+                            appendEvent("host p2p error: ${error.localizedMessage ?: "unknown"}")
+                            setSetupBusy(false)
+                            syncControllerSummaries()
                         }
                     }
                 },
                 onStartDiscovery = {
+                    if (uiState.value.setupBusy) return@SprintSyncApp
+                    setSetupBusy(true)
                     requestPermissionsIfNeeded {
                         raceSessionController.setNetworkRole(SessionNetworkRole.CLIENT)
-                        nearbyConnectionsManager.startDiscovery(
-                            serviceId = DEFAULT_SERVICE_ID,
-                            strategy = NearbyTransportStrategy.STAR,
-                        ) { result ->
-                            result.exceptionOrNull()?.let { error ->
-                                appendEvent("discovery error: ${error.localizedMessage ?: "unknown"}")
+                        try {
+                            nearbyConnectionsManager.startDiscovery(
+                                serviceId = DEFAULT_SERVICE_ID,
+                                strategy = NearbyTransportStrategy.STAR,
+                            ) { result ->
+                                result.exceptionOrNull()?.let { error ->
+                                    appendEvent("discovery error: ${error.localizedMessage ?: "unknown"}")
+                                }
+                                setSetupBusy(false)
+                                syncControllerSummaries()
                             }
+                        } catch (error: Throwable) {
+                            appendEvent("discovery error: ${error.localizedMessage ?: "unknown"}")
+                            setSetupBusy(false)
+                            syncControllerSummaries()
                         }
                     }
                 },
                 onStartDiscoveryPointToPoint = {
+                    if (uiState.value.setupBusy) return@SprintSyncApp
+                    setSetupBusy(true)
                     requestPermissionsIfNeeded {
                         raceSessionController.setNetworkRole(SessionNetworkRole.CLIENT)
-                        nearbyConnectionsManager.startDiscovery(
-                            serviceId = DEFAULT_SERVICE_ID,
-                            strategy = NearbyTransportStrategy.POINT_TO_POINT,
-                        ) { result ->
-                            result.exceptionOrNull()?.let { error ->
-                                appendEvent("discovery p2p error: ${error.localizedMessage ?: "unknown"}")
+                        try {
+                            nearbyConnectionsManager.startDiscovery(
+                                serviceId = DEFAULT_SERVICE_ID,
+                                strategy = NearbyTransportStrategy.POINT_TO_POINT,
+                            ) { result ->
+                                result.exceptionOrNull()?.let { error ->
+                                    appendEvent("discovery p2p error: ${error.localizedMessage ?: "unknown"}")
+                                }
+                                setSetupBusy(false)
+                                syncControllerSummaries()
                             }
+                        } catch (error: Throwable) {
+                            appendEvent("discovery p2p error: ${error.localizedMessage ?: "unknown"}")
+                            setSetupBusy(false)
+                            syncControllerSummaries()
                         }
                     }
                 },
@@ -285,9 +339,14 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         if (granted) {
             pendingPermissionAction?.invoke()
         } else {
+            setSetupBusy(false)
             appendEvent("permissions denied: ${denied.joinToString()}")
         }
         pendingPermissionAction = null
+    }
+
+    private fun setSetupBusy(busy: Boolean) {
+        updateUiState { copy(setupBusy = busy) }
     }
 
     private fun onNearbyEvent(event: NearbyEvent) {
