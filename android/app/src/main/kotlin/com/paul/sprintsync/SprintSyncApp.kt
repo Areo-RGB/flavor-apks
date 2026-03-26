@@ -47,7 +47,6 @@ import com.paul.sprintsync.features.race_session.SessionStage
 import com.paul.sprintsync.features.race_session.sessionCameraFacingLabel
 import com.paul.sprintsync.features.race_session.sessionDeviceRoleLabel
 import com.paul.sprintsync.sensor_native.SensorNativePreviewViewFactory
-import kotlin.math.absoluteValue
 
 data class SprintSyncUiState(
     val permissionGranted: Boolean = false,
@@ -80,8 +79,6 @@ data class SprintSyncUiState(
     val chirpSyncStatusText: String = "Not calibrated",
     val chirpQualityUs: Int? = null,
     val clockLockWarningText: String? = null,
-    val refinementStatusText: String? = null,
-    val postRaceAnalysisRows: List<String> = emptyList(),
     val runStatusLabel: String = "Ready",
     val runMarksCount: Int = 0,
     val elapsedDisplay: String = "00:00.000",
@@ -129,8 +126,7 @@ fun SprintSyncApp(
     onUpdateRoiCenter: (Double) -> Unit,
     onUpdateRoiWidth: (Double) -> Unit,
     onUpdateCooldown: (Int) -> Unit,
-    onUpdateProcessEveryNFrames: (Int) -> Unit,
-    onStopAll: () -> Unit,
+    onStopHosting: () -> Unit,
 ) {
     var showPreview by rememberSaveable { mutableStateOf(true) }
     val previewAvailable = !uiState.localHighSpeedEnabled
@@ -209,12 +205,15 @@ fun SprintSyncApp(
                 SessionStage.LOBBY -> {
                     item {
                         LobbyActionsCard(
+                            isHost = uiState.isHost,
                             networkRole = uiState.networkRole,
                             connectedCount = uiState.connectedEndpoints.size,
                             canStartMonitoring = uiState.canStartMonitoring,
+                            timelineStarted = uiState.startedSensorNanos != null,
                             onStartMonitoring = onStartMonitoring,
+                            onResetRun = onResetRun,
                             onClockSyncBurst = onClockSyncBurst,
-                            onStopAll = onStopAll,
+                            onStopHosting = onStopHosting,
                         )
                     }
                     item {
@@ -243,8 +242,6 @@ fun SprintSyncApp(
                             startedSensorNanos = uiState.startedSensorNanos,
                             splitSensorNanos = uiState.splitSensorNanos,
                             stoppedSensorNanos = uiState.stoppedSensorNanos,
-                            refinementStatusText = uiState.refinementStatusText,
-                            postRaceAnalysisRows = uiState.postRaceAnalysisRows,
                         )
                     }
                 }
@@ -263,7 +260,6 @@ fun SprintSyncApp(
                             syncModeLabel = uiState.monitoringSyncModeLabel,
                             latencyMs = uiState.monitoringLatencyMs,
                             chirpQualityUs = uiState.chirpQualityUs,
-                            refinementStatusText = uiState.refinementStatusText,
                         )
                     }
                     if (uiState.clockLockWarningText != null) {
@@ -299,11 +295,7 @@ fun SprintSyncApp(
                             onUpdateRoiCenter = onUpdateRoiCenter,
                             onUpdateRoiWidth = onUpdateRoiWidth,
                             onUpdateCooldown = onUpdateCooldown,
-                            onUpdateProcessEveryNFrames = onUpdateProcessEveryNFrames,
                         )
-                    }
-                    item {
-                        LiveStatsCard(uiState)
                     }
                 }
             }
@@ -412,12 +404,15 @@ private fun EndpointRow(
 
 @Composable
 private fun LobbyActionsCard(
+    isHost: Boolean,
     networkRole: SessionNetworkRole,
     connectedCount: Int,
     canStartMonitoring: Boolean,
+    timelineStarted: Boolean,
     onStartMonitoring: () -> Unit,
+    onResetRun: () -> Unit,
     onClockSyncBurst: () -> Unit,
-    onStopAll: () -> Unit,
+    onStopHosting: () -> Unit,
 ) {
     Card {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -430,14 +425,21 @@ private fun LobbyActionsCard(
             ) {
                 Text("Start Monitoring")
             }
+            if (isHost && timelineStarted) {
+                OutlinedButton(onClick = onResetRun) {
+                    Text("Reset Run")
+                }
+            }
             if (networkRole == SessionNetworkRole.CLIENT) {
                 Text("Waiting for host to start monitoring", style = MaterialTheme.typography.bodySmall)
             }
             OutlinedButton(onClick = onClockSyncBurst, enabled = connectedCount > 0) {
                 Text("Clock Sync")
             }
-            OutlinedButton(onClick = onStopAll, enabled = networkRole != SessionNetworkRole.NONE) {
-                Text("Stop Session")
+            if (isHost) {
+                OutlinedButton(onClick = onStopHosting, enabled = networkRole != SessionNetworkRole.NONE) {
+                    Text("Stop Hosting")
+                }
             }
         }
     }
@@ -593,7 +595,6 @@ private fun MonitoringConnectionCard(
     syncModeLabel: String,
     latencyMs: Int?,
     chirpQualityUs: Int?,
-    refinementStatusText: String?,
 ) {
     val latencyLabel = when (syncModeLabel) {
         "NTP" -> if (latencyMs == null) "-" else "$latencyMs ms"
@@ -605,9 +606,6 @@ private fun MonitoringConnectionCard(
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Connection: $connectionTypeLabel", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             Text("Sync: $syncModeLabel · Latency: $latencyLabel", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-            if (refinementStatusText != null) {
-                Text("Refinement: $refinementStatusText", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-            }
         }
     }
 }
@@ -706,47 +704,68 @@ private fun AdvancedDetectionCard(
     onUpdateRoiCenter: (Double) -> Unit,
     onUpdateRoiWidth: (Double) -> Unit,
     onUpdateCooldown: (Int) -> Unit,
-    onUpdateProcessEveryNFrames: (Int) -> Unit,
 ) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
     Card {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Advanced Detection", fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Advanced Detection", fontWeight = FontWeight.Bold)
+                OutlinedButton(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "Hide" else "Show")
+                }
+            }
 
-            Text("Threshold: ${String.format("%.4f", uiState.threshold)}")
-            Slider(
-                value = uiState.threshold.toFloat(),
-                onValueChange = { onUpdateThreshold(it.toDouble()) },
-                valueRange = 0.001f..0.030f,
-            )
+            if (expanded) {
+                Text("Threshold: ${String.format("%.3f", uiState.threshold)}")
+                Slider(
+                    value = uiState.threshold.toFloat(),
+                    onValueChange = { onUpdateThreshold(it.toDouble()) },
+                    valueRange = 0.001f..0.08f,
+                )
 
-            Text("Tripwire Position: ${String.format("%.2f", uiState.roiCenterX)}")
-            Slider(
-                value = uiState.roiCenterX.toFloat(),
-                onValueChange = { onUpdateRoiCenter(it.toDouble()) },
-                valueRange = 0.05f..0.95f,
-            )
+                Text("ROI center: ${String.format("%.2f", uiState.roiCenterX)}")
+                Slider(
+                    value = uiState.roiCenterX.toFloat(),
+                    onValueChange = { onUpdateRoiCenter(it.toDouble()) },
+                    valueRange = 0.20f..0.80f,
+                )
 
-            Text("Tripwire Width: ${String.format("%.2f", uiState.roiWidth)}")
-            Slider(
-                value = uiState.roiWidth.toFloat(),
-                onValueChange = { onUpdateRoiWidth(it.toDouble()) },
-                valueRange = 0.05f..0.40f,
-            )
+                Text("ROI width: ${String.format("%.2f", uiState.roiWidth)}")
+                Slider(
+                    value = uiState.roiWidth.toFloat(),
+                    onValueChange = { onUpdateRoiWidth(it.toDouble()) },
+                    valueRange = 0.05f..0.40f,
+                )
 
-            Text("Cooldown: ${uiState.cooldownMs} ms")
-            Slider(
-                value = uiState.cooldownMs.toFloat(),
-                onValueChange = { onUpdateCooldown(it.toInt()) },
-                valueRange = 300f..2000f,
-            )
+                Text("Cooldown: ${uiState.cooldownMs} ms")
+                Slider(
+                    value = uiState.cooldownMs.toFloat(),
+                    onValueChange = { onUpdateCooldown(it.toInt()) },
+                    valueRange = 300f..2000f,
+                )
 
-            Text("Process Every N Frames: ${uiState.processEveryNFrames}")
-            Slider(
-                value = uiState.processEveryNFrames.toFloat(),
-                onValueChange = { onUpdateProcessEveryNFrames(it.toInt().coerceIn(1, 5)) },
-                valueRange = 1f..5f,
-                steps = 3,
-            )
+                Spacer(Modifier.height(4.dp))
+                Text("Live Stats", fontWeight = FontWeight.Bold)
+                Text("Raw score: ${uiState.rawScore?.let { String.format("%.4f", it) } ?: "-"}")
+                Text("Baseline: ${uiState.baseline?.let { String.format("%.4f", it) } ?: "-"}")
+                Text("Effective: ${uiState.effectiveScore?.let { String.format("%.4f", it) } ?: "-"}")
+                Text("Frame Sensor Nanos: ${uiState.frameSensorNanos ?: "-"}")
+                Text("Frames: ${uiState.processedFrameCount}/${uiState.streamFrameCount}")
+
+                Spacer(Modifier.height(4.dp))
+                Text("Recent Triggers", fontWeight = FontWeight.Bold)
+                if (uiState.triggerHistory.isEmpty()) {
+                    Text("No trigger events yet.")
+                } else {
+                    uiState.triggerHistory.forEach { event ->
+                        Text(event, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
         }
     }
 }
@@ -784,29 +803,6 @@ private fun CurrentRunMarksCard(uiState: SprintSyncUiState) {
             val stop = uiState.stoppedSensorNanos
             if (start != null && stop != null) {
                 Text("Finish: ${formatDurationNanos((stop - start).coerceAtLeast(0L))}")
-            }
-        }
-    }
-}
-
-@Composable
-private fun LiveStatsCard(uiState: SprintSyncUiState) {
-    Card {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Live Stats", fontWeight = FontWeight.Bold)
-            Text("Raw score: ${uiState.rawScore?.let { String.format("%.4f", it) } ?: "-"}")
-            Text("Baseline: ${uiState.baseline?.let { String.format("%.4f", it) } ?: "-"}")
-            Text("Effective: ${uiState.effectiveScore?.let { String.format("%.4f", it) } ?: "-"}")
-            Text("Frame Sensor Nanos: ${uiState.frameSensorNanos ?: "-"}")
-            Text("Frames: ${uiState.processedFrameCount}/${uiState.streamFrameCount}")
-            Spacer(Modifier.height(6.dp))
-            Text("Recent Triggers", fontWeight = FontWeight.Bold)
-            if (uiState.triggerHistory.isEmpty()) {
-                Text("No trigger events yet.")
-            } else {
-                uiState.triggerHistory.forEach { event ->
-                    Text(event, style = MaterialTheme.typography.bodySmall)
-                }
             }
         }
     }
@@ -855,8 +851,6 @@ private fun TimelineCard(
     startedSensorNanos: Long?,
     splitSensorNanos: List<Long>,
     stoppedSensorNanos: Long?,
-    refinementStatusText: String?,
-    postRaceAnalysisRows: List<String>,
 ) {
     Card {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -873,17 +867,6 @@ private fun TimelineCard(
                 val elapsed = (stoppedSensorNanos - startedSensorNanos).coerceAtLeast(0L)
                 Text("Finished: ${formatDurationNanos(elapsed)}", fontWeight = FontWeight.Medium)
             }
-            if (refinementStatusText != null) {
-                Spacer(Modifier.height(6.dp))
-                Text("Refinement: $refinementStatusText", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-            }
-            if (postRaceAnalysisRows.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                Text("Post-Race Analysis", fontWeight = FontWeight.Medium)
-                postRaceAnalysisRows.forEach { row ->
-                    Text(row, style = MaterialTheme.typography.bodySmall)
-                }
-            }
         }
     }
 }
@@ -896,8 +879,3 @@ private fun formatDurationNanos(nanos: Long): String {
     return String.format("%02d:%02d.%03d", minutes, seconds, millis)
 }
 
-private fun formatDeltaNanos(nanos: Long): String {
-    val deltaMs = nanos / 1_000_000.0
-    val sign = if (deltaMs >= 0) "+" else "-"
-    return "Δ $sign${String.format("%.2f", deltaMs.absoluteValue)}ms"
-}

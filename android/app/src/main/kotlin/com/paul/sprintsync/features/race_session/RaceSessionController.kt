@@ -38,6 +38,10 @@ data class RaceSessionClockState(
     val hostMinusClientElapsedNanos: Long? = null,
     val hostSensorMinusElapsedNanos: Long? = null,
     val localSensorMinusElapsedNanos: Long? = null,
+    val localGpsUtcOffsetNanos: Long? = null,
+    val localGpsFixAgeNanos: Long? = null,
+    val hostGpsUtcOffsetNanos: Long? = null,
+    val hostGpsFixAgeNanos: Long? = null,
     val lastClockSyncElapsedNanos: Long? = null,
     val hostClockRoundTripNanos: Long? = null,
     val chirpHostMinusClientElapsedNanos: Long? = null,
@@ -76,6 +80,7 @@ class RaceSessionController(
         private const val DEFAULT_CLOCK_SYNC_SAMPLE_COUNT = 8
         private const val CLOCK_LOCK_VALIDITY_NANOS = 6_000_000_000L
         private const val CHIRP_LOCK_VALIDITY_NANOS = 20_000_000_000L
+        private const val GPS_LOCK_VALIDITY_NANOS = 10_000_000_000L
         private const val DEFAULT_LOCAL_DEVICE_ID = "local-device"
         private const val DEFAULT_LOCAL_DEVICE_NAME = "This Device"
     }
@@ -349,6 +354,16 @@ class RaceSessionController(
         }
     }
 
+    fun stopHostingAndReturnToSetup() {
+        if (_uiState.value.networkRole != SessionNetworkRole.HOST) {
+            return
+        }
+        if (_uiState.value.monitoringActive) {
+            stopMonitoring()
+        }
+        setNetworkRole(SessionNetworkRole.NONE)
+    }
+
     fun resetRun() {
         val nextRunId = if (_uiState.value.monitoringActive) UUID.randomUUID().toString() else null
         _uiState.value = _uiState.value.copy(
@@ -557,6 +572,10 @@ class RaceSessionController(
         hostMinusClientElapsedNanos: Long? = _clockState.value.hostMinusClientElapsedNanos,
         hostSensorMinusElapsedNanos: Long? = _clockState.value.hostSensorMinusElapsedNanos,
         localSensorMinusElapsedNanos: Long? = _clockState.value.localSensorMinusElapsedNanos,
+        localGpsUtcOffsetNanos: Long? = _clockState.value.localGpsUtcOffsetNanos,
+        localGpsFixAgeNanos: Long? = _clockState.value.localGpsFixAgeNanos,
+        hostGpsUtcOffsetNanos: Long? = _clockState.value.hostGpsUtcOffsetNanos,
+        hostGpsFixAgeNanos: Long? = _clockState.value.hostGpsFixAgeNanos,
         lastClockSyncElapsedNanos: Long? = _clockState.value.lastClockSyncElapsedNanos,
         hostClockRoundTripNanos: Long? = _clockState.value.hostClockRoundTripNanos,
         chirpHostMinusClientElapsedNanos: Long? = _clockState.value.chirpHostMinusClientElapsedNanos,
@@ -567,6 +586,10 @@ class RaceSessionController(
             hostMinusClientElapsedNanos = hostMinusClientElapsedNanos,
             hostSensorMinusElapsedNanos = hostSensorMinusElapsedNanos,
             localSensorMinusElapsedNanos = localSensorMinusElapsedNanos,
+            localGpsUtcOffsetNanos = localGpsUtcOffsetNanos,
+            localGpsFixAgeNanos = localGpsFixAgeNanos,
+            hostGpsUtcOffsetNanos = hostGpsUtcOffsetNanos,
+            hostGpsFixAgeNanos = hostGpsFixAgeNanos,
             lastClockSyncElapsedNanos = lastClockSyncElapsedNanos,
             hostClockRoundTripNanos = hostClockRoundTripNanos,
             chirpHostMinusClientElapsedNanos = chirpHostMinusClientElapsedNanos,
@@ -578,7 +601,7 @@ class RaceSessionController(
     fun mapClientSensorToHostSensor(clientSensorNanos: Long): Long? {
         val state = _clockState.value
         val hostSensorMinusElapsedNanos = state.hostSensorMinusElapsedNanos ?: return null
-        val hostMinusClientElapsedNanos = state.hostMinusClientElapsedNanos ?: return null
+        val hostMinusClientElapsedNanos = currentHostMinusClientElapsedNanos() ?: return null
         val localSensorMinusElapsedNanos = state.localSensorMinusElapsedNanos ?: return null
 
         val clientElapsedNanos = ClockDomain.sensorToElapsedNanos(
@@ -595,7 +618,7 @@ class RaceSessionController(
     fun mapHostSensorToLocalSensor(hostSensorNanos: Long): Long? {
         val state = _clockState.value
         val hostSensorMinusElapsedNanos = state.hostSensorMinusElapsedNanos ?: return null
-        val hostMinusClientElapsedNanos = state.hostMinusClientElapsedNanos ?: return null
+        val hostMinusClientElapsedNanos = currentHostMinusClientElapsedNanos() ?: return null
         val localSensorMinusElapsedNanos = state.localSensorMinusElapsedNanos ?: return null
 
         val hostElapsedNanos = ClockDomain.sensorToElapsedNanos(
@@ -633,6 +656,52 @@ class RaceSessionController(
         return nowElapsedNanos() - lockAt <= maxAgeNanos
     }
 
+    fun hasFreshGpsLock(maxAgeNanos: Long = GPS_LOCK_VALIDITY_NANOS): Boolean {
+        val state = _clockState.value
+        if (state.localSensorMinusElapsedNanos == null || state.hostSensorMinusElapsedNanos == null) {
+            return false
+        }
+        if (state.localGpsUtcOffsetNanos == null || state.hostGpsUtcOffsetNanos == null) {
+            return false
+        }
+        val localFixAge = state.localGpsFixAgeNanos ?: return false
+        val hostFixAge = state.hostGpsFixAgeNanos ?: return false
+        if (localFixAge < 0L || localFixAge > maxAgeNanos) {
+            return false
+        }
+        if (hostFixAge < 0L || hostFixAge > maxAgeNanos) {
+            return false
+        }
+        return true
+    }
+
+    fun hasFreshAnyClockLock(): Boolean {
+        return hasFreshGpsLock() || hasFreshChirpLock() || hasFreshClockLock()
+    }
+
+    private fun gpsHostMinusClientElapsedNanosIfFresh(): Long? {
+        if (!hasFreshGpsLock()) {
+            return null
+        }
+        val state = _clockState.value
+        val localGpsUtcOffsetNanos = state.localGpsUtcOffsetNanos ?: return null
+        val hostGpsUtcOffsetNanos = state.hostGpsUtcOffsetNanos ?: return null
+        return localGpsUtcOffsetNanos - hostGpsUtcOffsetNanos
+    }
+
+    private fun chirpHostMinusClientElapsedNanosIfFresh(): Long? {
+        if (!hasFreshChirpLock()) {
+            return null
+        }
+        return _clockState.value.chirpHostMinusClientElapsedNanos
+    }
+
+    private fun currentHostMinusClientElapsedNanos(): Long? {
+        return gpsHostMinusClientElapsedNanosIfFresh()
+            ?: chirpHostMinusClientElapsedNanosIfFresh()
+            ?: _clockState.value.hostMinusClientElapsedNanos
+    }
+
     private fun handleIncomingPayload(endpointId: String, rawMessage: String) {
         SessionClockSyncRequestMessage.tryParse(rawMessage)?.let { request ->
             handleIncomingClockSyncRequest(endpointId, request)
@@ -651,11 +720,6 @@ class RaceSessionController(
 
         SessionTriggerRequestMessage.tryParse(rawMessage)?.let { request ->
             handleTriggerRequest(request)
-            return
-        }
-
-        SessionTriggerRefinementMessage.tryParse(rawMessage)?.let { refinement ->
-            handleTriggerRefinement(refinement)
             return
         }
 
@@ -776,32 +840,19 @@ class RaceSessionController(
         broadcastSnapshotIfHost()
     }
 
-    private fun handleTriggerRefinement(refinement: SessionTriggerRefinementMessage) {
-        if (_uiState.value.runId != refinement.runId) {
-            return
-        }
-        val mappedType = roleToTriggerType(refinement.role)
-        val nextTimeline = applyRefinement(
-            timeline = _uiState.value.timeline,
-            triggerType = mappedType,
-            splitIndex = refinement.splitIndex,
-            refinedSensorNanos = refinement.refinedHostSensorNanos,
-        ) ?: return
-        _uiState.value = _uiState.value.copy(timeline = nextTimeline, lastEvent = "trigger_refinement")
-        maybePersistCompletedRun(nextTimeline)
-        if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
-            broadcastSnapshotIfHost()
-        }
-    }
-
     private fun applySnapshot(snapshot: SessionSnapshotMessage) {
         if (_uiState.value.networkRole != SessionNetworkRole.CLIENT) {
             return
         }
 
-        snapshot.hostSensorMinusElapsedNanos?.let { hostOffset ->
-            updateClockState(hostSensorMinusElapsedNanos = hostOffset)
-        }
+        updateClockState(
+            hostSensorMinusElapsedNanos = snapshot.hostSensorMinusElapsedNanos
+                ?: _clockState.value.hostSensorMinusElapsedNanos,
+            hostGpsUtcOffsetNanos = snapshot.hostGpsUtcOffsetNanos
+                ?: _clockState.value.hostGpsUtcOffsetNanos,
+            hostGpsFixAgeNanos = snapshot.hostGpsFixAgeNanos
+                ?: _clockState.value.hostGpsFixAgeNanos,
+        )
 
         val resolvedSelfId = snapshot.selfDeviceId ?: localDeviceId
         localDeviceId = resolvedSelfId
@@ -987,40 +1038,6 @@ class RaceSessionController(
         }
     }
 
-    private fun applyRefinement(
-        timeline: SessionRaceTimeline,
-        triggerType: String,
-        splitIndex: Int,
-        refinedSensorNanos: Long,
-    ): SessionRaceTimeline? {
-        return when (triggerType.lowercase()) {
-            "start" -> timeline.copy(hostStartSensorNanos = refinedSensorNanos)
-            "split" -> {
-                if (timeline.hostStartSensorNanos == null) {
-                    null
-                } else {
-                    val requiredSize = splitIndex + 1
-                    val mutableSplits = timeline.hostSplitSensorNanos.toMutableList()
-                    while (mutableSplits.size < requiredSize) {
-                        mutableSplits += timeline.hostStartSensorNanos
-                    }
-                    mutableSplits[splitIndex] = refinedSensorNanos
-                    timeline.copy(hostSplitSensorNanos = mutableSplits)
-                }
-            }
-
-            "stop" -> {
-                if (timeline.hostStartSensorNanos == null) {
-                    null
-                } else {
-                    timeline.copy(hostStopSensorNanos = refinedSensorNanos)
-                }
-            }
-
-            else -> null
-        }
-    }
-
     private fun maybePersistCompletedRun(timeline: SessionRaceTimeline) {
         val started = timeline.hostStartSensorNanos ?: return
         val stopped = timeline.hostStopSensorNanos ?: return
@@ -1063,6 +1080,8 @@ class RaceSessionController(
                 hostStopSensorNanos = _uiState.value.timeline.hostStopSensorNanos,
                 runId = _uiState.value.runId,
                 hostSensorMinusElapsedNanos = _clockState.value.hostSensorMinusElapsedNanos,
+                hostGpsUtcOffsetNanos = _clockState.value.hostGpsUtcOffsetNanos,
+                hostGpsFixAgeNanos = _clockState.value.hostGpsFixAgeNanos,
                 selfDeviceId = endpointId,
             ).toJsonString()
             sendMessage(endpointId, payload) { result ->

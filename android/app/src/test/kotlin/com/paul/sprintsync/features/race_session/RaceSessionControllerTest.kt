@@ -209,4 +209,71 @@ class RaceSessionControllerTest {
         assertEquals(8L, controller.clockState.value.chirpJitterNanos)
         assertTrue(controller.hasFreshChirpLock(maxAgeNanos = 2_000L))
     }
+
+    @Test
+    fun `gps lock takes precedence over ntp lock for sensor mapping`() = runTest {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            startCalibration = { calibrationId, _, profile, sampleCount, _ ->
+                ChirpCalibrationResult(calibrationId, true, null, null, null, null, profile, sampleCount)
+            },
+            clearCalibration = { },
+            ioDispatcher = StandardTestDispatcher(testScheduler),
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.updateClockState(
+            hostMinusClientElapsedNanos = 100L,
+            hostSensorMinusElapsedNanos = 500L,
+            localSensorMinusElapsedNanos = 200L,
+            localGpsUtcOffsetNanos = 10_000L,
+            hostGpsUtcOffsetNanos = 9_920L,
+            localGpsFixAgeNanos = 1_000_000_000L,
+            hostGpsFixAgeNanos = 900_000_000L,
+        )
+
+        val mapped = controller.mapClientSensorToHostSensor(1_200L)
+
+        assertEquals(1_580L, mapped)
+        assertTrue(controller.hasFreshGpsLock())
+    }
+
+    @Test
+    fun `stop hosting returns session to setup and clears monitoring`() = runTest {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            startCalibration = { calibrationId, _, profile, sampleCount, _ ->
+                ChirpCalibrationResult(calibrationId, true, null, null, null, null, profile, sampleCount)
+            },
+            clearCalibration = { },
+            ioDispatcher = StandardTestDispatcher(testScheduler),
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "peer-1",
+                endpointName = "peer",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.assignRole("local-device", SessionDeviceRole.START)
+        controller.assignRole("peer-1", SessionDeviceRole.STOP)
+        controller.goToLobby()
+        assertTrue(controller.startMonitoring())
+
+        controller.stopHostingAndReturnToSetup()
+
+        assertEquals(SessionNetworkRole.NONE, controller.uiState.value.networkRole)
+        assertEquals(SessionStage.SETUP, controller.uiState.value.stage)
+        assertFalse(controller.uiState.value.monitoringActive)
+        assertEquals(0, controller.uiState.value.connectedEndpoints.size)
+    }
 }

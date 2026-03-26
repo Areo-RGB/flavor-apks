@@ -21,7 +21,6 @@ import com.paul.sprintsync.features.race_session.RaceSessionController
 import com.paul.sprintsync.features.race_session.SessionCameraFacing
 import com.paul.sprintsync.features.race_session.SessionDeviceRole
 import com.paul.sprintsync.features.race_session.SessionNetworkRole
-import com.paul.sprintsync.features.race_session.SessionRaceTimeline
 import com.paul.sprintsync.features.race_session.SessionStage
 import com.paul.sprintsync.sensor_native.SensorNativeController
 import com.paul.sprintsync.sensor_native.SensorNativeEvent
@@ -236,18 +235,14 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                     motionDetectionController.updateCooldown(value)
                     syncControllerSummaries()
                 },
-                onUpdateProcessEveryNFrames = { value ->
-                    motionDetectionController.updateProcessEveryNFrames(value)
-                    syncControllerSummaries()
-                },
-                onStopAll = {
+                onStopHosting = {
+                    raceSessionController.stopHostingAndReturnToSetup()
                     nearbyConnectionsManager.stopAll()
-                    raceSessionController.setNetworkRole(SessionNetworkRole.NONE)
                     if (motionDetectionController.uiState.value.monitoring) {
                         motionDetectionController.stopMonitoring()
                     }
                     updateUiState { copy(networkSummary = "Stopped") }
-                    appendEvent("all nearby sessions stopped")
+                    appendEvent("hosting stopped")
                     syncControllerSummaries()
                 },
             )
@@ -339,11 +334,48 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             is SensorNativeEvent.Diagnostic -> null
             is SensorNativeEvent.Error -> null
         }
+        val localGpsUtcOffsetNanos = when (event) {
+            is SensorNativeEvent.FrameStats -> event.gpsUtcOffsetNanos
+            is SensorNativeEvent.State -> event.gpsUtcOffsetNanos
+            is SensorNativeEvent.Trigger -> null
+            is SensorNativeEvent.Diagnostic -> null
+            is SensorNativeEvent.Error -> null
+        }
+        val localGpsFixAgeNanos = when (event) {
+            is SensorNativeEvent.FrameStats ->
+                raceSessionController.computeGpsFixAgeNanos(event.gpsFixElapsedRealtimeNanos)
+            is SensorNativeEvent.State ->
+                raceSessionController.computeGpsFixAgeNanos(event.gpsFixElapsedRealtimeNanos)
+            is SensorNativeEvent.Trigger -> null
+            is SensorNativeEvent.Diagnostic -> null
+            is SensorNativeEvent.Error -> null
+        }
         if (localOffsetNanos != null) {
             val isHost = raceSessionController.uiState.value.networkRole == SessionNetworkRole.HOST
             raceSessionController.updateClockState(
                 localSensorMinusElapsedNanos = localOffsetNanos,
                 hostSensorMinusElapsedNanos = if (isHost) localOffsetNanos else raceSessionController.clockState.value.hostSensorMinusElapsedNanos,
+                localGpsUtcOffsetNanos = localGpsUtcOffsetNanos
+                    ?: raceSessionController.clockState.value.localGpsUtcOffsetNanos,
+                localGpsFixAgeNanos = localGpsFixAgeNanos
+                    ?: raceSessionController.clockState.value.localGpsFixAgeNanos,
+                hostGpsUtcOffsetNanos = if (isHost) {
+                    localGpsUtcOffsetNanos ?: raceSessionController.clockState.value.hostGpsUtcOffsetNanos
+                } else {
+                    raceSessionController.clockState.value.hostGpsUtcOffsetNanos
+                },
+                hostGpsFixAgeNanos = if (isHost) {
+                    localGpsFixAgeNanos ?: raceSessionController.clockState.value.hostGpsFixAgeNanos
+                } else {
+                    raceSessionController.clockState.value.hostGpsFixAgeNanos
+                },
+            )
+        } else if (localGpsUtcOffsetNanos != null || localGpsFixAgeNanos != null) {
+            raceSessionController.updateClockState(
+                localGpsUtcOffsetNanos = localGpsUtcOffsetNanos
+                    ?: raceSessionController.clockState.value.localGpsUtcOffsetNanos,
+                localGpsFixAgeNanos = localGpsFixAgeNanos
+                    ?: raceSessionController.clockState.value.localGpsFixAgeNanos,
             )
         }
         if (event is SensorNativeEvent.Trigger) {
@@ -396,6 +428,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
 
         val monitoringSyncMode = when {
             !isClient || !hasPeers || !raceState.monitoringActive -> "-"
+            raceSessionController.hasFreshGpsLock() -> "GPS"
             raceSessionController.hasFreshChirpLock() -> "CHIRP"
             raceSessionController.hasFreshClockLock() -> "NTP"
             else -> "-"
@@ -416,7 +449,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             raceState.monitoringActive &&
             hasPeers &&
             localRole != SessionDeviceRole.UNASSIGNED &&
-            !raceSessionController.hasFreshClockLock()
+            !raceSessionController.hasFreshAnyClockLock()
         ) {
             "Clock sync lock is invalid. Triggers from this device are being dropped until sync recovers."
         } else {
@@ -460,14 +493,6 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             clockState.chirpJitterNanos != null -> "Stale (+/-${clockState.chirpJitterNanos / 1000L} us)"
             else -> "Not calibrated"
         }
-
-        val refinementStatusText = when (raceState.lastEvent) {
-            "trigger_refinement" -> "Applied to current timeline"
-            "snapshot_applied" -> if (raceState.networkRole == SessionNetworkRole.CLIENT) "Synced from host snapshot" else null
-            else -> null
-        }
-
-        val postRaceAnalysisRows = buildPostRaceAnalysisRows(raceState.timeline)
 
         val clockSummary = when {
             raceSessionController.hasFreshClockLock() && clockState.hostMinusClientElapsedNanos != null -> {
@@ -518,8 +543,6 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 chirpSyncStatusText = chirpSyncStatusText,
                 chirpQualityUs = clockState.chirpJitterNanos?.let { (it / 1000L).toInt() },
                 clockLockWarningText = clockLockWarningText,
-                refinementStatusText = refinementStatusText,
-                postRaceAnalysisRows = postRaceAnalysisRows,
                 runStatusLabel = runStatusLabel,
                 runMarksCount = marksCount,
                 elapsedDisplay = elapsedDisplay,
@@ -627,43 +650,6 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         }
         val elapsedNanos = (terminal - started).coerceAtLeast(0L)
         val totalMillis = elapsedNanos / 1_000_000L
-        val minutes = totalMillis / 60_000L
-        val seconds = (totalMillis % 60_000L) / 1_000L
-        val millis = totalMillis % 1_000L
-        return String.format("%02d:%02d.%03d", minutes, seconds, millis)
-    }
-
-    private fun buildPostRaceAnalysisRows(timeline: SessionRaceTimeline): List<String> {
-        val start = timeline.hostStartSensorNanos ?: return emptyList()
-        val marks = mutableListOf<Pair<String, Long>>()
-        marks += "Start" to start
-        timeline.hostSplitSensorNanos.forEachIndexed { index, split ->
-            marks += "Split ${index + 1}" to split
-        }
-        timeline.hostStopSensorNanos?.let { finish ->
-            marks += "Finish" to finish
-        }
-        if (marks.size <= 1) {
-            return emptyList()
-        }
-
-        val rows = mutableListOf<String>()
-        for (index in 1 until marks.size) {
-            val current = marks[index]
-            val previous = marks[index - 1]
-            val elapsed = (current.second - start).coerceAtLeast(0L)
-            val delta = (current.second - previous.second).coerceAtLeast(0L)
-            rows += "${current.first}: ${formatDurationNanos(elapsed)} (+${formatDurationNanos(delta)})"
-        }
-        val finish = timeline.hostStopSensorNanos
-        if (finish != null) {
-            rows += "Total: ${formatDurationNanos((finish - start).coerceAtLeast(0L))}"
-        }
-        return rows
-    }
-
-    private fun formatDurationNanos(nanos: Long): String {
-        val totalMillis = (nanos / 1_000_000L).coerceAtLeast(0L)
         val minutes = totalMillis / 60_000L
         val seconds = (totalMillis % 60_000L) / 1_000L
         val millis = totalMillis % 1_000L

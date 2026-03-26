@@ -10,6 +10,36 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class RaceSessionModelsTest {
     @Test
+    fun `snapshot round-trips host GPS fields`() {
+        val original = SessionSnapshotMessage(
+            stage = SessionStage.MONITORING,
+            monitoringActive = true,
+            devices = listOf(
+                SessionDevice(
+                    id = "local-device",
+                    name = "This Device",
+                    role = SessionDeviceRole.START,
+                    isLocal = true,
+                ),
+            ),
+            hostStartSensorNanos = 1_000L,
+            hostSplitSensorNanos = listOf(1_500L),
+            hostStopSensorNanos = 2_000L,
+            runId = "run-1",
+            hostSensorMinusElapsedNanos = 120L,
+            hostGpsUtcOffsetNanos = 8_000L,
+            hostGpsFixAgeNanos = 600_000_000L,
+            selfDeviceId = "peer-1",
+        )
+
+        val parsed = SessionSnapshotMessage.tryParse(original.toJsonString())
+
+        assertNotNull(parsed)
+        assertEquals(8_000L, parsed?.hostGpsUtcOffsetNanos)
+        assertEquals(600_000_000L, parsed?.hostGpsFixAgeNanos)
+    }
+
+    @Test
     fun `timeline snapshot round-trips with optional fields`() {
         val original = SessionTimelineSnapshotMessage(
             hostStartSensorNanos = 1_000L,

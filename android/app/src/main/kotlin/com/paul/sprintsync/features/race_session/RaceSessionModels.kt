@@ -77,6 +77,8 @@ data class SessionSnapshotMessage(
     val hostStopSensorNanos: Long?,
     val runId: String?,
     val hostSensorMinusElapsedNanos: Long?,
+    val hostGpsUtcOffsetNanos: Long?,
+    val hostGpsFixAgeNanos: Long?,
     val selfDeviceId: String?,
 ) {
     fun toJsonString(): String {
@@ -96,6 +98,8 @@ data class SessionSnapshotMessage(
             .put("timeline", timeline)
             .put("runId", runId)
             .put("hostSensorMinusElapsedNanos", hostSensorMinusElapsedNanos)
+            .put("hostGpsUtcOffsetNanos", hostGpsUtcOffsetNanos)
+            .put("hostGpsFixAgeNanos", hostGpsFixAgeNanos)
             .put("selfDeviceId", selfDeviceId)
             .toString()
     }
@@ -141,6 +145,8 @@ data class SessionSnapshotMessage(
                 hostStopSensorNanos = timeline.readOptionalLong("hostStopSensorNanos"),
                 runId = decoded.optString("runId", "").ifBlank { null },
                 hostSensorMinusElapsedNanos = decoded.readOptionalLong("hostSensorMinusElapsedNanos"),
+                hostGpsUtcOffsetNanos = decoded.readOptionalLong("hostGpsUtcOffsetNanos"),
+                hostGpsFixAgeNanos = decoded.readOptionalLong("hostGpsFixAgeNanos"),
                 selfDeviceId = decoded.optString("selfDeviceId", "").ifBlank { null },
             )
         }
