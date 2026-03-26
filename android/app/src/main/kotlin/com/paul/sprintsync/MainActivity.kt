@@ -21,9 +21,13 @@ import com.paul.sprintsync.features.race_session.RaceSessionController
 import com.paul.sprintsync.features.race_session.SessionCameraFacing
 import com.paul.sprintsync.features.race_session.SessionDeviceRole
 import com.paul.sprintsync.features.race_session.SessionNetworkRole
+import com.paul.sprintsync.features.race_session.SessionRaceTimeline
 import com.paul.sprintsync.features.race_session.SessionStage
 import com.paul.sprintsync.sensor_native.SensorNativeController
 import com.paul.sprintsync.sensor_native.SensorNativeEvent
+import com.paul.sprintsync.sensor_native.SensorNativePreviewViewFactory
+import com.paul.sprintsync.features.race_session.sessionDeviceRoleLabel
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsResultCallback {
     companion object {
@@ -36,6 +40,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     private lateinit var nearbyConnectionsManager: NearbyConnectionsManager
     private lateinit var motionDetectionController: MotionDetectionController
     private lateinit var raceSessionController: RaceSessionController
+    private lateinit var previewViewFactory: SensorNativePreviewViewFactory
     private val uiState = mutableStateOf(SprintSyncUiState())
     private var pendingPermissionAction: (() -> Unit)? = null
 
@@ -57,6 +62,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             localRepository = localRepository,
             sensorNativeController = sensorNativeController,
         )
+        previewViewFactory = SensorNativePreviewViewFactory(sensorNativeController)
         raceSessionController = RaceSessionController(
             localRepository = localRepository,
             nearbyConnectionsManager = nearbyConnectionsManager,
@@ -78,6 +84,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         setContent {
             SprintSyncApp(
                 uiState = uiState.value,
+                previewViewFactory = previewViewFactory,
                 onRequestPermissions = {
                     requestPermissionsIfNeeded {}
                 },
@@ -175,6 +182,10 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                     raceSessionController.stopMonitoring()
                     syncControllerSummaries()
                 },
+                onResetRun = {
+                    raceSessionController.resetRun()
+                    syncControllerSummaries()
+                },
                 onAssignRole = { deviceId, role ->
                     raceSessionController.assignRole(deviceId, role)
                     syncControllerSummaries()
@@ -196,13 +207,37 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                     }
                     syncControllerSummaries()
                 },
-                onChirpSync = {
+                onStartChirpSync = {
                     val endpointId = firstConnectedEndpointId()
                     if (endpointId == null) {
                         appendEvent("chirp sync ignored: no connected endpoint")
                     } else {
                         raceSessionController.startChirpSync(endpointId)
                     }
+                    syncControllerSummaries()
+                },
+                onEndChirpSync = {
+                    raceSessionController.clearChirpLock(broadcast = true)
+                    syncControllerSummaries()
+                },
+                onUpdateThreshold = { value ->
+                    motionDetectionController.updateThreshold(value)
+                    syncControllerSummaries()
+                },
+                onUpdateRoiCenter = { value ->
+                    motionDetectionController.updateRoiCenter(value)
+                    syncControllerSummaries()
+                },
+                onUpdateRoiWidth = { value ->
+                    motionDetectionController.updateRoiWidth(value)
+                    syncControllerSummaries()
+                },
+                onUpdateCooldown = { value ->
+                    motionDetectionController.updateCooldown(value)
+                    syncControllerSummaries()
+                },
+                onUpdateProcessEveryNFrames = { value ->
+                    motionDetectionController.updateProcessEveryNFrames(value)
                     syncControllerSummaries()
                 },
                 onStopAll = {
@@ -354,6 +389,86 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         } else {
             "Idle"
         }
+        val isHost = raceState.networkRole == SessionNetworkRole.HOST
+        val isClient = raceState.networkRole == SessionNetworkRole.CLIENT
+        val hasPeers = raceState.connectedEndpoints.isNotEmpty()
+        val localRole = raceSessionController.localDeviceRole()
+
+        val monitoringSyncMode = when {
+            !isClient || !hasPeers || !raceState.monitoringActive -> "-"
+            raceSessionController.hasFreshChirpLock() -> "CHIRP"
+            raceSessionController.hasFreshClockLock() -> "NTP"
+            else -> "-"
+        }
+        val monitoringLatencyMs = if (
+            isClient &&
+            hasPeers &&
+            monitoringSyncMode == "NTP" &&
+            clockState.hostClockRoundTripNanos != null
+        ) {
+            (clockState.hostClockRoundTripNanos.toDouble() / 1_000_000.0).roundToInt()
+        } else {
+            null
+        }
+
+        val clockLockWarningText = if (
+            isClient &&
+            raceState.monitoringActive &&
+            hasPeers &&
+            localRole != SessionDeviceRole.UNASSIGNED &&
+            !raceSessionController.hasFreshClockLock()
+        ) {
+            "Clock sync lock is invalid. Triggers from this device are being dropped until sync recovers."
+        } else {
+            null
+        }
+
+        val runStatusLabel = when {
+            raceState.timeline.hostStartSensorNanos == null -> "Ready"
+            raceState.timeline.hostStopSensorNanos != null -> "Finished"
+            raceState.monitoringActive -> "Running"
+            else -> "Armed"
+        }
+        val marksCount = raceState.timeline.hostSplitSensorNanos.size +
+            if (raceState.timeline.hostStopSensorNanos != null) 1 else 0
+
+        val elapsedDisplay = formatElapsedDisplay(
+            startedSensorNanos = raceState.timeline.hostStartSensorNanos,
+            stoppedSensorNanos = raceState.timeline.hostStopSensorNanos,
+            monitoringActive = raceState.monitoringActive,
+        )
+
+        val cameraModeLabel = when (motionState.cameraFpsMode.wireName) {
+            "hs120" -> "HS"
+            else -> if (motionState.observedFps == null) "INIT" else "NORMAL"
+        }
+        val triggerHistory = motionState.triggerHistory.map { trigger ->
+            val roleLabel = when (trigger.triggerType.lowercase()) {
+                "start" -> "START"
+                "stop" -> "STOP"
+                "split" -> "SPLIT ${trigger.splitIndex + 1}"
+                else -> trigger.triggerType.uppercase()
+            }
+            "$roleLabel at ${trigger.triggerSensorNanos}ns (score ${"%.4f".format(trigger.score)})"
+        }
+
+        val chirpSyncStatusText = when {
+            raceState.chirpSyncInProgress -> "Calibrating..."
+            raceSessionController.hasFreshChirpLock() && clockState.chirpJitterNanos != null ->
+                "Locked (+/-${clockState.chirpJitterNanos / 1000L} us)"
+            raceSessionController.hasFreshChirpLock() -> "Locked"
+            clockState.chirpJitterNanos != null -> "Stale (+/-${clockState.chirpJitterNanos / 1000L} us)"
+            else -> "Not calibrated"
+        }
+
+        val refinementStatusText = when (raceState.lastEvent) {
+            "trigger_refinement" -> "Applied to current timeline"
+            "snapshot_applied" -> if (raceState.networkRole == SessionNetworkRole.CLIENT) "Synced from host snapshot" else null
+            else -> null
+        }
+
+        val postRaceAnalysisRows = buildPostRaceAnalysisRows(raceState.timeline)
+
         val clockSummary = when {
             raceSessionController.hasFreshClockLock() && clockState.hostMinusClientElapsedNanos != null -> {
                 "Locked ${clockState.hostMinusClientElapsedNanos}ns"
@@ -391,6 +506,38 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 canGoToLobby = raceSessionController.canGoToLobby(),
                 canStartMonitoring = raceSessionController.canStartMonitoring(),
                 canShowSplitControls = raceSessionController.canShowSplitControls(),
+                isHost = isHost,
+                localRole = localRole,
+                localHighSpeedEnabled = raceSessionController.localHighSpeedEnabled(),
+                monitoringConnectionTypeLabel = if (hasPeers) "Nearby (auto BT/Wi-Fi Direct)" else "-",
+                monitoringSyncModeLabel = monitoringSyncMode,
+                monitoringLatencyMs = monitoringLatencyMs,
+                hasConnectedPeers = hasPeers,
+                chirpSyncInProgress = raceState.chirpSyncInProgress,
+                chirpLockActive = raceSessionController.hasFreshChirpLock(),
+                chirpSyncStatusText = chirpSyncStatusText,
+                chirpQualityUs = clockState.chirpJitterNanos?.let { (it / 1000L).toInt() },
+                clockLockWarningText = clockLockWarningText,
+                refinementStatusText = refinementStatusText,
+                postRaceAnalysisRows = postRaceAnalysisRows,
+                runStatusLabel = runStatusLabel,
+                runMarksCount = marksCount,
+                elapsedDisplay = elapsedDisplay,
+                threshold = motionState.config.threshold,
+                roiCenterX = motionState.config.roiCenterX,
+                roiWidth = motionState.config.roiWidth,
+                cooldownMs = motionState.config.cooldownMs,
+                processEveryNFrames = motionState.config.processEveryNFrames,
+                observedFps = motionState.observedFps,
+                cameraFpsModeLabel = cameraModeLabel,
+                targetFpsUpper = motionState.targetFpsUpper,
+                rawScore = motionState.rawScore,
+                baseline = motionState.baseline,
+                effectiveScore = motionState.effectiveScore,
+                frameSensorNanos = motionState.lastFrameSensorNanos,
+                streamFrameCount = motionState.streamFrameCount,
+                processedFrameCount = motionState.processedFrameCount,
+                triggerHistory = triggerHistory,
                 discoveredEndpoints = raceState.discoveredEndpoints,
                 connectedEndpoints = raceState.connectedEndpoints,
                 networkSummary = "${nearbyConnectionsManager.currentRole().name.lowercase()} mode, ${raceState.connectedEndpoints.size} connected",
@@ -465,6 +612,62 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             highSpeedEnabled = raceSessionController.localHighSpeedEnabled(),
         )
         motionDetectionController.updateConfig(next)
+    }
+
+    private fun formatElapsedDisplay(
+        startedSensorNanos: Long?,
+        stoppedSensorNanos: Long?,
+        monitoringActive: Boolean,
+    ): String {
+        val started = startedSensorNanos ?: return "00:00.000"
+        val terminal = stoppedSensorNanos ?: if (monitoringActive) {
+            raceSessionController.estimateLocalSensorNanosNow()
+        } else {
+            started
+        }
+        val elapsedNanos = (terminal - started).coerceAtLeast(0L)
+        val totalMillis = elapsedNanos / 1_000_000L
+        val minutes = totalMillis / 60_000L
+        val seconds = (totalMillis % 60_000L) / 1_000L
+        val millis = totalMillis % 1_000L
+        return String.format("%02d:%02d.%03d", minutes, seconds, millis)
+    }
+
+    private fun buildPostRaceAnalysisRows(timeline: SessionRaceTimeline): List<String> {
+        val start = timeline.hostStartSensorNanos ?: return emptyList()
+        val marks = mutableListOf<Pair<String, Long>>()
+        marks += "Start" to start
+        timeline.hostSplitSensorNanos.forEachIndexed { index, split ->
+            marks += "Split ${index + 1}" to split
+        }
+        timeline.hostStopSensorNanos?.let { finish ->
+            marks += "Finish" to finish
+        }
+        if (marks.size <= 1) {
+            return emptyList()
+        }
+
+        val rows = mutableListOf<String>()
+        for (index in 1 until marks.size) {
+            val current = marks[index]
+            val previous = marks[index - 1]
+            val elapsed = (current.second - start).coerceAtLeast(0L)
+            val delta = (current.second - previous.second).coerceAtLeast(0L)
+            rows += "${current.first}: ${formatDurationNanos(elapsed)} (+${formatDurationNanos(delta)})"
+        }
+        val finish = timeline.hostStopSensorNanos
+        if (finish != null) {
+            rows += "Total: ${formatDurationNanos((finish - start).coerceAtLeast(0L))}"
+        }
+        return rows
+    }
+
+    private fun formatDurationNanos(nanos: Long): String {
+        val totalMillis = (nanos / 1_000_000L).coerceAtLeast(0L)
+        val minutes = totalMillis / 60_000L
+        val seconds = (totalMillis % 60_000L) / 1_000L
+        val millis = totalMillis % 1_000L
+        return String.format("%02d:%02d.%03d", minutes, seconds, millis)
     }
 
     private fun updateUiState(update: SprintSyncUiState.() -> SprintSyncUiState) {

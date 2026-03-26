@@ -4,7 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.paul.sprintsync.core.repositories.LocalRepository
 import com.paul.sprintsync.sensor_native.NativeCameraFacing
+import com.paul.sprintsync.sensor_native.NativeCameraFpsMode
 import com.paul.sprintsync.sensor_native.NativeMonitoringConfig
+import com.paul.sprintsync.sensor_native.NativeTriggerEvent
 import com.paul.sprintsync.sensor_native.SensorNativeController
 import com.paul.sprintsync.sensor_native.SensorNativeEvent
 import kotlinx.coroutines.CoroutineDispatcher
@@ -22,6 +24,15 @@ data class MotionDetectionUiState(
     val lastDiagnostic: String? = null,
     val lastFrameSensorNanos: Long? = null,
     val lastTriggerSensorNanos: Long? = null,
+    val streamFrameCount: Long = 0,
+    val processedFrameCount: Long = 0,
+    val observedFps: Double? = null,
+    val cameraFpsMode: NativeCameraFpsMode = NativeCameraFpsMode.NORMAL,
+    val targetFpsUpper: Int? = null,
+    val rawScore: Double? = null,
+    val baseline: Double? = null,
+    val effectiveScore: Double? = null,
+    val triggerHistory: List<NativeTriggerEvent> = emptyList(),
 )
 
 class MotionDetectionController(
@@ -54,6 +65,26 @@ class MotionDetectionController(
         }
     }
 
+    fun updateThreshold(value: Double) {
+        updateConfig(_uiState.value.config.copy(threshold = value))
+    }
+
+    fun updateRoiCenter(value: Double) {
+        updateConfig(_uiState.value.config.copy(roiCenterX = value))
+    }
+
+    fun updateRoiWidth(value: Double) {
+        updateConfig(_uiState.value.config.copy(roiWidth = value))
+    }
+
+    fun updateCooldown(value: Int) {
+        updateConfig(_uiState.value.config.copy(cooldownMs = value))
+    }
+
+    fun updateProcessEveryNFrames(value: Int) {
+        updateConfig(_uiState.value.config.copy(processEveryNFrames = value))
+    }
+
     fun startMonitoring() {
         sensorNativeController.startNativeMonitoring(_uiState.value.config.toNativeConfig()) { result ->
             val error = result.exceptionOrNull()
@@ -75,12 +106,22 @@ class MotionDetectionController(
             is SensorNativeEvent.FrameStats -> {
                 _uiState.value = _uiState.value.copy(
                     lastFrameSensorNanos = event.stats.frameSensorNanos,
+                    streamFrameCount = event.streamFrameCount,
+                    processedFrameCount = event.processedFrameCount,
+                    observedFps = event.observedFps,
+                    cameraFpsMode = event.cameraFpsMode,
+                    targetFpsUpper = event.targetFpsUpper,
+                    rawScore = event.stats.rawScore,
+                    baseline = event.stats.baseline,
+                    effectiveScore = event.stats.effectiveScore,
                 )
             }
 
             is SensorNativeEvent.Trigger -> {
+                val history = (listOf(event.trigger) + _uiState.value.triggerHistory).take(10)
                 _uiState.value = _uiState.value.copy(
                     lastTriggerSensorNanos = event.trigger.triggerSensorNanos,
+                    triggerHistory = history,
                 )
             }
 

@@ -349,6 +349,18 @@ class RaceSessionController(
         }
     }
 
+    fun resetRun() {
+        val nextRunId = if (_uiState.value.monitoringActive) UUID.randomUUID().toString() else null
+        _uiState.value = _uiState.value.copy(
+            timeline = SessionRaceTimeline(),
+            runId = nextRunId,
+            lastEvent = "run_reset",
+        )
+        if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
+            broadcastSnapshotIfHost()
+        }
+    }
+
     fun onLocalMotionTrigger(triggerType: String, splitIndex: Int, triggerSensorNanos: Long) {
         if (!_uiState.value.monitoringActive) {
             return
