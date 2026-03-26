@@ -1,1 +1,0 @@
-Updated C:/Users/paul/projects/photo-finish/.codex/config.toml to add [mcp_servers.serena] with uvx launcher and args for serena start-mcp-server using --context codex plus explicit --project C:/Users/paul/projects/photo-finish. Kept existing [mcp_servers.context-mode] entry unchanged.
