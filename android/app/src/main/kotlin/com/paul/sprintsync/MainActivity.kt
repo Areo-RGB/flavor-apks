@@ -5,11 +5,13 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.paul.sprintsync.chirp_sync.AcousticChirpSyncEngine
 import com.paul.sprintsync.core.repositories.LocalRepository
 import com.paul.sprintsync.core.services.NearbyEvent
@@ -27,12 +29,18 @@ import com.paul.sprintsync.sensor_native.SensorNativeEvent
 import com.paul.sprintsync.sensor_native.SensorNativePreviewViewFactory
 import com.paul.sprintsync.features.race_session.sessionDeviceRoleLabel
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsResultCallback {
     companion object {
         private const val DEFAULT_SERVICE_ID = "com.paul.sprintsync.nearby"
         private const val PERMISSIONS_REQUEST_CODE = 7301
         private const val SENSOR_ELAPSED_PROJECTION_MAX_AGE_NANOS = 3_000_000_000L
+        private const val TIMER_REFRESH_INTERVAL_MS = 100L
+        private const val TAG = "SprintSyncRuntime"
     }
 
     private lateinit var sensorNativeController: SensorNativeController
@@ -42,6 +50,8 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     private lateinit var previewViewFactory: SensorNativePreviewViewFactory
     private val uiState = mutableStateOf(SprintSyncUiState())
     private var pendingPermissionAction: (() -> Unit)? = null
+    private var timerRefreshJob: Job? = null
+    private var isAppResumed: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -221,17 +231,15 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 onStartMonitoring = {
                     requestPermissionsIfNeeded {
                         val started = raceSessionController.startMonitoring()
-                        if (started && shouldRunLocalMonitoring()) {
-                            applyLocalMonitoringConfigFromSession()
-                            motionDetectionController.startMonitoring()
-                        }
+                        logRuntimeDiagnostic(
+                            "startMonitoring requested: started=$started role=${raceSessionController.localDeviceRole().name} " +
+                                "shouldRunLocal=${shouldRunLocalMonitoring()} resumed=$isAppResumed",
+                        )
                         syncControllerSummaries()
                     }
                 },
                 onStopMonitoring = {
-                    if (motionDetectionController.uiState.value.monitoring) {
-                        motionDetectionController.stopMonitoring()
-                    }
+                    logRuntimeDiagnostic("stopMonitoring requested")
                     raceSessionController.stopMonitoring()
                     syncControllerSummaries()
                 },
@@ -248,11 +256,19 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                     syncControllerSummaries()
                 },
                 onStartChirpSync = {
-                    val endpointId = firstConnectedEndpointId()
-                    if (endpointId == null) {
-                        appendEvent("chirp sync ignored: no connected endpoint")
+                    if (raceSessionController.uiState.value.networkRole == SessionNetworkRole.HOST) {
+                        if (raceSessionController.uiState.value.connectedEndpoints.isEmpty()) {
+                            appendEvent("chirp sync ignored: no connected endpoint")
+                        } else {
+                            raceSessionController.startChirpSyncAllConnected()
+                        }
                     } else {
-                        raceSessionController.startChirpSync(endpointId)
+                        val endpointId = firstConnectedEndpointId()
+                        if (endpointId == null) {
+                            appendEvent("chirp sync ignored: no connected endpoint")
+                        } else {
+                            raceSessionController.startChirpSync(endpointId)
+                        }
                     }
                     syncControllerSummaries()
                 },
@@ -291,16 +307,23 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     }
 
     override fun onPause() {
+        isAppResumed = false
+        stopTimerRefreshLoop()
+        logRuntimeDiagnostic("host paused")
         sensorNativeController.onHostPaused()
         super.onPause()
     }
 
     override fun onResume() {
         super.onResume()
+        isAppResumed = true
+        logRuntimeDiagnostic("host resumed")
         sensorNativeController.onHostResumed()
+        syncControllerSummaries()
     }
 
     override fun onDestroy() {
+        stopTimerRefreshLoop()
         nearbyConnectionsManager.stopAll()
         nearbyConnectionsManager.setEventListener(null)
         sensorNativeController.setEventListener(null)
@@ -451,13 +474,44 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         val raceState = raceSessionController.uiState.value
         val clockState = raceSessionController.clockState.value
         val motionBefore = motionDetectionController.uiState.value
+        val shouldRunLocalCapture = shouldRunLocalMonitoring()
 
-        if (raceState.monitoringActive && !motionBefore.monitoring && shouldRunLocalMonitoring()) {
-            applyLocalMonitoringConfigFromSession()
-            motionDetectionController.startMonitoring()
+        when (
+            resolveLocalCaptureAction(
+                monitoringActive = raceState.monitoringActive,
+                isAppResumed = isAppResumed,
+                shouldRunLocalCapture = shouldRunLocalCapture,
+                isLocalMotionMonitoring = motionBefore.monitoring,
+            )
+        ) {
+            LocalCaptureAction.START -> {
+                logRuntimeDiagnostic(
+                    "local capture start: role=${raceSessionController.localDeviceRole().name} stage=${raceState.stage.name}",
+                )
+                applyLocalMonitoringConfigFromSession()
+                motionDetectionController.startMonitoring()
+            }
+
+            LocalCaptureAction.STOP -> {
+                logRuntimeDiagnostic(
+                    "local capture stop: role=${raceSessionController.localDeviceRole().name} stage=${raceState.stage.name}",
+                )
+                motionDetectionController.stopMonitoring()
+            }
+
+            LocalCaptureAction.NONE -> Unit
         }
-        if (!raceState.monitoringActive && motionBefore.monitoring) {
-            motionDetectionController.stopMonitoring()
+
+        if (
+            shouldKeepTimerRefreshActive(
+                monitoringActive = raceState.monitoringActive,
+                isAppResumed = isAppResumed,
+                hasStopSensor = raceState.timeline.hostStopSensorNanos != null,
+            )
+        ) {
+            startTimerRefreshLoop()
+        } else {
+            stopTimerRefreshLoop()
         }
 
         val motionState = motionDetectionController.uiState.value
@@ -705,4 +759,68 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     private fun updateUiState(update: SprintSyncUiState.() -> SprintSyncUiState) {
         uiState.value = uiState.value.update()
     }
+
+    private fun startTimerRefreshLoop() {
+        if (timerRefreshJob?.isActive == true) {
+            return
+        }
+        logRuntimeDiagnostic("timer refresh loop started")
+        timerRefreshJob = lifecycleScope.launch {
+            try {
+                while (isActive) {
+                    val raceState = raceSessionController.uiState.value
+                    if (!isAppResumed || !raceState.monitoringActive) {
+                        break
+                    }
+                    if (raceState.timeline.hostStartSensorNanos != null &&
+                        raceState.timeline.hostStopSensorNanos == null
+                    ) {
+                        syncControllerSummaries()
+                    }
+                    delay(TIMER_REFRESH_INTERVAL_MS)
+                }
+            } finally {
+                logRuntimeDiagnostic("timer refresh loop stopped")
+                timerRefreshJob = null
+            }
+        }
+    }
+
+    private fun stopTimerRefreshLoop() {
+        timerRefreshJob?.cancel()
+        timerRefreshJob = null
+    }
+
+    private fun logRuntimeDiagnostic(message: String) {
+        Log.d(TAG, "diag: $message")
+    }
+}
+
+internal enum class LocalCaptureAction {
+    START,
+    STOP,
+    NONE,
+}
+
+internal fun resolveLocalCaptureAction(
+    monitoringActive: Boolean,
+    isAppResumed: Boolean,
+    shouldRunLocalCapture: Boolean,
+    isLocalMotionMonitoring: Boolean,
+): LocalCaptureAction {
+    if (monitoringActive && isAppResumed && shouldRunLocalCapture && !isLocalMotionMonitoring) {
+        return LocalCaptureAction.START
+    }
+    if (isLocalMotionMonitoring && (!monitoringActive || !isAppResumed || !shouldRunLocalCapture)) {
+        return LocalCaptureAction.STOP
+    }
+    return LocalCaptureAction.NONE
+}
+
+internal fun shouldKeepTimerRefreshActive(
+    monitoringActive: Boolean,
+    isAppResumed: Boolean,
+    hasStopSensor: Boolean,
+): Boolean {
+    return monitoringActive && isAppResumed && !hasStopSensor
 }

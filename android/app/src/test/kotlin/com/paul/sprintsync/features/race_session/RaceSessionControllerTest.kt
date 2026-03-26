@@ -276,4 +276,102 @@ class RaceSessionControllerTest {
         assertFalse(controller.uiState.value.monitoringActive)
         assertEquals(0, controller.uiState.value.connectedEndpoints.size)
     }
+
+    @Test
+    fun `host chirp start broadcasts to all connected endpoints`() = runTest {
+        val sentMessages = mutableListOf<Pair<String, String>>()
+        var startedCalibrationId: String? = null
+        var startedRole: String? = null
+        var startedProfile: String? = null
+        var startedSampleCount: Int? = null
+
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { endpointId, messageJson, onComplete ->
+                sentMessages += endpointId to messageJson
+                onComplete(Result.success(Unit))
+            },
+            startCalibration = { calibrationId, role, profile, sampleCount, _ ->
+                startedCalibrationId = calibrationId
+                startedRole = role
+                startedProfile = profile
+                startedSampleCount = sampleCount
+                ChirpCalibrationResult(
+                    calibrationId = calibrationId,
+                    accepted = true,
+                    hostMinusClientElapsedNanos = null,
+                    jitterNanos = null,
+                    reason = null,
+                    completedAtElapsedNanos = null,
+                    profile = profile,
+                    sampleCount = sampleCount,
+                )
+            },
+            clearCalibration = { },
+            ioDispatcher = StandardTestDispatcher(testScheduler),
+            nowElapsedNanos = { 1_000L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-1",
+                endpointName = "peer-1",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-2",
+                endpointName = "peer-2",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+
+        controller.startChirpSyncAllConnected(profile = "fallback", sampleCount = 4)
+
+        assertTrue(controller.uiState.value.chirpSyncInProgress)
+        assertEquals(setOf("ep-1", "ep-2"), sentMessages.map { it.first }.toSet())
+
+        val startMessages = sentMessages.mapNotNull { (_, raw) ->
+            SessionChirpCalibrationStartMessage.tryParse(raw)
+        }
+        assertEquals(2, startMessages.size)
+        assertEquals(1, startMessages.map { it.calibrationId }.toSet().size)
+        assertEquals("responder", startMessages.first().role)
+        assertEquals("fallback", startMessages.first().profile)
+        assertEquals(4, startMessages.first().sampleCount)
+        assertNotNull(startMessages.first().remoteSendElapsedNanos)
+
+        assertEquals(startMessages.first().calibrationId, startedCalibrationId)
+        assertEquals("initiator", startedRole)
+        assertEquals("fallback", startedProfile)
+        assertEquals(4, startedSampleCount)
+    }
+
+    @Test
+    fun `host chirp start rejects when no connected endpoints`() = runTest {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            startCalibration = { calibrationId, _, profile, sampleCount, _ ->
+                ChirpCalibrationResult(calibrationId, true, null, null, null, null, profile, sampleCount)
+            },
+            clearCalibration = { },
+            ioDispatcher = StandardTestDispatcher(testScheduler),
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+        controller.startChirpSyncAllConnected()
+
+        assertEquals("Chirp sync ignored: no connected endpoints", controller.uiState.value.lastError)
+        assertFalse(controller.uiState.value.chirpSyncInProgress)
+    }
 }

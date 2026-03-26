@@ -525,6 +525,54 @@ class RaceSessionController(
         )
     }
 
+    fun startChirpSyncAllConnected(
+        profile: String = AcousticChirpSyncEngine.PROFILE_NEAR_ULTRASOUND,
+        sampleCount: Int = 5,
+    ) {
+        if (_uiState.value.networkRole != SessionNetworkRole.HOST) {
+            _uiState.value = _uiState.value.copy(lastError = "Chirp sync ignored: only host can broadcast start")
+            return
+        }
+        val targetEndpoints = _uiState.value.connectedEndpoints.toList()
+        if (targetEndpoints.isEmpty()) {
+            _uiState.value = _uiState.value.copy(lastError = "Chirp sync ignored: no connected endpoints")
+            return
+        }
+
+        val calibrationId = UUID.randomUUID().toString()
+        _uiState.value = _uiState.value.copy(
+            chirpSyncInProgress = true,
+            activeCalibrationId = calibrationId,
+            lastError = null,
+        )
+
+        val remoteSendElapsedNanos = nowElapsedNanos()
+        val startMessage = SessionChirpCalibrationStartMessage(
+            calibrationId = calibrationId,
+            role = "responder",
+            profile = profile,
+            sampleCount = sampleCount,
+            remoteSendElapsedNanos = remoteSendElapsedNanos,
+        ).toJsonString()
+        targetEndpoints.forEach { endpointId ->
+            sendMessage(endpointId, startMessage) { result ->
+                result.exceptionOrNull()?.let { error ->
+                    _uiState.value = _uiState.value.copy(
+                        lastError = "Failed to start chirp sync on $endpointId: ${error.localizedMessage ?: "unknown"}",
+                    )
+                }
+            }
+        }
+
+        startCalibration(
+            calibrationId,
+            "initiator",
+            profile,
+            sampleCount,
+            null,
+        )
+    }
+
     fun clearChirpLock(broadcast: Boolean = false) {
         clearCalibration()
         updateClockState(

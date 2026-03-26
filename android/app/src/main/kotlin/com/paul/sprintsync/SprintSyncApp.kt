@@ -217,6 +217,7 @@ fun SprintSyncApp(
                     item {
                         ChirpSyncCard(
                             isClient = uiState.networkRole == SessionNetworkRole.CLIENT,
+                            isHost = uiState.networkRole == SessionNetworkRole.HOST,
                             hasConnectedPeers = uiState.hasConnectedPeers,
                             chirpSyncInProgress = uiState.chirpSyncInProgress,
                             chirpLockActive = uiState.chirpLockActive,
@@ -444,6 +445,7 @@ private fun LobbyActionsCard(
 @Composable
 private fun ChirpSyncCard(
     isClient: Boolean,
+    isHost: Boolean,
     hasConnectedPeers: Boolean,
     chirpSyncInProgress: Boolean,
     chirpLockActive: Boolean,
@@ -451,7 +453,7 @@ private fun ChirpSyncCard(
     onStartChirpSync: () -> Unit,
     onEndChirpSync: () -> Unit,
 ) {
-    val canStart = isClient && hasConnectedPeers && !chirpSyncInProgress
+    val canStart = (isClient || isHost) && hasConnectedPeers && !chirpSyncInProgress
     val canEnd = chirpLockActive || chirpSyncInProgress
     Card {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -169,6 +169,9 @@ class SensorNativeController(
     fun attachPreviewSurface(targetPreviewView: PreviewView) {
         mainHandler.post {
             previewView = targetPreviewView
+            logRuntimeDiagnostic(
+                "preview attached: monitoring=$monitoring hasProvider=${cameraProvider != null} highSpeed=${config.highSpeedEnabled}",
+            )
             if (!config.highSpeedEnabled) {
                 rebindCameraUseCasesIfMonitoring()
                 schedulePreviewRebindRetriesIfMonitoring()
@@ -182,6 +185,9 @@ class SensorNativeController(
                 return@post
             }
             previewView = null
+            logRuntimeDiagnostic(
+                "preview detached: monitoring=$monitoring hasProvider=${cameraProvider != null} highSpeed=${config.highSpeedEnabled}",
+            )
             cancelPreviewRebindRetries()
             if (!config.highSpeedEnabled) {
                 rebindCameraUseCasesIfMonitoring()
@@ -414,8 +420,12 @@ class SensorNativeController(
                         preferredFacing = config.cameraFacing,
                     )
                     targetFpsUpper = cameraSession.currentTargetFpsUpper()
-                    schedulePreviewRebindRetriesIfMonitoring()
+                    logRuntimeDiagnostic(
+                        "normal backend ready: hasPreview=${previewView != null} monitoringBeforeStart=$monitoring",
+                    )
                     onStarted()
+                    rebindCameraUseCasesIfMonitoring()
+                    schedulePreviewRebindRetriesIfMonitoring()
                 } catch (error: Exception) {
                     onError(error.localizedMessage ?: "unknown")
                 }
@@ -513,14 +523,29 @@ class SensorNativeController(
     }
 
     private fun schedulePreviewRebindRetriesIfMonitoring() {
-        if (!monitoring || config.highSpeedEnabled || previewView == null || cameraProvider == null) {
+        if (
+            !shouldSchedulePreviewRebindRetry(
+                monitoring = monitoring,
+                highSpeedEnabled = config.highSpeedEnabled,
+                hasPreviewView = previewView != null,
+                hasCameraProvider = cameraProvider != null,
+            )
+        ) {
             return
         }
+        logRuntimeDiagnostic("scheduling preview rebind retries")
         cancelPreviewRebindRetries()
         previewRebindAttemptCount = 0
         val runnable = object : Runnable {
             override fun run() {
-                if (!monitoring || config.highSpeedEnabled || previewView == null || cameraProvider == null) {
+                if (
+                    !shouldSchedulePreviewRebindRetry(
+                        monitoring = monitoring,
+                        highSpeedEnabled = config.highSpeedEnabled,
+                        hasPreviewView = previewView != null,
+                        hasCameraProvider = cameraProvider != null,
+                    )
+                ) {
                     cancelPreviewRebindRetries()
                     return
                 }
@@ -528,6 +553,8 @@ class SensorNativeController(
                 val success = attemptPreviewRebind()
                 if (!success) {
                     Log.w(TAG, "Preview rebind attempt $previewRebindAttemptCount failed.")
+                } else {
+                    logRuntimeDiagnostic("preview rebind attempt $previewRebindAttemptCount succeeded")
                 }
                 if (previewRebindAttemptCount >= PREVIEW_REBIND_MAX_ATTEMPTS) {
                     cancelPreviewRebindRetries()
@@ -544,6 +571,10 @@ class SensorNativeController(
         pendingPreviewRebindRunnable?.let(mainHandler::removeCallbacks)
         pendingPreviewRebindRunnable = null
         previewRebindAttemptCount = 0
+    }
+
+    private fun logRuntimeDiagnostic(message: String) {
+        Log.d(TAG, "diag: $message")
     }
 
     private fun updateStreamTelemetry(frameSensorNanos: Long): Long {
@@ -650,6 +681,15 @@ class SensorNativeController(
         val listener = eventListener ?: return
         mainHandler.post { listener(event) }
     }
+}
+
+internal fun shouldSchedulePreviewRebindRetry(
+    monitoring: Boolean,
+    highSpeedEnabled: Boolean,
+    hasPreviewView: Boolean,
+    hasCameraProvider: Boolean,
+): Boolean {
+    return monitoring && !highSpeedEnabled && hasPreviewView && hasCameraProvider
 }
 
 data class HsTriggerRefinementResponse(
