@@ -15,11 +15,11 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Range
 import android.util.Size
-import io.flutter.embedding.android.FlutterActivity
+import androidx.activity.ComponentActivity
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal class Camera2HsSessionManager(
-    private val activity: FlutterActivity,
+    private val activity: ComponentActivity,
     private val mainHandler: Handler,
     private val emitError: (String) -> Unit,
     private val emitDiagnostic: (String) -> Unit,

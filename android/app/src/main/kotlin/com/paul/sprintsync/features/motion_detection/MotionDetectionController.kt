@@ -1,0 +1,116 @@
+package com.paul.sprintsync.features.motion_detection
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.paul.sprintsync.core.repositories.LocalRepository
+import com.paul.sprintsync.sensor_native.NativeCameraFacing
+import com.paul.sprintsync.sensor_native.NativeMonitoringConfig
+import com.paul.sprintsync.sensor_native.SensorNativeController
+import com.paul.sprintsync.sensor_native.SensorNativeEvent
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+data class MotionDetectionUiState(
+    val config: MotionDetectionConfig = MotionDetectionConfig.defaults(),
+    val monitoring: Boolean = false,
+    val loadedFromStorage: Boolean = false,
+    val lastError: String? = null,
+    val lastDiagnostic: String? = null,
+    val lastFrameSensorNanos: Long? = null,
+    val lastTriggerSensorNanos: Long? = null,
+)
+
+class MotionDetectionController(
+    private val localRepository: LocalRepository,
+    private val sensorNativeController: SensorNativeController,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+) : ViewModel() {
+    private val _uiState = MutableStateFlow(MotionDetectionUiState())
+    val uiState: StateFlow<MotionDetectionUiState> = _uiState.asStateFlow()
+
+    init {
+        viewModelScope.launch(ioDispatcher) {
+            val persisted = localRepository.loadMotionConfig()
+            _uiState.value = _uiState.value.copy(
+                config = persisted,
+                loadedFromStorage = true,
+            )
+            sensorNativeController.updateNativeConfig(persisted.toNativeConfig())
+        }
+    }
+
+    fun updateConfig(config: MotionDetectionConfig, persist: Boolean = true) {
+        _uiState.value = _uiState.value.copy(config = config)
+        sensorNativeController.updateNativeConfig(config.toNativeConfig())
+        if (!persist) {
+            return
+        }
+        viewModelScope.launch(ioDispatcher) {
+            localRepository.saveMotionConfig(config)
+        }
+    }
+
+    fun startMonitoring() {
+        sensorNativeController.startNativeMonitoring(_uiState.value.config.toNativeConfig()) { result ->
+            val error = result.exceptionOrNull()
+            if (error == null) {
+                _uiState.value = _uiState.value.copy(monitoring = true, lastError = null)
+            } else {
+                _uiState.value = _uiState.value.copy(monitoring = false, lastError = error.localizedMessage)
+            }
+        }
+    }
+
+    fun stopMonitoring() {
+        sensorNativeController.stopNativeMonitoring()
+        _uiState.value = _uiState.value.copy(monitoring = false)
+    }
+
+    fun handleSensorEvent(event: SensorNativeEvent) {
+        when (event) {
+            is SensorNativeEvent.FrameStats -> {
+                _uiState.value = _uiState.value.copy(
+                    lastFrameSensorNanos = event.stats.frameSensorNanos,
+                )
+            }
+
+            is SensorNativeEvent.Trigger -> {
+                _uiState.value = _uiState.value.copy(
+                    lastTriggerSensorNanos = event.trigger.triggerSensorNanos,
+                )
+            }
+
+            is SensorNativeEvent.State -> {
+                _uiState.value = _uiState.value.copy(monitoring = event.monitoring)
+            }
+
+            is SensorNativeEvent.Diagnostic -> {
+                _uiState.value = _uiState.value.copy(lastDiagnostic = event.message)
+            }
+
+            is SensorNativeEvent.Error -> {
+                _uiState.value = _uiState.value.copy(lastError = event.message)
+            }
+        }
+    }
+
+    private fun MotionDetectionConfig.toNativeConfig(): NativeMonitoringConfig {
+        val nativeFacing = when (cameraFacing) {
+            MotionCameraFacing.FRONT -> NativeCameraFacing.FRONT
+            MotionCameraFacing.REAR -> NativeCameraFacing.REAR
+        }
+        return NativeMonitoringConfig(
+            threshold = threshold,
+            roiCenterX = roiCenterX,
+            roiWidth = roiWidth,
+            cooldownMs = cooldownMs,
+            processEveryNFrames = processEveryNFrames,
+            cameraFacing = nativeFacing,
+            highSpeedEnabled = highSpeedEnabled,
+        )
+    }
+}

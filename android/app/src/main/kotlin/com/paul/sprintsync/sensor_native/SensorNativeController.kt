@@ -10,34 +10,25 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import androidx.activity.ComponentActivity
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
-import io.flutter.embedding.android.FlutterActivity
-import io.flutter.plugin.common.BinaryMessenger
-import io.flutter.plugin.common.EventChannel
-import io.flutter.plugin.common.MethodCall
-import io.flutter.plugin.common.MethodChannel
-import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.min
 
 class SensorNativeController(
-    private val activity: FlutterActivity,
-) : EventChannel.StreamHandler, ImageAnalysis.Analyzer {
+    private val activity: ComponentActivity,
+) : ImageAnalysis.Analyzer {
     companion object {
         private const val TAG = "SensorNativeController"
         private const val PREVIEW_REBIND_RETRY_DELAY_MS = 200L
         private const val PREVIEW_REBIND_MAX_ATTEMPTS = 3
         private const val HS_FALLBACK_TRIGGER_FPS = 80.0
-        const val METHOD_CHANNEL_NAME = "com.paul.sprintsync/sensor_native_methods"
-        const val EVENT_CHANNEL_NAME = "com.paul.sprintsync/sensor_native_events"
-        const val PREVIEW_VIEW_TYPE = "com.paul.sprintsync/sensor_native_preview"
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -49,7 +40,7 @@ class SensorNativeController(
     private val hsRoiRecorder = HsRoiRecordingBuffer()
 
     @Volatile
-    private var eventSink: EventChannel.EventSink? = null
+    private var eventListener: ((SensorNativeEvent) -> Unit)? = null
 
     @Volatile
     private var monitoring = false
@@ -139,9 +130,8 @@ class SensorNativeController(
         }
     }
 
-    fun configure(binaryMessenger: BinaryMessenger) {
-        MethodChannel(binaryMessenger, METHOD_CHANNEL_NAME).setMethodCallHandler(::onMethodCall)
-        EventChannel(binaryMessenger, EVENT_CHANNEL_NAME).setStreamHandler(this)
+    fun setEventListener(listener: ((SensorNativeEvent) -> Unit)?) {
+        eventListener = listener
     }
 
     fun onHostPaused() {
@@ -218,12 +208,83 @@ class SensorNativeController(
         return nowElapsedNanos
     }
 
-    override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
-        eventSink = events
+    fun startNativeMonitoring(
+        monitoringConfig: NativeMonitoringConfig,
+        onComplete: (Result<Unit>) -> Unit,
+    ) {
+        val permission = ContextCompat.checkSelfPermission(activity, Manifest.permission.CAMERA)
+        if (permission != PackageManager.PERMISSION_GRANTED) {
+            val message = "Camera permission is required before starting native monitoring."
+            emitError(message)
+            onComplete(Result.failure(IllegalStateException(message)))
+            return
+        }
+        config = monitoringConfig.copy(highSpeedEnabled = false)
+        detectionMath.updateConfig(config)
+        if (monitoring) {
+            emitState("monitoring")
+            onComplete(Result.success(Unit))
+            return
+        }
+        resetStreamState()
+        startGpsUpdatesIfAvailable()
+        startMonitoringBackend(
+            onStarted = {
+                monitoring = true
+                emitState("monitoring")
+                onComplete(Result.success(Unit))
+            },
+            onError = { error ->
+                stopNativeMonitoringInternal()
+                emitError("Failed to initialize native monitoring: $error")
+                onComplete(Result.failure(IllegalStateException(error)))
+            },
+        )
     }
 
-    override fun onCancel(arguments: Any?) {
-        eventSink = null
+    fun warmupGpsSync() {
+        startGpsUpdatesIfAvailable()
+        emitState(if (monitoring) "monitoring" else "idle")
+    }
+
+    fun stopNativeMonitoring() {
+        stopNativeMonitoringInternal()
+    }
+
+    fun updateNativeConfig(monitoringConfig: NativeMonitoringConfig) {
+        val previousFacing = config.cameraFacing
+        config = monitoringConfig.copy(highSpeedEnabled = false)
+        detectionMath.updateConfig(config)
+
+        if (monitoring && config.cameraFacing != previousFacing) {
+            rebindCameraUseCasesIfMonitoring()
+        }
+        emitState(if (monitoring) "monitoring" else "idle")
+    }
+
+    fun resetNativeRun() {
+        resetNativeRunInternal()
+    }
+
+    fun refineHsTriggers(requests: List<HsTriggerRefinementRequest>): HsTriggerRefinementResponse {
+        if (requests.isEmpty()) {
+            return HsTriggerRefinementResponse(
+                results = emptyList(),
+                recordedFrameCount = 0,
+            )
+        }
+
+        val recordedFrames = hsRoiRecorder.snapshot()
+        val refined = HsPostRaceRefiner.refineRequests(
+            recordedFrames = recordedFrames,
+            requests = requests,
+            config = config,
+            defaultWindowNanos = HsRecordingPolicy.DEFAULT_REFINEMENT_WINDOW_NANOS,
+        )
+        return HsTriggerRefinementResponse(
+            results = refined,
+            recordedFrameCount = recordedFrames.size,
+        )
     }
 
     override fun analyze(image: ImageProxy) {
@@ -326,136 +387,6 @@ class SensorNativeController(
         }
     }
 
-    private fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
-        when (call.method) {
-            "startNativeMonitoring" -> startNativeMonitoring(call, result)
-            "warmupGpsSync" -> {
-                startGpsUpdatesIfAvailable()
-                emitState(if (monitoring) "monitoring" else "idle")
-                result.success(null)
-            }
-            "stopNativeMonitoring" -> {
-                stopNativeMonitoringInternal()
-                result.success(null)
-            }
-            "updateNativeConfig" -> {
-                updateNativeConfig(call)
-                result.success(null)
-            }
-            "resetNativeRun" -> {
-                resetNativeRun()
-                result.success(null)
-            }
-            "refineHsTriggers" -> {
-                refineHsTriggers(call, result)
-            }
-            else -> result.notImplemented()
-        }
-    }
-
-    private fun startNativeMonitoring(call: MethodCall, result: MethodChannel.Result) {
-        val permission = ContextCompat.checkSelfPermission(activity, Manifest.permission.CAMERA)
-        if (permission != PackageManager.PERMISSION_GRANTED) {
-            val message = "Camera permission is required before starting native monitoring."
-            emitError(message)
-            result.error("camera_permission_denied", message, null)
-            return
-        }
-        config = NativeMonitoringConfig.fromMap(call.argument<Any>("config"))
-            .copy(highSpeedEnabled = false)
-        detectionMath.updateConfig(config)
-        if (monitoring) {
-            emitState("monitoring")
-            result.success(null)
-            return
-        }
-        resetStreamState()
-        startGpsUpdatesIfAvailable()
-        startMonitoringBackend(
-            onStarted = {
-                monitoring = true
-                emitState("monitoring")
-                result.success(null)
-            },
-            onError = { error ->
-                stopNativeMonitoringInternal()
-                emitError("Failed to initialize native monitoring: $error")
-                result.error("native_monitor_start_failed", error, null)
-            },
-        )
-    }
-
-    private fun refineHsTriggers(call: MethodCall, result: MethodChannel.Result) {
-        try {
-            val triggerRequests = parseHsRefinementRequests(call.argument("requests"))
-            if (triggerRequests.isEmpty()) {
-                result.success(
-                    mapOf(
-                        "results" to emptyList<Map<String, Any?>>(),
-                        "recordedFrameCount" to 0,
-                    ),
-                )
-                return
-            }
-
-            val recordedFrames = hsRoiRecorder.snapshot()
-            val refined = HsPostRaceRefiner.refineRequests(
-                recordedFrames = recordedFrames,
-                requests = triggerRequests,
-                config = config,
-                defaultWindowNanos = HsRecordingPolicy.DEFAULT_REFINEMENT_WINDOW_NANOS,
-            )
-            val responseResults = refined.map { refinedResult ->
-                mapOf<String, Any?>(
-                    "triggerType" to refinedResult.triggerType,
-                    "splitIndex" to refinedResult.splitIndex,
-                    "provisionalSensorNanos" to refinedResult.provisionalSensorNanos,
-                    "refinedSensorNanos" to refinedResult.refinedSensorNanos,
-                    "refined" to refinedResult.refined,
-                    "rawScore" to refinedResult.rawScore,
-                    "baseline" to refinedResult.baseline,
-                    "effectiveScore" to refinedResult.effectiveScore,
-                )
-            }
-            result.success(
-                mapOf(
-                    "results" to responseResults,
-                    "recordedFrameCount" to recordedFrames.size,
-                ),
-            )
-        } catch (error: Exception) {
-            result.error(
-                "hs_refine_failed",
-                error.localizedMessage ?: "Failed to refine HS triggers.",
-                null,
-            )
-        }
-    }
-
-    private fun parseHsRefinementRequests(raw: Any?): List<HsTriggerRefinementRequest> {
-        if (raw !is List<*>) {
-            return emptyList()
-        }
-        return raw.mapNotNull { item ->
-            if (item !is Map<*, *>) {
-                return@mapNotNull null
-            }
-            val triggerSensorNanos = (item["triggerSensorNanos"] as? Number)?.toLong()
-                ?: return@mapNotNull null
-            val triggerType = item["triggerType"]?.toString()?.ifBlank { null }
-                ?: return@mapNotNull null
-            val splitIndex = (item["splitIndex"] as? Number)?.toInt()
-                ?: return@mapNotNull null
-            val windowNanos = (item["windowNanos"] as? Number)?.toLong()
-            HsTriggerRefinementRequest(
-                triggerSensorNanos = triggerSensorNanos,
-                triggerType = triggerType,
-                splitIndex = splitIndex,
-                windowNanos = windowNanos,
-            )
-        }
-    }
-
     private fun startMonitoringBackend(
         onStarted: () -> Unit,
         onError: (String) -> Unit,
@@ -506,20 +437,6 @@ class SensorNativeController(
         emitState("idle")
     }
 
-    private fun updateNativeConfig(call: MethodCall) {
-        val previousFacing = config.cameraFacing
-        config = NativeMonitoringConfig.fromMap(call.argument<Any>("config"))
-            .copy(highSpeedEnabled = false)
-        detectionMath.updateConfig(config)
-
-        if (monitoring) {
-            if (config.cameraFacing != previousFacing) {
-                rebindCameraUseCasesIfMonitoring()
-            }
-        }
-        emitState(if (monitoring) "monitoring" else "idle")
-    }
-
     private fun restartMonitoringBackend() {
         cameraSession.stop(cameraProvider)
         cameraProvider = null
@@ -543,7 +460,7 @@ class SensorNativeController(
         )
     }
 
-    private fun resetNativeRun() {
+    private fun resetNativeRunInternal() {
         streamFrameCount = 0L
         processedFrameCount = 0L
         detectionMath.resetRun()
@@ -691,69 +608,51 @@ class SensorNativeController(
 
     private fun emitFrameStats(stats: NativeFrameStats, sensorMinusElapsedNanos: Long?) {
         emitEvent(
-            mapOf(
-                "type" to "native_frame_stats",
-                "rawScore" to stats.rawScore,
-                "baseline" to stats.baseline,
-                "effectiveScore" to stats.effectiveScore,
-                "frameSensorNanos" to stats.frameSensorNanos,
-                "streamFrameCount" to streamFrameCount,
-                "processedFrameCount" to processedFrameCount,
-                "observedFps" to observedFps,
-                "cameraFpsMode" to activeCameraFpsMode.wireName,
-                "targetFpsUpper" to targetFpsUpper,
-                "hostSensorMinusElapsedNanos" to sensorMinusElapsedNanos,
-                "gpsUtcOffsetNanos" to gpsUtcOffsetNanos,
-                "gpsFixElapsedRealtimeNanos" to gpsFixElapsedRealtimeNanos,
+            SensorNativeEvent.FrameStats(
+                stats = stats,
+                streamFrameCount = streamFrameCount,
+                processedFrameCount = processedFrameCount,
+                observedFps = observedFps,
+                cameraFpsMode = activeCameraFpsMode,
+                targetFpsUpper = targetFpsUpper,
+                hostSensorMinusElapsedNanos = sensorMinusElapsedNanos,
+                gpsUtcOffsetNanos = gpsUtcOffsetNanos,
+                gpsFixElapsedRealtimeNanos = gpsFixElapsedRealtimeNanos,
             ),
         )
     }
 
     private fun emitTrigger(trigger: NativeTriggerEvent) {
-        emitEvent(
-            mapOf(
-                "type" to "native_trigger",
-                "triggerSensorNanos" to trigger.triggerSensorNanos,
-                "score" to trigger.score,
-                "triggerType" to trigger.triggerType,
-                "splitIndex" to trigger.splitIndex,
-            ),
-        )
+        emitEvent(SensorNativeEvent.Trigger(trigger = trigger))
     }
 
     private fun emitState(state: String) {
         emitEvent(
-            mapOf(
-                "type" to "native_state",
-                "state" to state,
-                "monitoring" to monitoring,
-                "hostSensorMinusElapsedNanos" to hostSensorMinusElapsedNanos,
-                "gpsUtcOffsetNanos" to gpsUtcOffsetNanos,
-                "gpsFixElapsedRealtimeNanos" to gpsFixElapsedRealtimeNanos,
+            SensorNativeEvent.State(
+                state = state,
+                monitoring = monitoring,
+                hostSensorMinusElapsedNanos = hostSensorMinusElapsedNanos,
+                gpsUtcOffsetNanos = gpsUtcOffsetNanos,
+                gpsFixElapsedRealtimeNanos = gpsFixElapsedRealtimeNanos,
             ),
         )
     }
 
     private fun emitDiagnostic(message: String) {
-        emitEvent(
-            mapOf(
-                "type" to "native_diagnostic",
-                "message" to message,
-            ),
-        )
+        emitEvent(SensorNativeEvent.Diagnostic(message = message))
     }
 
     private fun emitError(message: String) {
-        emitEvent(
-            mapOf(
-                "type" to "native_error",
-                "message" to message,
-            ),
-        )
+        emitEvent(SensorNativeEvent.Error(message = message))
     }
 
-    private fun emitEvent(event: Map<String, Any?>) {
-        val sink = eventSink ?: return
-        mainHandler.post { sink.success(event) }
+    private fun emitEvent(event: SensorNativeEvent) {
+        val listener = eventListener ?: return
+        mainHandler.post { listener(event) }
     }
 }
+
+data class HsTriggerRefinementResponse(
+    val results: List<HsTriggerRefinementResult>,
+    val recordedFrameCount: Int,
+)

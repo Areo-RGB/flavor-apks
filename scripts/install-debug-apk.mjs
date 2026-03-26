@@ -22,17 +22,16 @@ function fail(message, detail = '') {
 }
 
 const appId = 'com.paul.sprintsync';
-const apkPath = resolve(
-  process.cwd(),
-  'build',
-  'app',
-  'outputs',
-  'flutter-apk',
-  'app-debug.apk',
-);
+const apkCandidates = [
+  resolve(process.cwd(), 'build', 'app', 'outputs', 'apk', 'debug', 'app-debug.apk'),
+  resolve(process.cwd(), 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk'),
+];
+const apkPath = apkCandidates.find((path) => existsSync(path));
 
-if (!existsSync(apkPath)) {
-  fail(`Debug APK not found at ${apkPath}. Run "flutter build apk --debug" first.`);
+if (!apkPath) {
+  fail(
+    `Debug APK not found in expected paths:\n- ${apkCandidates.join('\n- ')}\nRun "npm run build:debug:apk" first.`,
+  );
 }
 
 const devicesResult = run('adb', ['devices']);

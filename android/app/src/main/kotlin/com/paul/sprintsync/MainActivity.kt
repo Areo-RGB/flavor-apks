@@ -3,231 +3,429 @@ package com.paul.sprintsync
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
+import android.os.Bundle
+import android.provider.Settings
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.mutableStateOf
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.paul.sprintsync.chirp_sync.AcousticChirpSyncEngine
+import com.paul.sprintsync.core.repositories.LocalRepository
+import com.paul.sprintsync.core.services.NearbyEvent
+import com.paul.sprintsync.core.services.NearbyConnectionsManager
+import com.paul.sprintsync.core.services.NearbyTransportStrategy
+import com.paul.sprintsync.features.motion_detection.MotionCameraFacing
+import com.paul.sprintsync.features.motion_detection.MotionDetectionController
+import com.paul.sprintsync.features.race_session.RaceSessionController
+import com.paul.sprintsync.features.race_session.SessionCameraFacing
+import com.paul.sprintsync.features.race_session.SessionDeviceRole
+import com.paul.sprintsync.features.race_session.SessionNetworkRole
+import com.paul.sprintsync.features.race_session.SessionStage
 import com.paul.sprintsync.sensor_native.SensorNativeController
-import com.paul.sprintsync.sensor_native.SensorNativePreviewViewFactory
-import com.google.android.gms.nearby.Nearby
-import com.google.android.gms.nearby.connection.AdvertisingOptions
-import com.google.android.gms.nearby.connection.ConnectionInfo
-import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
-import com.google.android.gms.nearby.connection.ConnectionResolution
-import com.google.android.gms.nearby.connection.ConnectionsClient
-import com.google.android.gms.nearby.connection.ConnectionsStatusCodes
-import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo
-import com.google.android.gms.nearby.connection.DiscoveryOptions
-import com.google.android.gms.nearby.connection.EndpointDiscoveryCallback
-import com.google.android.gms.nearby.connection.Payload
-import com.google.android.gms.nearby.connection.PayloadCallback
-import com.google.android.gms.nearby.connection.PayloadTransferUpdate
-import com.google.android.gms.nearby.connection.Strategy
-import io.flutter.embedding.android.FlutterActivity
-import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.EventChannel
-import io.flutter.plugin.common.MethodCall
-import io.flutter.plugin.common.MethodChannel
-import java.nio.charset.StandardCharsets
-import org.json.JSONException
-import org.json.JSONObject
+import com.paul.sprintsync.sensor_native.SensorNativeEvent
 
-class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResultCallback {
+class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsResultCallback {
     companion object {
-        private const val METHOD_CHANNEL_NAME = "com.paul.sprintsync/nearby_methods"
-        private const val EVENT_CHANNEL_NAME = "com.paul.sprintsync/nearby_events"
+        private const val DEFAULT_SERVICE_ID = "com.paul.sprintsync.nearby"
         private const val PERMISSIONS_REQUEST_CODE = 7301
         private const val SENSOR_ELAPSED_PROJECTION_MAX_AGE_NANOS = 3_000_000_000L
     }
 
-    private enum class NearbyRole {
-        NONE,
-        HOST,
-        CLIENT,
-    }
-
-    private enum class NearbyTransportStrategy(
-        val wireValue: String,
-        val nearbyStrategy: Strategy,
-    ) {
-        STAR("star", Strategy.P2P_STAR),
-        POINT_TO_POINT("point_to_point", Strategy.P2P_POINT_TO_POINT),
-        ;
-
-        companion object {
-            fun fromWireValue(rawValue: String?): NearbyTransportStrategy {
-                return when (rawValue?.trim()) {
-                    POINT_TO_POINT.wireValue -> POINT_TO_POINT
-                    else -> STAR
-                }
-            }
-        }
-    }
-
-    private val connectedEndpointIds = mutableSetOf<String>()
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private lateinit var connectionsClient: ConnectionsClient
     private lateinit var sensorNativeController: SensorNativeController
-    private lateinit var acousticChirpSyncEngine: AcousticChirpSyncEngine
+    private lateinit var nearbyConnectionsManager: NearbyConnectionsManager
+    private lateinit var motionDetectionController: MotionDetectionController
+    private lateinit var raceSessionController: RaceSessionController
+    private val uiState = mutableStateOf(SprintSyncUiState())
+    private var pendingPermissionAction: (() -> Unit)? = null
 
-    private var eventSink: EventChannel.EventSink? = null
-    private var pendingPermissionResult: MethodChannel.Result? = null
-    private var activeRole: NearbyRole = NearbyRole.NONE
-    private var activeStrategy: NearbyTransportStrategy = NearbyTransportStrategy.STAR
-    private var pendingEndpointId: String? = null
-    private var requestedEndpointId: String? = null
-    private var nativeClockSyncHostEnabled = false
-    private var nativeClockSyncRequireSensorDomain = false
-    private val endpointNamesById = mutableMapOf<String, String>()
-
-    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-        super.configureFlutterEngine(flutterEngine)
-        connectionsClient = Nearby.getConnectionsClient(this)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
         sensorNativeController = SensorNativeController(this)
-        acousticChirpSyncEngine = AcousticChirpSyncEngine(this)
-        sensorNativeController.configure(flutterEngine.dartExecutor.binaryMessenger)
-        flutterEngine
-            .platformViewsController
-            .registry
-            .registerViewFactory(
-                SensorNativeController.PREVIEW_VIEW_TYPE,
-                SensorNativePreviewViewFactory(sensorNativeController),
-            )
-
-        MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            METHOD_CHANNEL_NAME,
-        ).setMethodCallHandler(::handleMethodCall)
-
-        EventChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            EVENT_CHANNEL_NAME,
-        ).setStreamHandler(
-            object : EventChannel.StreamHandler {
-                override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
-                    eventSink = events
-                }
-
-                override fun onCancel(arguments: Any?) {
-                    eventSink = null
-                }
+        val localRepository = LocalRepository(this)
+        val chirpSyncEngine = AcousticChirpSyncEngine(this)
+        nearbyConnectionsManager = NearbyConnectionsManager(
+            context = this,
+            nowNativeClockSyncElapsedNanos = { requireSensorDomain ->
+                sensorNativeController.currentClockSyncElapsedNanos(
+                    maxSensorSampleAgeNanos = SENSOR_ELAPSED_PROJECTION_MAX_AGE_NANOS,
+                    requireSensorDomain = requireSensorDomain,
+                )
             },
         )
+        motionDetectionController = MotionDetectionController(
+            localRepository = localRepository,
+            sensorNativeController = sensorNativeController,
+        )
+        raceSessionController = RaceSessionController(
+            localRepository = localRepository,
+            nearbyConnectionsManager = nearbyConnectionsManager,
+            chirpSyncEngine = chirpSyncEngine,
+        )
+        raceSessionController.setLocalDeviceIdentity(localDeviceId(), localEndpointName())
+        sensorNativeController.setEventListener(::onSensorEvent)
+        nearbyConnectionsManager.setEventListener(::onNearbyEvent)
+
+        val denied = deniedPermissions()
+        updateUiState {
+            copy(
+                permissionGranted = denied.isEmpty(),
+                deniedPermissions = denied,
+                networkSummary = "Ready",
+            )
+        }
+
+        setContent {
+            SprintSyncApp(
+                uiState = uiState.value,
+                onRequestPermissions = {
+                    requestPermissionsIfNeeded {}
+                },
+                onConnectEndpoint = { endpointId ->
+                    nearbyConnectionsManager.requestConnection(
+                        endpointId = endpointId,
+                        endpointName = localEndpointName(),
+                    ) { result ->
+                        result.exceptionOrNull()?.let { error ->
+                            appendEvent("connect error: ${error.localizedMessage ?: "unknown"}")
+                        }
+                        syncControllerSummaries()
+                    }
+                },
+                onGoToLobby = {
+                    raceSessionController.goToLobby()
+                    syncControllerSummaries()
+                },
+                onStartHosting = {
+                    requestPermissionsIfNeeded {
+                        raceSessionController.setNetworkRole(SessionNetworkRole.HOST)
+                        nearbyConnectionsManager.configureNativeClockSyncHost(
+                            enabled = true,
+                            requireSensorDomainClock = false,
+                        )
+                        nearbyConnectionsManager.startHosting(
+                            serviceId = DEFAULT_SERVICE_ID,
+                            endpointName = localEndpointName(),
+                            strategy = NearbyTransportStrategy.STAR,
+                        ) { result ->
+                            result.exceptionOrNull()?.let { error ->
+                                appendEvent("host error: ${error.localizedMessage ?: "unknown"}")
+                            }
+                        }
+                    }
+                },
+                onStartHostingPointToPoint = {
+                    requestPermissionsIfNeeded {
+                        raceSessionController.setNetworkRole(SessionNetworkRole.HOST)
+                        nearbyConnectionsManager.configureNativeClockSyncHost(
+                            enabled = true,
+                            requireSensorDomainClock = false,
+                        )
+                        nearbyConnectionsManager.startHosting(
+                            serviceId = DEFAULT_SERVICE_ID,
+                            endpointName = localEndpointName(),
+                            strategy = NearbyTransportStrategy.POINT_TO_POINT,
+                        ) { result ->
+                            result.exceptionOrNull()?.let { error ->
+                                appendEvent("host p2p error: ${error.localizedMessage ?: "unknown"}")
+                            }
+                        }
+                    }
+                },
+                onStartDiscovery = {
+                    requestPermissionsIfNeeded {
+                        raceSessionController.setNetworkRole(SessionNetworkRole.CLIENT)
+                        nearbyConnectionsManager.startDiscovery(
+                            serviceId = DEFAULT_SERVICE_ID,
+                            strategy = NearbyTransportStrategy.STAR,
+                        ) { result ->
+                            result.exceptionOrNull()?.let { error ->
+                                appendEvent("discovery error: ${error.localizedMessage ?: "unknown"}")
+                            }
+                        }
+                    }
+                },
+                onStartDiscoveryPointToPoint = {
+                    requestPermissionsIfNeeded {
+                        raceSessionController.setNetworkRole(SessionNetworkRole.CLIENT)
+                        nearbyConnectionsManager.startDiscovery(
+                            serviceId = DEFAULT_SERVICE_ID,
+                            strategy = NearbyTransportStrategy.POINT_TO_POINT,
+                        ) { result ->
+                            result.exceptionOrNull()?.let { error ->
+                                appendEvent("discovery p2p error: ${error.localizedMessage ?: "unknown"}")
+                            }
+                        }
+                    }
+                },
+                onStartMonitoring = {
+                    requestPermissionsIfNeeded {
+                        val started = raceSessionController.startMonitoring()
+                        if (started && shouldRunLocalMonitoring()) {
+                            applyLocalMonitoringConfigFromSession()
+                            motionDetectionController.startMonitoring()
+                        }
+                        syncControllerSummaries()
+                    }
+                },
+                onStopMonitoring = {
+                    if (motionDetectionController.uiState.value.monitoring) {
+                        motionDetectionController.stopMonitoring()
+                    }
+                    raceSessionController.stopMonitoring()
+                    syncControllerSummaries()
+                },
+                onAssignRole = { deviceId, role ->
+                    raceSessionController.assignRole(deviceId, role)
+                    syncControllerSummaries()
+                },
+                onAssignCameraFacing = { deviceId, facing ->
+                    raceSessionController.assignCameraFacing(deviceId, facing)
+                    syncControllerSummaries()
+                },
+                onAssignHighSpeedEnabled = { deviceId, enabled ->
+                    raceSessionController.assignHighSpeedEnabled(deviceId, enabled)
+                    syncControllerSummaries()
+                },
+                onClockSyncBurst = {
+                    val endpointId = firstConnectedEndpointId()
+                    if (endpointId == null) {
+                        appendEvent("clock sync ignored: no connected endpoint")
+                    } else {
+                        raceSessionController.startClockSyncBurst(endpointId)
+                    }
+                    syncControllerSummaries()
+                },
+                onChirpSync = {
+                    val endpointId = firstConnectedEndpointId()
+                    if (endpointId == null) {
+                        appendEvent("chirp sync ignored: no connected endpoint")
+                    } else {
+                        raceSessionController.startChirpSync(endpointId)
+                    }
+                    syncControllerSummaries()
+                },
+                onStopAll = {
+                    nearbyConnectionsManager.stopAll()
+                    raceSessionController.setNetworkRole(SessionNetworkRole.NONE)
+                    if (motionDetectionController.uiState.value.monitoring) {
+                        motionDetectionController.stopMonitoring()
+                    }
+                    updateUiState { copy(networkSummary = "Stopped") }
+                    appendEvent("all nearby sessions stopped")
+                    syncControllerSummaries()
+                },
+            )
+        }
     }
 
     override fun onPause() {
-        if (::sensorNativeController.isInitialized) {
-            sensorNativeController.onHostPaused()
-        }
+        sensorNativeController.onHostPaused()
         super.onPause()
     }
 
     override fun onResume() {
         super.onResume()
-        if (::sensorNativeController.isInitialized) {
-            sensorNativeController.onHostResumed()
-        }
+        sensorNativeController.onHostResumed()
     }
 
     override fun onDestroy() {
-        if (::sensorNativeController.isInitialized) {
-            sensorNativeController.dispose()
-        }
+        nearbyConnectionsManager.stopAll()
+        nearbyConnectionsManager.setEventListener(null)
+        sensorNativeController.setEventListener(null)
+        sensorNativeController.dispose()
         super.onDestroy()
     }
 
-    private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
-        when (call.method) {
-            "requestPermissions" -> requestPermissions(result)
-            "getPermissionStatus" -> {
-                val denied = deniedPermissions()
-                result.success(
-                    mapOf(
-                        "granted" to denied.isEmpty(),
-                        "denied" to denied,
-                    ),
-                )
-            }
-            "startHosting" -> {
-                val serviceId = stringArg(call, "serviceId", result) ?: return
-                val endpointName = stringArg(call, "endpointName", result) ?: return
-                val strategy = strategyArg(call)
-                startHosting(serviceId, endpointName, strategy, result)
+    private fun requestPermissionsIfNeeded(onGranted: () -> Unit) {
+        val denied = deniedPermissions()
+        if (denied.isEmpty()) {
+            updateUiState { copy(permissionGranted = true, deniedPermissions = emptyList()) }
+            onGranted()
+            return
+        }
+        pendingPermissionAction = onGranted
+        ActivityCompat.requestPermissions(this, denied.toTypedArray(), PERMISSIONS_REQUEST_CODE)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != PERMISSIONS_REQUEST_CODE) {
+            return
+        }
+        val denied = deniedPermissions()
+        val granted = denied.isEmpty()
+        updateUiState {
+            copy(
+                permissionGranted = granted,
+                deniedPermissions = denied,
+            )
+        }
+        if (granted) {
+            pendingPermissionAction?.invoke()
+        } else {
+            appendEvent("permissions denied: ${denied.joinToString()}")
+        }
+        pendingPermissionAction = null
+    }
+
+    private fun onNearbyEvent(event: NearbyEvent) {
+        raceSessionController.onNearbyEvent(event)
+        val type = when (event) {
+            is NearbyEvent.EndpointFound -> "endpoint_found"
+            is NearbyEvent.EndpointLost -> "endpoint_lost"
+            is NearbyEvent.ConnectionResult -> "connection_result"
+            is NearbyEvent.EndpointDisconnected -> "endpoint_disconnected"
+            is NearbyEvent.PayloadReceived -> "payload_received"
+            is NearbyEvent.Error -> "error"
+        }
+        val connectedCount = nearbyConnectionsManager.connectedEndpoints().size
+        val role = nearbyConnectionsManager.currentRole().name.lowercase()
+        updateUiState {
+            copy(
+                networkSummary = "$role mode, $connectedCount connected",
+                lastNearbyEvent = type,
+            )
+        }
+        syncControllerSummaries()
+        appendEvent("nearby:$type")
+    }
+
+    private fun onSensorEvent(event: SensorNativeEvent) {
+        motionDetectionController.handleSensorEvent(event)
+        val localOffsetNanos = when (event) {
+            is SensorNativeEvent.FrameStats -> event.hostSensorMinusElapsedNanos
+            is SensorNativeEvent.State -> event.hostSensorMinusElapsedNanos
+            is SensorNativeEvent.Trigger -> null
+            is SensorNativeEvent.Diagnostic -> null
+            is SensorNativeEvent.Error -> null
+        }
+        if (localOffsetNanos != null) {
+            val isHost = raceSessionController.uiState.value.networkRole == SessionNetworkRole.HOST
+            raceSessionController.updateClockState(
+                localSensorMinusElapsedNanos = localOffsetNanos,
+                hostSensorMinusElapsedNanos = if (isHost) localOffsetNanos else raceSessionController.clockState.value.hostSensorMinusElapsedNanos,
+            )
+        }
+        if (event is SensorNativeEvent.Trigger) {
+            raceSessionController.onLocalMotionTrigger(
+                triggerType = event.trigger.triggerType,
+                splitIndex = event.trigger.splitIndex,
+                triggerSensorNanos = event.trigger.triggerSensorNanos,
+            )
+        }
+        val type = when (event) {
+            is SensorNativeEvent.FrameStats -> "native_frame_stats"
+            is SensorNativeEvent.Trigger -> "native_trigger"
+            is SensorNativeEvent.State -> "native_state"
+            is SensorNativeEvent.Diagnostic -> "native_diagnostic"
+            is SensorNativeEvent.Error -> "native_error"
+        }
+        updateUiState { copy(lastSensorEvent = type) }
+        syncControllerSummaries()
+        appendEvent("sensor:$type")
+    }
+
+    private fun firstConnectedEndpointId(): String? {
+        return nearbyConnectionsManager.connectedEndpoints().firstOrNull()
+    }
+
+    private fun syncControllerSummaries() {
+        val raceState = raceSessionController.uiState.value
+        val clockState = raceSessionController.clockState.value
+        val motionBefore = motionDetectionController.uiState.value
+
+        if (raceState.monitoringActive && !motionBefore.monitoring && shouldRunLocalMonitoring()) {
+            applyLocalMonitoringConfigFromSession()
+            motionDetectionController.startMonitoring()
+        }
+        if (!raceState.monitoringActive && motionBefore.monitoring) {
+            motionDetectionController.stopMonitoring()
+        }
+
+        val motionState = motionDetectionController.uiState.value
+
+        val monitoringSummary = if (motionState.monitoring) {
+            "Monitoring"
+        } else {
+            "Idle"
+        }
+        val clockSummary = when {
+            raceSessionController.hasFreshClockLock() && clockState.hostMinusClientElapsedNanos != null -> {
+                "Locked ${clockState.hostMinusClientElapsedNanos}ns"
             }
 
-            "stopHosting" -> {
-                stopHosting()
-                result.success(null)
+            clockState.hostMinusClientElapsedNanos != null -> {
+                "Stale ${clockState.hostMinusClientElapsedNanos}ns"
             }
 
-            "startDiscovery" -> {
-                val serviceId = stringArg(call, "serviceId", result) ?: return
-                val strategy = strategyArg(call)
-                startDiscovery(serviceId, strategy, result)
+            else -> "Unlocked"
+        }
+        val chirpSummary = when {
+            raceSessionController.hasFreshChirpLock() && clockState.chirpHostMinusClientElapsedNanos != null -> {
+                "Locked ${clockState.chirpHostMinusClientElapsedNanos}ns"
             }
 
-            "stopDiscovery" -> {
-                stopDiscovery()
-                result.success(null)
+            clockState.chirpHostMinusClientElapsedNanos != null -> {
+                "Stale ${clockState.chirpHostMinusClientElapsedNanos}ns"
             }
 
-            "requestConnection" -> {
-                val endpointId = stringArg(call, "endpointId", result) ?: return
-                val endpointName = stringArg(call, "endpointName", result) ?: return
-                requestConnection(endpointId, endpointName, result)
-            }
-
-            "sendBytes" -> {
-                val endpointId = stringArg(call, "endpointId", result) ?: return
-                val messageJson = stringArg(call, "messageJson", result) ?: return
-                sendBytes(endpointId, messageJson, result)
-            }
-            "configureNativeClockSyncHost" -> {
-                configureNativeClockSyncHost(call, result)
-            }
-            "getChirpCapabilities" -> getChirpCapabilities(result)
-            "startChirpSync" -> startChirpSync(call, result)
-            "stopChirpSync" -> {
-                acousticChirpSyncEngine.stop()
-                result.success(null)
-            }
-            "clearChirpSync" -> {
-                acousticChirpSyncEngine.clear()
-                result.success(null)
-            }
-
-            "disconnect" -> {
-                val endpointId = stringArg(call, "endpointId", result) ?: return
-                disconnect(endpointId)
-                result.success(null)
-            }
-
-            "stopAll" -> {
-                stopAll()
-                result.success(null)
-            }
-
-            else -> result.notImplemented()
+            else -> "Unlocked"
+        }
+        updateUiState {
+            copy(
+                stage = raceState.stage,
+                networkRole = raceState.networkRole,
+                sessionSummary = raceState.stage.name.lowercase(),
+                monitoringSummary = monitoringSummary,
+                clockSummary = clockSummary,
+                chirpSummary = chirpSummary,
+                startedSensorNanos = raceState.timeline.hostStartSensorNanos,
+                splitSensorNanos = raceState.timeline.hostSplitSensorNanos,
+                stoppedSensorNanos = raceState.timeline.hostStopSensorNanos,
+                devices = raceState.devices,
+                canGoToLobby = raceSessionController.canGoToLobby(),
+                canStartMonitoring = raceSessionController.canStartMonitoring(),
+                canShowSplitControls = raceSessionController.canShowSplitControls(),
+                discoveredEndpoints = raceState.discoveredEndpoints,
+                connectedEndpoints = raceState.connectedEndpoints,
+                networkSummary = "${nearbyConnectionsManager.currentRole().name.lowercase()} mode, ${raceState.connectedEndpoints.size} connected",
+            )
         }
     }
 
-    private fun stringArg(
-        call: MethodCall,
-        key: String,
-        result: MethodChannel.Result,
-    ): String? {
-        val value = call.argument<String>(key)
-        if (value.isNullOrBlank()) {
-            result.error("bad_args", "Missing required argument '$key'.", null)
-            return null
-        }
-        return value
+    private fun appendEvent(message: String) {
+        val previous = uiState.value.recentEvents
+        val updated = (listOf(message) + previous).take(10)
+        updateUiState { copy(recentEvents = updated) }
     }
 
-    private fun strategyArg(call: MethodCall): NearbyTransportStrategy {
-        val value = call.argument<String>("strategy")
-        return NearbyTransportStrategy.fromWireValue(value)
+    private fun deniedPermissions(): List<String> {
+        return requiredPermissions().filter { permission ->
+            ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun requiredPermissions(): List<String> {
+        val permissions = mutableListOf(
+            Manifest.permission.CAMERA,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.RECORD_AUDIO,
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions += Manifest.permission.NEARBY_WIFI_DEVICES
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions += Manifest.permission.BLUETOOTH_ADVERTISE
+            permissions += Manifest.permission.BLUETOOTH_CONNECT
+            permissions += Manifest.permission.BLUETOOTH_SCAN
+        }
+        return permissions.distinct()
     }
 
     private fun localEndpointName(): String {
@@ -242,537 +440,34 @@ class MainActivity : FlutterActivity(), ActivityCompat.OnRequestPermissionsResul
         return "Android Device"
     }
 
-    private fun requestPermissions(result: MethodChannel.Result) {
-        if (pendingPermissionResult != null) {
-            result.error("permissions_in_flight", "A permission request is already running.", null)
-            return
+    private fun localDeviceId(): String {
+        val androidId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+            ?.trim()
+            .orEmpty()
+        if (androidId.isNotEmpty()) {
+            return "android-$androidId"
         }
-        val denied = deniedPermissions()
-        if (denied.isEmpty()) {
-            val payload = mapOf(
-                "granted" to true,
-                "denied" to emptyList<String>(),
-            )
-            result.success(payload)
-            emitEvent(
-                mapOf(
-                    "type" to "permission_status",
-                    "granted" to true,
-                    "denied" to emptyList<String>(),
-                ),
-            )
-            return
-        }
+        return "local-${Build.DEVICE.orEmpty()}"
+    }
 
-        pendingPermissionResult = result
-        ActivityCompat.requestPermissions(
-            this,
-            denied.toTypedArray(),
-            PERMISSIONS_REQUEST_CODE,
+    private fun shouldRunLocalMonitoring(): Boolean {
+        return raceSessionController.localDeviceRole() != SessionDeviceRole.UNASSIGNED
+    }
+
+    private fun applyLocalMonitoringConfigFromSession() {
+        val current = motionDetectionController.uiState.value.config
+        val cameraFacing = when (raceSessionController.localCameraFacing()) {
+            SessionCameraFacing.FRONT -> MotionCameraFacing.FRONT
+            SessionCameraFacing.REAR -> MotionCameraFacing.REAR
+        }
+        val next = current.copy(
+            cameraFacing = cameraFacing,
+            highSpeedEnabled = raceSessionController.localHighSpeedEnabled(),
         )
+        motionDetectionController.updateConfig(next)
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<String>,
-        grantResults: IntArray,
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode != PERMISSIONS_REQUEST_CODE) {
-            return
-        }
-
-        val callback = pendingPermissionResult ?: return
-        pendingPermissionResult = null
-
-        val denied = deniedPermissions()
-        val granted = denied.isEmpty()
-        callback.success(
-            mapOf(
-                "granted" to granted,
-                "denied" to denied,
-            ),
-        )
-
-        emitEvent(
-            mapOf(
-                "type" to "permission_status",
-                "granted" to granted,
-                "denied" to denied,
-            ),
-        )
-    }
-
-    private fun startHosting(
-        serviceId: String,
-        endpointName: String,
-        strategy: NearbyTransportStrategy,
-        result: MethodChannel.Result,
-    ) {
-        normalizeForRole(NearbyRole.HOST, strategy)
-        val effectiveEndpointName = localEndpointName().takeIf { it.isNotBlank() } ?: endpointName
-        val options = AdvertisingOptions.Builder()
-            .setStrategy(strategy.nearbyStrategy)
-            .build()
-        connectionsClient
-            .startAdvertising(effectiveEndpointName, serviceId, connectionLifecycleCallback, options)
-            .addOnSuccessListener { result.success(null) }
-            .addOnFailureListener { error ->
-                clearTransientState()
-                emitError("startHosting failed: ${error.localizedMessage ?: "unknown"}")
-                result.error("start_hosting_failed", error.localizedMessage, null)
-            }
-    }
-
-    private fun stopHosting() {
-        connectionsClient.stopAdvertising()
-        connectionsClient.stopAllEndpoints()
-        clearTransientState()
-        activeRole = NearbyRole.NONE
-        activeStrategy = NearbyTransportStrategy.STAR
-    }
-
-    private fun startDiscovery(
-        serviceId: String,
-        strategy: NearbyTransportStrategy,
-        result: MethodChannel.Result,
-    ) {
-        normalizeForRole(NearbyRole.CLIENT, strategy)
-        val options = DiscoveryOptions.Builder()
-            .setStrategy(strategy.nearbyStrategy)
-            .build()
-        connectionsClient
-            .startDiscovery(serviceId, endpointDiscoveryCallback, options)
-            .addOnSuccessListener { result.success(null) }
-            .addOnFailureListener { error ->
-                clearTransientState()
-                emitError("startDiscovery failed: ${error.localizedMessage ?: "unknown"}")
-                result.error("start_discovery_failed", error.localizedMessage, null)
-            }
-    }
-
-    private fun stopDiscovery() {
-        connectionsClient.stopDiscovery()
-        connectionsClient.stopAllEndpoints()
-        clearTransientState()
-        activeRole = NearbyRole.NONE
-        activeStrategy = NearbyTransportStrategy.STAR
-    }
-
-    private fun requestConnection(
-        endpointId: String,
-        endpointName: String,
-        result: MethodChannel.Result,
-    ) {
-        if (activeRole != NearbyRole.CLIENT) {
-            val message = "requestConnection ignored: not in client mode."
-            emitError(message)
-            result.error("invalid_role", message, null)
-            return
-        }
-        if (connectedEndpointIds.isNotEmpty() && !connectedEndpointIds.contains(endpointId)) {
-            val message = "requestConnection ignored: already connected to another endpoint."
-            emitError(message)
-            result.error("already_connected", message, null)
-            return
-        }
-        if (pendingEndpointId != null && pendingEndpointId != endpointId) {
-            val message = "requestConnection ignored: another connection is pending."
-            emitError(message)
-            result.error("pending_connection", message, null)
-            return
-        }
-        if (requestedEndpointId != null && requestedEndpointId != endpointId) {
-            val message = "requestConnection ignored: request already in flight."
-            emitError(message)
-            result.error("request_in_flight", message, null)
-            return
-        }
-
-        requestedEndpointId = endpointId
-        val effectiveEndpointName = localEndpointName().takeIf { it.isNotBlank() } ?: endpointName
-        connectionsClient
-            .requestConnection(effectiveEndpointName, endpointId, connectionLifecycleCallback)
-            .addOnSuccessListener { result.success(null) }
-            .addOnFailureListener { error ->
-                if (requestedEndpointId == endpointId) {
-                    requestedEndpointId = null
-                }
-                emitError("requestConnection failed: ${error.localizedMessage ?: "unknown"}")
-                result.error("request_connection_failed", error.localizedMessage, null)
-            }
-    }
-
-    private fun sendBytes(
-        endpointId: String,
-        messageJson: String,
-        result: MethodChannel.Result,
-    ) {
-        if (!connectedEndpointIds.contains(endpointId)) {
-            val message = "sendBytes ignored: endpoint not connected ($endpointId)."
-            emitError(message)
-            result.error("endpoint_not_connected", message, null)
-            return
-        }
-        val payload = Payload.fromBytes(messageJson.toByteArray(StandardCharsets.UTF_8))
-        connectionsClient
-            .sendPayload(endpointId, payload)
-            .addOnSuccessListener { result.success(null) }
-            .addOnFailureListener { error ->
-                emitError("sendBytes failed: ${error.localizedMessage ?: "unknown"}")
-                result.error("send_payload_failed", error.localizedMessage, null)
-            }
-    }
-
-    private fun configureNativeClockSyncHost(call: MethodCall, result: MethodChannel.Result) {
-        nativeClockSyncHostEnabled = call.argument<Boolean>("enabled") == true
-        nativeClockSyncRequireSensorDomain = call.argument<Boolean>("requireSensorDomainClock") == true
-        result.success(null)
-    }
-
-    private fun getChirpCapabilities(result: MethodChannel.Result) {
-        Thread {
-            try {
-                val capabilities = acousticChirpSyncEngine.getCapabilities().toMap()
-                mainHandler.post { result.success(capabilities) }
-            } catch (error: Exception) {
-                val message = error.localizedMessage ?: "unknown"
-                mainHandler.post { result.error("capability_probe_failed", message, null) }
-            }
-        }.start()
-    }
-
-    private fun startChirpSync(call: MethodCall, result: MethodChannel.Result) {
-        val calibrationId = stringArg(call, "calibrationId", result) ?: return
-        val role = call.argument<String>("role")?.trim().orEmpty().ifEmpty { "initiator" }
-        val profile = call.argument<String>("profile")?.trim().orEmpty().ifEmpty { "fallback" }
-        val sampleCount = (call.argument<Number>("sampleCount") ?: 0).toInt().coerceAtLeast(3)
-        val remoteSendElapsedNanos = call.argument<Number>("remoteSendElapsedNanos")?.toLong()
-
-        Thread {
-            try {
-                val response = acousticChirpSyncEngine.startCalibration(
-                    calibrationId = calibrationId,
-                    role = role,
-                    profile = profile,
-                    sampleCount = sampleCount,
-                    remoteSendElapsedNanos = remoteSendElapsedNanos,
-                ) { state ->
-                    emitEvent(
-                        mapOf(
-                            "type" to "chirp_sync_progress",
-                            "calibrationId" to calibrationId,
-                            "state" to state,
-                        ),
-                    )
-                }
-                mainHandler.post { result.success(response.toMap()) }
-            } catch (error: Exception) {
-                val message = error.localizedMessage ?: "unknown"
-                emitEvent(
-                    mapOf(
-                        "type" to "chirp_sync_error",
-                        "calibrationId" to calibrationId,
-                        "message" to message,
-                    ),
-                )
-                mainHandler.post {
-                    result.error("chirp_sync_failed", message, null)
-                }
-            }
-        }.start()
-    }
-
-    private fun disconnect(endpointId: String) {
-        connectionsClient.disconnectFromEndpoint(endpointId)
-        clearEndpointState(endpointId)
-        emitEvent(
-            mapOf(
-                "type" to "endpoint_disconnected",
-                "endpointId" to endpointId,
-            ),
-        )
-    }
-
-    private fun stopAll() {
-        connectionsClient.stopAdvertising()
-        connectionsClient.stopDiscovery()
-        connectionsClient.stopAllEndpoints()
-        clearTransientState()
-        activeRole = NearbyRole.NONE
-        activeStrategy = NearbyTransportStrategy.STAR
-    }
-
-    private fun deniedPermissions(): List<String> {
-        return requiredPermissions()
-            .filter { permission ->
-                ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED
-            }
-    }
-
-    private fun requiredPermissions(): List<String> {
-        val permissions = mutableListOf(
-            Manifest.permission.CAMERA,
-            Manifest.permission.ACCESS_COARSE_LOCATION,
-            Manifest.permission.ACCESS_FINE_LOCATION,
-        )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissions += Manifest.permission.NEARBY_WIFI_DEVICES
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            permissions += Manifest.permission.BLUETOOTH_ADVERTISE
-            permissions += Manifest.permission.BLUETOOTH_CONNECT
-            permissions += Manifest.permission.BLUETOOTH_SCAN
-        }
-        permissions += Manifest.permission.RECORD_AUDIO
-        return permissions.distinct()
-    }
-
-    private fun normalizeForRole(role: NearbyRole, strategy: NearbyTransportStrategy) {
-        connectionsClient.stopAdvertising()
-        connectionsClient.stopDiscovery()
-        connectionsClient.stopAllEndpoints()
-        clearTransientState()
-        activeRole = role
-        activeStrategy = strategy
-    }
-
-    private fun isPointToPointHostBusy(endpointId: String): Boolean {
-        if (activeRole != NearbyRole.HOST) {
-            return false
-        }
-        if (activeStrategy != NearbyTransportStrategy.POINT_TO_POINT) {
-            return false
-        }
-        if (pendingEndpointId != null && pendingEndpointId != endpointId) {
-            return true
-        }
-        return connectedEndpointIds.any { connectedId -> connectedId != endpointId }
-    }
-
-    private fun clearTransientState() {
-        pendingEndpointId = null
-        requestedEndpointId = null
-        connectedEndpointIds.clear()
-        endpointNamesById.clear()
-        nativeClockSyncHostEnabled = false
-        nativeClockSyncRequireSensorDomain = false
-        if (::acousticChirpSyncEngine.isInitialized) {
-            acousticChirpSyncEngine.clear()
-        }
-    }
-
-    private fun clearEndpointState(endpointId: String) {
-        if (pendingEndpointId == endpointId) {
-            pendingEndpointId = null
-        }
-        if (requestedEndpointId == endpointId) {
-            requestedEndpointId = null
-        }
-        connectedEndpointIds.remove(endpointId)
-        endpointNamesById.remove(endpointId)
-    }
-
-    private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
-        override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            if (activeRole != NearbyRole.CLIENT) {
-                return
-            }
-            emitEvent(
-                mapOf(
-                    "type" to "endpoint_found",
-                    "endpointId" to endpointId,
-                    "endpointName" to info.endpointName,
-                    "serviceId" to info.serviceId,
-                ),
-            )
-        }
-
-        override fun onEndpointLost(endpointId: String) {
-            clearEndpointState(endpointId)
-            emitEvent(
-                mapOf(
-                    "type" to "endpoint_lost",
-                    "endpointId" to endpointId,
-                ),
-            )
-        }
-    }
-
-    private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
-        override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-            val endpointName = info.endpointName.trim().ifEmpty { endpointId }
-            endpointNamesById[endpointId] = endpointName
-            val hasPendingDifferent = pendingEndpointId != null && pendingEndpointId != endpointId
-            val clientBusy = activeRole == NearbyRole.CLIENT &&
-                connectedEndpointIds.isNotEmpty() &&
-                !connectedEndpointIds.contains(endpointId)
-            val pointToPointHostBusy = isPointToPointHostBusy(endpointId)
-
-            if (hasPendingDifferent || clientBusy || pointToPointHostBusy) {
-                val statusMessage = if (pointToPointHostBusy) {
-                    "Connection rejected: point-to-point host already has a connected peer."
-                } else {
-                    "Connection rejected: competing connection state."
-                }
-                connectionsClient.rejectConnection(endpointId)
-                emitEvent(
-                    mapOf(
-                        "type" to "connection_result",
-                        "endpointId" to endpointId,
-                        "endpointName" to endpointNamesById[endpointId],
-                        "connected" to false,
-                        "statusCode" to ConnectionsStatusCodes.STATUS_ENDPOINT_IO_ERROR,
-                        "statusMessage" to statusMessage,
-                    ),
-                )
-                emitError(statusMessage)
-                return
-            }
-
-            pendingEndpointId = endpointId
-            if (activeRole == NearbyRole.CLIENT) {
-                requestedEndpointId = endpointId
-            }
-
-            // Auto-accept for local open sessions in v1.
-            connectionsClient
-                .acceptConnection(endpointId, payloadCallback)
-                .addOnFailureListener { error ->
-                    clearEndpointState(endpointId)
-                    emitEvent(
-                        mapOf(
-                            "type" to "connection_result",
-                            "endpointId" to endpointId,
-                            "endpointName" to endpointNamesById[endpointId],
-                            "connected" to false,
-                            "statusCode" to ConnectionsStatusCodes.STATUS_ENDPOINT_IO_ERROR,
-                            "statusMessage" to (error.localizedMessage
-                                ?: "acceptConnection failed"),
-                        ),
-                    )
-                    emitError("acceptConnection failed: ${error.localizedMessage ?: "unknown"}")
-                }
-        }
-
-        override fun onConnectionResult(
-            endpointId: String,
-            resolution: ConnectionResolution,
-        ) {
-            val status = resolution.status
-            val isConnected = status.statusCode == ConnectionsStatusCodes.STATUS_OK
-            val endpointName = endpointNamesById[endpointId]
-            if (isConnected) {
-                connectedEndpointIds.add(endpointId)
-                clearEndpointState(endpointId)
-                connectedEndpointIds.add(endpointId)
-                if (activeRole == NearbyRole.CLIENT) {
-                    connectionsClient.stopDiscovery()
-                }
-            } else {
-                clearEndpointState(endpointId)
-            }
-            emitEvent(
-                mapOf(
-                    "type" to "connection_result",
-                    "endpointId" to endpointId,
-                    "endpointName" to endpointName,
-                    "connected" to isConnected,
-                    "statusCode" to status.statusCode,
-                    "statusMessage" to status.statusMessage,
-                ),
-            )
-        }
-
-        override fun onDisconnected(endpointId: String) {
-            clearEndpointState(endpointId)
-            emitEvent(
-                mapOf(
-                    "type" to "endpoint_disconnected",
-                    "endpointId" to endpointId,
-                ),
-            )
-        }
-    }
-
-    private val payloadCallback = object : PayloadCallback() {
-        override fun onPayloadReceived(endpointId: String, payload: Payload) {
-            val bytes = payload.asBytes() ?: return
-            val message = String(bytes, StandardCharsets.UTF_8)
-            if (tryRespondToClockSyncRequest(endpointId, message)) {
-                return
-            }
-            emitEvent(
-                mapOf(
-                    "type" to "payload_received",
-                    "endpointId" to endpointId,
-                    "message" to message,
-                ),
-            )
-        }
-
-        override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
-            // Byte payloads are handled in onPayloadReceived; transfer progress is not needed for v1.
-        }
-    }
-
-    private fun tryRespondToClockSyncRequest(endpointId: String, message: String): Boolean {
-        if (activeRole != NearbyRole.HOST || !nativeClockSyncHostEnabled) {
-            return false
-        }
-        if (!connectedEndpointIds.contains(endpointId)) {
-            return false
-        }
-        val request = try {
-            JSONObject(message)
-        } catch (_: JSONException) {
-            return false
-        }
-        if (request.optString("type") != "clock_sync_request") {
-            return false
-        }
-        if (!request.has("clientSendElapsedNanos")) {
-            return true
-        }
-        val clientSendElapsedNanos = request.optLong("clientSendElapsedNanos", Long.MIN_VALUE)
-        if (clientSendElapsedNanos == Long.MIN_VALUE) {
-            return true
-        }
-        val hostReceiveElapsedNanos = nowNativeClockSyncElapsedNanos() ?: return true
-        val hostSendElapsedNanos = nowNativeClockSyncElapsedNanos() ?: return true
-        val response = JSONObject()
-            .put("type", "clock_sync_response")
-            .put("clientSendElapsedNanos", clientSendElapsedNanos)
-            .put("hostReceiveElapsedNanos", hostReceiveElapsedNanos)
-            .put("hostSendElapsedNanos", hostSendElapsedNanos)
-            .toString()
-        val payload = Payload.fromBytes(response.toByteArray(StandardCharsets.UTF_8))
-        connectionsClient
-            .sendPayload(endpointId, payload)
-            .addOnFailureListener { error ->
-                emitError("native clock sync response failed: ${error.localizedMessage ?: "unknown"}")
-            }
-        return true
-    }
-
-    private fun nowNativeClockSyncElapsedNanos(): Long? {
-        return sensorNativeController.currentClockSyncElapsedNanos(
-            maxSensorSampleAgeNanos = SENSOR_ELAPSED_PROJECTION_MAX_AGE_NANOS,
-            requireSensorDomain = nativeClockSyncRequireSensorDomain,
-        )
-    }
-
-    private fun emitError(message: String) {
-        emitEvent(
-            mapOf(
-                "type" to "error",
-                "message" to message,
-            ),
-        )
-    }
-
-    private fun emitEvent(event: Map<String, Any?>) {
-        val sink = eventSink ?: return
-        mainHandler.post { sink.success(event) }
+    private fun updateUiState(update: SprintSyncUiState.() -> SprintSyncUiState) {
+        uiState.value = uiState.value.update()
     }
 }

@@ -2,10 +2,13 @@
   "name": "sprint-sync-tools",
   "private": true,
   "scripts": {
+    "build:debug:apk": "cd android && gradlew.bat :app:assembleDebug",
+    "build:release:apk": "cd android && gradlew.bat :app:assembleRelease",
     "install:debug:devices": "node scripts/install-debug-apk.mjs",
-    "rebuild:debug:devices": "flutter build apk --debug && node scripts/install-debug-apk.mjs",
+    "rebuild:debug:devices": "npm run build:debug:apk && node scripts/install-debug-apk.mjs",
     "install:release:devices": "node scripts/install-release-apk.mjs",
-    "rebuild:release:devices": "flutter build apk --release && node scripts/install-release-apk.mjs",
+    "rebuild:release:devices": "npm run build:release:apk && node scripts/install-release-apk.mjs",
+    "run:debug:devices": "adb shell monkey -p com.paul.sprintsync -c android.intent.category.LAUNCHER 1",
     "install:debug:devices:build": "npm run rebuild:debug:devices",
     "test:maestro:navigation": "maestro test new-workspace/.maestro/flows/navigation/navigation_core.yaml",
     "test:maestro:navigation:continuous": "maestro test --continuous new-workspace/.maestro/flows/navigation/navigation_core.yaml"

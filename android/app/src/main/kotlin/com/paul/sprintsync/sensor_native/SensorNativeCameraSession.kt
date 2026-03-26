@@ -4,6 +4,7 @@ import android.hardware.camera2.CaptureRequest
 import android.os.Handler
 import android.os.SystemClock
 import android.util.Range
+import androidx.activity.ComponentActivity
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.core.Camera
@@ -13,11 +14,10 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
-import io.flutter.embedding.android.FlutterActivity
 import java.util.concurrent.ExecutorService
 
 internal class SensorNativeCameraSession(
-    private val activity: FlutterActivity,
+    private val activity: ComponentActivity,
     private val mainHandler: Handler,
     private val analyzerExecutor: ExecutorService,
     private val analyzer: ImageAnalysis.Analyzer,
