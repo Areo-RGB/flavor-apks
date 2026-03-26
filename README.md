@@ -1,33 +1,22 @@
-# sprint_sync
+# Sprint Sync Android (Kotlin)
 
-Sprint Sync v1
+This repository is the Kotlin/Compose Android app.
 
-## Getting Started
+Flutter code has been moved to the standalone repository at:
 
-This project is a starting point for a Flutter application.
+`C:/Users/paul/projects/photo-finish-flutter`
 
-A few resources to get you started if this is your first Flutter project:
+## Build and Install (Windows)
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+1. `npm run build:debug:apk`
+2. `npm run install:debug:devices`
+3. `npm run run:debug:devices`
 
-## New Relic
+## Native Test Command
 
-The app reads the New Relic application token from the local `.env` file on
-Android and iOS.
+`cd android && gradlew.bat :app:testDebugUnitTest`
 
-Add these keys to `.env`:
+## Notes
 
-```env
-NEW_RELIC_ANDROID_TOKEN=<your-token>
-NEW_RELIC_IOS_TOKEN=<your-token>
-```
-
-When the matching token is present, the Flutter agent starts on app launch and
-navigation tracking is enabled.
-
-No `--dart-define` is needed anymore.
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+- This repository is Android-only.
+- Device details are tracked in `device_specs.md`.
