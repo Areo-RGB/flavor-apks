@@ -4,6 +4,7 @@ import com.paul.sprintsync.core.services.NearbyEvent
 import kotlinx.coroutines.Dispatchers
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -142,5 +143,125 @@ class RaceSessionControllerTest {
 
         assertEquals(600L, controller.uiState.value.timeline.hostStartSensorNanos)
         assertEquals(1_600L, controller.uiState.value.timeline.hostStopSensorNanos)
+    }
+
+    @Test
+    fun `auto ticker does not start NTP burst when fresh GPS lock exists`() {
+        val sentClockSyncRequests = AtomicInteger(0)
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, messageJson, onComplete ->
+                if (SessionClockSyncRequestMessage.tryParse(messageJson) != null) {
+                    sentClockSyncRequests.incrementAndGet()
+                }
+                onComplete(Result.success(Unit))
+            },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.CLIENT)
+        controller.setSessionStage(SessionStage.LOBBY)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-1",
+                endpointName = "peer",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.updateClockState(
+            hostSensorMinusElapsedNanos = 500L,
+            localSensorMinusElapsedNanos = 200L,
+            localGpsUtcOffsetNanos = 1_000L,
+            localGpsFixAgeNanos = 1_000_000_000L,
+            hostGpsUtcOffsetNanos = 900L,
+            hostGpsFixAgeNanos = 1_000_000_000L,
+        )
+
+        Thread.sleep(2500)
+        assertEquals(0, sentClockSyncRequests.get())
+    }
+
+    @Test
+    fun `auto ticker starts NTP burst when GPS lock is unavailable and clock lock is stale`() {
+        val sentClockSyncRequests = AtomicInteger(0)
+        val firstRequestSent = CountDownLatch(1)
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, messageJson, onComplete ->
+                if (SessionClockSyncRequestMessage.tryParse(messageJson) != null) {
+                    sentClockSyncRequests.incrementAndGet()
+                    firstRequestSent.countDown()
+                }
+                onComplete(Result.success(Unit))
+            },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.CLIENT)
+        controller.setSessionStage(SessionStage.LOBBY)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-1",
+                endpointName = "peer",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+
+        assertTrue(firstRequestSent.await(3, TimeUnit.SECONDS))
+        assertTrue(sentClockSyncRequests.get() >= 1)
+    }
+
+    @Test
+    fun `in-progress NTP burst is not cancelled when GPS becomes fresh`() {
+        val sentClockSyncRequests = AtomicInteger(0)
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, messageJson, onComplete ->
+                if (SessionClockSyncRequestMessage.tryParse(messageJson) != null) {
+                    sentClockSyncRequests.incrementAndGet()
+                }
+                onComplete(Result.success(Unit))
+            },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.CLIENT)
+        controller.setSessionStage(SessionStage.LOBBY)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-1",
+                endpointName = "peer",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+
+        controller.startClockSyncBurst(endpointId = "ep-1", sampleCount = 3)
+        assertTrue(controller.uiState.value.clockSyncInProgress)
+        assertEquals(3, sentClockSyncRequests.get())
+
+        controller.updateClockState(
+            hostSensorMinusElapsedNanos = 500L,
+            localSensorMinusElapsedNanos = 200L,
+            localGpsUtcOffsetNanos = 1_000L,
+            localGpsFixAgeNanos = 1_000_000_000L,
+            hostGpsUtcOffsetNanos = 900L,
+            hostGpsFixAgeNanos = 1_000_000_000L,
+        )
+
+        Thread.sleep(2500)
+        assertTrue(controller.uiState.value.clockSyncInProgress)
+        assertEquals(3, sentClockSyncRequests.get())
     }
 }

@@ -124,7 +124,11 @@ class RaceSessionController(
                 if (state.networkRole == SessionNetworkRole.CLIENT && 
                     (state.stage == SessionStage.LOBBY || state.stage == SessionStage.MONITORING)) {
                     val endpointId = state.connectedEndpoints.firstOrNull()
-                    if (endpointId != null && !state.clockSyncInProgress && !hasFreshClockLock(CLOCK_LOCK_VALIDITY_NANOS / 2)) {
+                    if (endpointId != null &&
+                        !state.clockSyncInProgress &&
+                        !hasFreshGpsLock() &&
+                        !hasFreshClockLock(CLOCK_LOCK_VALIDITY_NANOS / 2)
+                    ) {
                         startClockSyncBurst(endpointId)
                     }
                 }

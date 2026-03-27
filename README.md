@@ -14,6 +14,16 @@ Cross-platform app code lives in a separate companion repository in this workspa
 
 `cd android && gradlew.bat :app:testDebugUnitTest`
 
+## Android Quality Commands
+
+From `android/`:
+
+- `./gradlew detekt`
+- `./gradlew ktlintCheck`
+- `./gradlew ktlintFormat`
+- `./gradlew jacocoTestReport`
+- `./gradlew dependencyUpdates`
+
 ## Notes
 
 - This repository is Android-only.
