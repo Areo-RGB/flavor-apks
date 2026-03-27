@@ -507,10 +507,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             monitoringActive = raceState.monitoringActive,
         )
 
-        val cameraModeLabel = when (motionState.cameraFpsMode.wireName) {
-            "hs120" -> "HS"
-            else -> if (motionState.observedFps == null) "INIT" else "NORMAL"
-        }
+        val cameraModeLabel = if (motionState.observedFps == null) "INIT" else "NORMAL"
         val triggerHistory = motionState.triggerHistory.map { trigger ->
             val roleLabel = when (trigger.triggerType.lowercase()) {
                 "start" -> "START"
@@ -544,7 +541,6 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 canStartMonitoring = raceSessionController.canStartMonitoring(),
                 isHost = isHost,
                 localRole = localRole,
-                localHighSpeedEnabled = raceSessionController.localHighSpeedEnabled(),
                 monitoringConnectionTypeLabel = if (hasPeers) "Nearby (auto BT/Wi-Fi Direct)" else "-",
                 monitoringSyncModeLabel = monitoringSyncMode,
                 monitoringLatencyMs = monitoringLatencyMs,
@@ -638,7 +634,6 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         }
         val next = current.copy(
             cameraFacing = cameraFacing,
-            highSpeedEnabled = raceSessionController.localHighSpeedEnabled(),
         )
         motionDetectionController.updateConfig(next)
     }

@@ -32,7 +32,6 @@ data class SessionDevice(
     val name: String,
     val role: SessionDeviceRole,
     val cameraFacing: SessionCameraFacing = SessionCameraFacing.REAR,
-    val highSpeedEnabled: Boolean = false,
     val isLocal: Boolean,
 ) {
     fun toJsonObject(): JSONObject {
@@ -41,7 +40,6 @@ data class SessionDevice(
             .put("name", name)
             .put("role", role.name.lowercase())
             .put("cameraFacing", cameraFacing.name.lowercase())
-            .put("highSpeedEnabled", highSpeedEnabled)
             .put("isLocal", isLocal)
     }
 
@@ -60,7 +58,6 @@ data class SessionDevice(
                 name = name,
                 role = role,
                 cameraFacing = cameraFacing,
-                highSpeedEnabled = decoded.optBoolean("highSpeedEnabled", false),
                 isLocal = decoded.optBoolean("isLocal", false),
             )
         }

@@ -189,144 +189,12 @@ class RoiFrameDiffer {
     }
 }
 
-object HsAnalysisPolicy {
-    fun shouldAnalyzeLiveFrame(streamFrameCount: Long): Boolean {
-        return (streamFrameCount % HsRecordingPolicy.LIVE_ANALYSIS_STRIDE.toLong()) == 0L
-    }
-}
-
-object HsPostRaceRefiner {
-    fun refineRequests(
-        recordedFrames: List<HsRecordedRoiFrame>,
-        requests: List<HsTriggerRefinementRequest>,
-        config: NativeMonitoringConfig,
-        defaultWindowNanos: Long = HsRecordingPolicy.DEFAULT_REFINEMENT_WINDOW_NANOS,
-        emaAlpha: Double = 0.08,
-        hsThresholdScale: Double = HsRecordingPolicy.LIVE_ANALYSIS_STRIDE.toDouble(),
-    ): List<HsTriggerRefinementResult> {
-        if (requests.isEmpty()) {
-            return emptyList()
-        }
-        if (recordedFrames.size < 2) {
-            return requests.map { request ->
-                HsTriggerRefinementResult(
-                    triggerType = request.triggerType,
-                    splitIndex = request.splitIndex,
-                    provisionalSensorNanos = request.triggerSensorNanos,
-                    refinedSensorNanos = request.triggerSensorNanos,
-                    refined = false,
-                )
-            }
-        }
-        val sortedFrames = recordedFrames.sortedBy { it.timestampNanos }
-        return requests.map { request ->
-            refineSingleRequest(
-                sortedFrames = sortedFrames,
-                request = request,
-                threshold = config.threshold,
-                defaultWindowNanos = defaultWindowNanos,
-                emaAlpha = emaAlpha,
-                hsThresholdScale = hsThresholdScale,
-            )
-        }
-    }
-
-    private fun refineSingleRequest(
-        sortedFrames: List<HsRecordedRoiFrame>,
-        request: HsTriggerRefinementRequest,
-        threshold: Double,
-        defaultWindowNanos: Long,
-        emaAlpha: Double,
-        hsThresholdScale: Double,
-    ): HsTriggerRefinementResult {
-        val requestedWindowNanos = request.windowNanos ?: defaultWindowNanos
-        val windowNanos = max(1L, requestedWindowNanos)
-        val windowStartNanos = request.triggerSensorNanos - windowNanos
-        val windowEndNanos = request.triggerSensorNanos + windowNanos
-        val framesInWindow = sortedFrames.filter { frame ->
-            frame.timestampNanos in windowStartNanos..windowEndNanos
-        }
-        if (framesInWindow.size < 2) {
-            return fallbackResult(request = request)
-        }
-
-        var baseline = 0.0
-        var hasBaseline = false
-        for (index in 1 until framesInWindow.size) {
-            val previousFrame = framesInWindow[index - 1]
-            val currentFrame = framesInWindow[index]
-            val rawScore = diffBetween(previousFrame, currentFrame)
-            val effectiveScore = if (!hasBaseline) {
-                rawScore
-            } else {
-                max(0.0, rawScore - baseline)
-            }
-            // HS refinement compares adjacent 120fps frames, so per-frame deltas are smaller than
-            // live 30fps stride-based analysis. Scale to a 30fps-equivalent crossing domain.
-            val scaledEffectiveScore = effectiveScore * hsThresholdScale
-            if (scaledEffectiveScore >= threshold) {
-                return HsTriggerRefinementResult(
-                    triggerType = request.triggerType,
-                    splitIndex = request.splitIndex,
-                    provisionalSensorNanos = request.triggerSensorNanos,
-                    refinedSensorNanos = currentFrame.timestampNanos,
-                    refined = true,
-                    rawScore = rawScore,
-                    baseline = baseline,
-                    effectiveScore = scaledEffectiveScore,
-                )
-            }
-            baseline = if (!hasBaseline) {
-                rawScore
-            } else {
-                (rawScore * emaAlpha) + (baseline * (1.0 - emaAlpha))
-            }
-            hasBaseline = true
-        }
-
-        return fallbackResult(request = request)
-    }
-
-    private fun diffBetween(
-        previousFrame: HsRecordedRoiFrame,
-        currentFrame: HsRecordedRoiFrame,
-    ): Double {
-        val sampleCount = min(
-            min(previousFrame.sampleCount, currentFrame.sampleCount),
-            min(previousFrame.luma.size, currentFrame.luma.size),
-        )
-        if (sampleCount <= 0) {
-            return 0.0
-        }
-        var diffSum = 0L
-        for (index in 0 until sampleCount) {
-            val now = currentFrame.luma[index].toInt() and 0xFF
-            val before = previousFrame.luma[index].toInt() and 0xFF
-            diffSum += abs(now - before)
-        }
-        return diffSum.toDouble() / (sampleCount.toDouble() * 255.0)
-    }
-
-    private fun fallbackResult(request: HsTriggerRefinementRequest): HsTriggerRefinementResult {
-        return HsTriggerRefinementResult(
-            triggerType = request.triggerType,
-            splitIndex = request.splitIndex,
-            provisionalSensorNanos = request.triggerSensorNanos,
-            refinedSensorNanos = request.triggerSensorNanos,
-            refined = false,
-        )
-    }
-}
-
 data class NativeFpsObservation(
     val observedFps: Double?,
-    val shouldDowngradeToNormal: Boolean,
 )
 
 class SensorNativeFpsMonitor(
-    private val lowFpsThreshold: Double,
     private val emaAlpha: Double = 0.15,
-    private val warmupFrames: Int = 30,
 ) {
     private var frameCount = 0L
     private var lastTimestampNanos: Long? = null
@@ -342,18 +210,17 @@ class SensorNativeFpsMonitor(
     @Synchronized
     fun update(
         frameSensorNanos: Long,
-        mode: NativeCameraFpsMode,
     ): NativeFpsObservation {
         frameCount += 1
         val previousTimestamp = lastTimestampNanos
         lastTimestampNanos = frameSensorNanos
         if (previousTimestamp == null) {
-            return NativeFpsObservation(observedFps = null, shouldDowngradeToNormal = false)
+            return NativeFpsObservation(observedFps = null)
         }
 
         val deltaNanos = frameSensorNanos - previousTimestamp
         if (deltaNanos <= 0) {
-            return NativeFpsObservation(observedFps = emaFps, shouldDowngradeToNormal = false)
+            return NativeFpsObservation(observedFps = emaFps)
         }
 
         val instantFps = 1e9 / deltaNanos.toDouble()
@@ -364,13 +231,8 @@ class SensorNativeFpsMonitor(
             (current * (1.0 - emaAlpha)) + (instantFps * emaAlpha)
         }
 
-        val shouldDowngrade = mode == NativeCameraFpsMode.HS120 &&
-            frameCount >= warmupFrames &&
-            (emaFps ?: 0.0) < lowFpsThreshold
-
         return NativeFpsObservation(
             observedFps = emaFps,
-            shouldDowngradeToNormal = shouldDowngrade,
         )
     }
 }

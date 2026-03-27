@@ -10,118 +10,6 @@ import org.junit.Test
 
 class SensorNativeMathTest {
     @Test
-    fun `hs roi recording buffer keeps latest frames within capacity`() {
-        val buffer = HsRoiRecordingBuffer(capacityFrames = 3)
-        buffer.append(HsRecordedRoiFrame(100L, byteArrayOf(1, 2), sampleCount = 2))
-        buffer.append(HsRecordedRoiFrame(110L, byteArrayOf(3, 4), sampleCount = 2))
-        buffer.append(HsRecordedRoiFrame(120L, byteArrayOf(5, 6), sampleCount = 2))
-        buffer.append(HsRecordedRoiFrame(130L, byteArrayOf(7, 8), sampleCount = 2))
-
-        val snapshot = buffer.snapshot()
-        assertEquals(3, snapshot.size)
-        assertEquals(110L, snapshot[0].timestampNanos)
-        assertEquals(120L, snapshot[1].timestampNanos)
-        assertEquals(130L, snapshot[2].timestampNanos)
-    }
-
-    @Test
-    fun `hs live analysis uses fixed stride of four`() {
-        assertFalse(HsAnalysisPolicy.shouldAnalyzeLiveFrame(1))
-        assertFalse(HsAnalysisPolicy.shouldAnalyzeLiveFrame(2))
-        assertFalse(HsAnalysisPolicy.shouldAnalyzeLiveFrame(3))
-        assertTrue(HsAnalysisPolicy.shouldAnalyzeLiveFrame(4))
-        assertFalse(HsAnalysisPolicy.shouldAnalyzeLiveFrame(5))
-        assertTrue(HsAnalysisPolicy.shouldAnalyzeLiveFrame(8))
-    }
-
-    @Test
-    fun `post race refiner selects first threshold crossing inside window`() {
-        val frames = listOf(
-            HsRecordedRoiFrame(100L, byteArrayOf(10, 10, 10, 10), sampleCount = 4),
-            HsRecordedRoiFrame(108L, byteArrayOf(10, 10, 10, 10), sampleCount = 4),
-            HsRecordedRoiFrame(116L, byteArrayOf(30, 30, 30, 30), sampleCount = 4),
-            HsRecordedRoiFrame(124L, byteArrayOf(60, 60, 60, 60), sampleCount = 4),
-        )
-        val requests = listOf(
-            HsTriggerRefinementRequest(
-                triggerSensorNanos = 124L,
-                triggerType = "split",
-                splitIndex = 1,
-                windowNanos = 20L,
-            ),
-        )
-
-        val results = HsPostRaceRefiner.refineRequests(
-            recordedFrames = frames,
-            requests = requests,
-            config = NativeMonitoringConfig.defaults(),
-            defaultWindowNanos = 250_000_000L,
-        )
-
-        assertEquals(1, results.size)
-        assertTrue(results[0].refined)
-        assertEquals(116L, results[0].refinedSensorNanos)
-        assertEquals(124L, results[0].provisionalSensorNanos)
-    }
-
-    @Test
-    fun `post race refiner keeps provisional timestamp when no crossing exists`() {
-        val frames = listOf(
-            HsRecordedRoiFrame(100L, byteArrayOf(10, 10, 10, 10), sampleCount = 4),
-            HsRecordedRoiFrame(108L, byteArrayOf(10, 10, 10, 10), sampleCount = 4),
-            HsRecordedRoiFrame(116L, byteArrayOf(10, 10, 10, 10), sampleCount = 4),
-        )
-        val requests = listOf(
-            HsTriggerRefinementRequest(
-                triggerSensorNanos = 116L,
-                triggerType = "split",
-                splitIndex = 1,
-            ),
-        )
-
-        val results = HsPostRaceRefiner.refineRequests(
-            recordedFrames = frames,
-            requests = requests,
-            config = NativeMonitoringConfig.defaults(),
-            defaultWindowNanos = 250_000_000L,
-        )
-
-        assertEquals(1, results.size)
-        assertFalse(results[0].refined)
-        assertEquals(116L, results[0].refinedSensorNanos)
-    }
-
-    @Test
-    fun `post race refiner scales threshold for hs adjacent-frame cadence`() {
-        val frames = listOf(
-            HsRecordedRoiFrame(100L, byteArrayOf(10, 10, 10, 10), sampleCount = 4),
-            HsRecordedRoiFrame(108L, byteArrayOf(10, 10, 10, 10), sampleCount = 4),
-            HsRecordedRoiFrame(116L, byteArrayOf(12, 12, 12, 12), sampleCount = 4),
-            HsRecordedRoiFrame(124L, byteArrayOf(12, 12, 12, 12), sampleCount = 4),
-        )
-        val requests = listOf(
-            HsTriggerRefinementRequest(
-                triggerSensorNanos = 124L,
-                triggerType = "split",
-                splitIndex = 1,
-                windowNanos = 20L,
-            ),
-        )
-
-        val strictConfig = NativeMonitoringConfig.defaults().copy(threshold = 0.02)
-        val results = HsPostRaceRefiner.refineRequests(
-            recordedFrames = frames,
-            requests = requests,
-            config = strictConfig,
-            defaultWindowNanos = 250_000_000L,
-        )
-
-        assertEquals(1, results.size)
-        assertTrue(results[0].refined)
-        assertEquals(116L, results[0].refinedSensorNanos)
-    }
-
-    @Test
     fun `offline threshold scan backward returns latest threshold crossing`() {
         val metrics = listOf(
             1_000L to 0.009,
@@ -230,18 +118,13 @@ class SensorNativeMathTest {
     }
 
     @Test
-    fun `fps monitor reports no downgrade in normal mode and downgrade in low hs fps`() {
-        val monitor = SensorNativeFpsMonitor(lowFpsThreshold = 80.0, warmupFrames = 3)
-        var observation = monitor.update(frameSensorNanos = 0L, mode = NativeCameraFpsMode.NORMAL)
-        assertFalse(observation.shouldDowngradeToNormal)
-        observation = monitor.update(frameSensorNanos = 16_666_667L, mode = NativeCameraFpsMode.NORMAL)
-        assertFalse(observation.shouldDowngradeToNormal)
-
-        monitor.reset()
-        monitor.update(frameSensorNanos = 0L, mode = NativeCameraFpsMode.HS120)
-        monitor.update(frameSensorNanos = 50_000_000L, mode = NativeCameraFpsMode.HS120)
-        val lowHs = monitor.update(frameSensorNanos = 100_000_000L, mode = NativeCameraFpsMode.HS120)
-        assertTrue(lowHs.shouldDowngradeToNormal)
+    fun `fps monitor tracks observed fps from frame deltas`() {
+        val monitor = SensorNativeFpsMonitor()
+        var observation = monitor.update(frameSensorNanos = 0L)
+        assertNull(observation.observedFps)
+        observation = monitor.update(frameSensorNanos = 16_666_667L)
+        assertNotNull(observation.observedFps)
+        assertTrue((observation.observedFps ?: 0.0) > 0.0)
     }
 
     @Test
@@ -301,22 +184,6 @@ class SensorNativeMathTest {
     fun `selectHighestFrameRateBounds returns null for null or empty`() {
         assertNull(SensorNativeCameraPolicy.selectHighestFrameRateBounds(null))
         assertNull(SensorNativeCameraPolicy.selectHighestFrameRateBounds(emptySet()))
-    }
-
-    @Test
-    fun `selectPreferredHsBounds prioritizes fixed 120 then highest fixed`() {
-        val ranges = listOf(
-            30 to 120,
-            120 to 120,
-            60 to 240,
-        )
-        val selected = SensorNativeCameraPolicy.selectPreferredHsBounds(ranges)
-        assertEquals(120, selected?.first)
-        assertEquals(120, selected?.second)
-
-        val noFixed120 = listOf(30 to 120, 240 to 240)
-        val selectedNoFixed120 = SensorNativeCameraPolicy.selectPreferredHsBounds(noFixed120)
-        assertEquals(240, selectedNoFixed120?.second)
     }
 
     @Test

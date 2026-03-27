@@ -45,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -76,7 +77,6 @@ data class SprintSyncUiState(
     val canStartMonitoring: Boolean = false,
     val isHost: Boolean = false,
     val localRole: SessionDeviceRole = SessionDeviceRole.UNASSIGNED,
-    val localHighSpeedEnabled: Boolean = false,
     val monitoringConnectionTypeLabel: String = "-",
     val monitoringSyncModeLabel: String = "-",
     val monitoringLatencyMs: Int? = null,
@@ -124,8 +124,8 @@ fun SprintSyncApp(
     onStopHosting: () -> Unit,
 ) {
     var showPreview by rememberSaveable { mutableStateOf(true) }
-    val previewAvailable = !uiState.localHighSpeedEnabled
-    val effectiveShowPreview = previewAvailable && showPreview
+    var showDebugInfo by rememberSaveable { mutableStateOf(false) }
+    val effectiveShowPreview = showPreview
 
     Scaffold(
         topBar = {},
@@ -151,13 +151,26 @@ fun SprintSyncApp(
                         },
                         style = MaterialTheme.typography.headlineSmall,
                     )
-                    if (uiState.stage == SessionStage.MONITORING && uiState.isHost) {
-                        SecondaryButton(text = "Stop", onClick = onStopMonitoring)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (uiState.stage == SessionStage.LOBBY && uiState.isHost) {
+                            TextButton(onClick = onStopHosting) {
+                                Text("Stop Hosting")
+                            }
+                        }
+                        if (uiState.stage == SessionStage.MONITORING && uiState.isHost) {
+                            SecondaryButton(text = "Stop", onClick = onStopMonitoring)
+                        }
+                        TextButton(onClick = { showDebugInfo = !showDebugInfo }) {
+                            Text(if (showDebugInfo) "Debug On" else "Debug Off")
+                        }
                     }
                 }
             }
 
-            if (uiState.stage != SessionStage.MONITORING) {
+            if (showDebugInfo && uiState.stage != SessionStage.MONITORING) {
                 item {
                     StatusCard(uiState)
                 }
@@ -165,6 +178,11 @@ fun SprintSyncApp(
 
             when (uiState.stage) {
                 SessionStage.SETUP -> {
+                    if (shouldShowSetupPermissionWarning(uiState.permissionGranted, uiState.deniedPermissions)) {
+                        item {
+                            PermissionWarningCard(uiState.deniedPermissions)
+                        }
+                    }
                     item {
                         SetupActionsCard(
                             permissionGranted = uiState.permissionGranted,
@@ -175,7 +193,10 @@ fun SprintSyncApp(
                         )
                     }
                     item {
-                        ConnectedDevicesListCard(uiState.devices)
+                        ConnectedDevicesListCard(
+                            devices = uiState.devices,
+                            showDebugInfo = showDebugInfo,
+                        )
                     }
                 }
 
@@ -184,50 +205,36 @@ fun SprintSyncApp(
                         LobbyActionsCard(
                             isHost = uiState.isHost,
                             canStartMonitoring = uiState.canStartMonitoring,
-                            timelineStarted = uiState.startedSensorNanos != null,
+                            timelineFinished = uiState.startedSensorNanos != null && uiState.stoppedSensorNanos != null,
                             onStartMonitoring = onStartMonitoring,
                             onResetRun = onResetRun,
-                            onStopHosting = onStopHosting,
                         )
                     }
-                    if (uiState.hasConnectedPeers) {
-                        item {
-                            MonitoringConnectionCard(
-                                connectionTypeLabel = uiState.monitoringConnectionTypeLabel,
-                                syncModeLabel = uiState.monitoringSyncModeLabel,
-                                latencyMs = uiState.monitoringLatencyMs,
-                            )
-                        }
+                    item {
+                        LobbyPeersCard(
+                            devices = uiState.devices,
+                            hasConnectedPeers = uiState.hasConnectedPeers,
+                            connectionTypeLabel = uiState.monitoringConnectionTypeLabel,
+                            syncModeLabel = uiState.monitoringSyncModeLabel,
+                            latencyMs = uiState.monitoringLatencyMs,
+                        )
                     }
                     item {
                         DeviceAssignmentsCard(
                             devices = uiState.devices,
                             editable = uiState.networkRole == SessionNetworkRole.HOST,
+                            showDebugInfo = showDebugInfo,
                             onAssignRole = onAssignRole,
                             onAssignCameraFacing = onAssignCameraFacing,
-                        )
-                    }
-                    item {
-                        TimelineCard(
-                            startedSensorNanos = uiState.startedSensorNanos,
-                            stoppedSensorNanos = uiState.stoppedSensorNanos,
                         )
                     }
                 }
 
                 SessionStage.MONITORING -> {
                     item {
-                        MonitoringSummaryCard(
+                        RunMetricsCard(
+                            uiState = uiState,
                             isHost = uiState.isHost,
-                            localRole = uiState.localRole,
-                            connectionTypeLabel = uiState.monitoringConnectionTypeLabel,
-                            syncModeLabel = uiState.monitoringSyncModeLabel,
-                            latencyMs = uiState.monitoringLatencyMs,
-                            previewAvailable = previewAvailable,
-                            effectiveShowPreview = effectiveShowPreview,
-                            onShowPreviewChanged = { showPreview = it },
-                            previewViewFactory = previewViewFactory,
-                            roiCenterX = uiState.roiCenterX,
                             onResetRun = onResetRun,
                         )
                     }
@@ -237,11 +244,22 @@ fun SprintSyncApp(
                         }
                     }
                     item {
-                        RunMetricsCard(uiState)
+                        MonitoringSummaryCard(
+                            isHost = uiState.isHost,
+                            localRole = uiState.localRole,
+                            connectionTypeLabel = uiState.monitoringConnectionTypeLabel,
+                            syncModeLabel = uiState.monitoringSyncModeLabel,
+                            latencyMs = uiState.monitoringLatencyMs,
+                            effectiveShowPreview = effectiveShowPreview,
+                            onShowPreviewChanged = { showPreview = it },
+                            previewViewFactory = previewViewFactory,
+                            roiCenterX = uiState.roiCenterX,
+                        )
                     }
                     item {
                         AdvancedDetectionCard(
                             uiState = uiState,
+                            showDebugInfo = showDebugInfo,
                             onUpdateThreshold = onUpdateThreshold,
                             onUpdateRoiCenter = onUpdateRoiCenter,
                             onUpdateRoiWidth = onUpdateRoiWidth,
@@ -251,13 +269,13 @@ fun SprintSyncApp(
                 }
             }
 
-            if (uiState.stage != SessionStage.SETUP && uiState.connectedEndpoints.isNotEmpty()) {
+            if (showDebugInfo && uiState.connectedEndpoints.isNotEmpty()) {
                 item {
                     ConnectedCard(uiState.connectedEndpoints)
                 }
             }
 
-            if (uiState.recentEvents.isNotEmpty()) {
+            if (showDebugInfo && uiState.recentEvents.isNotEmpty()) {
                 item {
                     EventsCard(uiState.recentEvents)
                 }
@@ -288,6 +306,24 @@ private fun StatusCard(uiState: SprintSyncUiState) {
 }
 
 @Composable
+private fun PermissionWarningCard(deniedPermissions: List<String>) {
+    SprintSyncCard {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            SectionHeader("Permissions Needed")
+            Text(
+                text = "Grant permissions to host or join nearby devices.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = deniedPermissions.joinToString(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+@Composable
 private fun SetupActionsCard(
     permissionGranted: Boolean,
     setupBusy: Boolean,
@@ -300,12 +336,32 @@ private fun SetupActionsCard(
     SprintSyncCard {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SectionHeader("Network Connection")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (!permissionGranted) {
-                    PrimaryButton(text = "Permissions", onClick = onRequestPermissions, enabled = setupActionsEnabled)
-                }
-                PrimaryButton(text = "Host", onClick = onStartHosting, enabled = setupActionsEnabled)
-                PrimaryButton(text = "Join", onClick = onStartDiscovery, enabled = setupActionsEnabled)
+            if (!permissionGranted) {
+                PrimaryButton(
+                    text = "Grant Permissions",
+                    onClick = onRequestPermissions,
+                    enabled = setupActionsEnabled,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            PrimaryButton(
+                text = "Host",
+                onClick = onStartHosting,
+                enabled = setupActionsEnabled,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            PrimaryButton(
+                text = "Join",
+                onClick = onStartDiscovery,
+                enabled = setupActionsEnabled,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (!permissionGranted) {
+                Text(
+                    text = "Camera and nearby permissions are required.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray,
+                )
             }
         }
     }
@@ -315,21 +371,20 @@ private fun SetupActionsCard(
 private fun LobbyActionsCard(
     isHost: Boolean,
     canStartMonitoring: Boolean,
-    timelineStarted: Boolean,
+    timelineFinished: Boolean,
     onStartMonitoring: () -> Unit,
     onResetRun: () -> Unit,
-    onStopHosting: () -> Unit,
 ) {
     SprintSyncCard {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SectionHeader("Session Actions")
-            PrimaryButton(text = "Start Monitoring", onClick = onStartMonitoring, enabled = isHost && canStartMonitoring)
-            if (isHost) {
-                OutlinedButton(onClick = onStopHosting) {
-                    Text("Stop Hosting")
-                }
-            }
-            if (isHost && timelineStarted) {
+            PrimaryButton(
+                text = "Start Monitoring",
+                onClick = onStartMonitoring,
+                enabled = isHost && canStartMonitoring,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (isHost && timelineFinished) {
                 OutlinedButton(onClick = onResetRun) {
                     Text("Reset Run")
                 }
@@ -339,9 +394,50 @@ private fun LobbyActionsCard(
 }
 
 @Composable
+private fun LobbyPeersCard(
+    devices: List<SessionDevice>,
+    hasConnectedPeers: Boolean,
+    connectionTypeLabel: String,
+    syncModeLabel: String,
+    latencyMs: Int?,
+) {
+    val latencyLabel = when (syncModeLabel) {
+        "NTP" -> if (latencyMs == null) "-" else "$latencyMs ms"
+        "GPS" -> "GPS"
+        else -> "-"
+    }
+    SprintSyncCard {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            SectionHeader("Peers")
+            val peerNames = devices
+                .filterNot { it.isLocal }
+                .map { it.name }
+            if (peerNames.isEmpty()) {
+                Text("No peers connected yet.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            } else {
+                peerNames.forEach { name ->
+                    Text(name, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            Text(
+                text = if (hasConnectedPeers) "Connection: $connectionTypeLabel" else "Connection: Waiting for peers",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray,
+            )
+            Text(
+                text = "Sync: $syncModeLabel · Latency: $latencyLabel",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray,
+            )
+        }
+    }
+}
+
+@Composable
 private fun DeviceAssignmentsCard(
     devices: List<SessionDevice>,
     editable: Boolean,
+    showDebugInfo: Boolean,
     onAssignRole: (String, SessionDeviceRole) -> Unit,
     onAssignCameraFacing: (String, SessionCameraFacing) -> Unit,
 ) {
@@ -359,6 +455,7 @@ private fun DeviceAssignmentsCard(
                 DeviceAssignmentRow(
                     device = device,
                     editable = editable,
+                    showDebugInfo = showDebugInfo,
                     onAssignRole = onAssignRole,
                     onAssignCameraFacing = onAssignCameraFacing,
                 )
@@ -371,6 +468,7 @@ private fun DeviceAssignmentsCard(
 private fun DeviceAssignmentRow(
     device: SessionDevice,
     editable: Boolean,
+    showDebugInfo: Boolean,
     onAssignRole: (String, SessionDeviceRole) -> Unit,
     onAssignCameraFacing: (String, SessionCameraFacing) -> Unit,
 ) {
@@ -387,7 +485,9 @@ private fun DeviceAssignmentRow(
                 text = if (device.isLocal) "${device.name} (Local)" else device.name,
                 fontWeight = FontWeight.Medium,
             )
-            Text(device.id, style = MaterialTheme.typography.bodySmall)
+            if (showDebugInfo) {
+                Text(device.id, style = MaterialTheme.typography.bodySmall)
+            }
             if (editable) {
                 val roleOptions = buildList {
                     add(SessionDeviceRole.UNASSIGNED)
@@ -451,12 +551,10 @@ private fun MonitoringSummaryCard(
     connectionTypeLabel: String,
     syncModeLabel: String,
     latencyMs: Int?,
-    previewAvailable: Boolean,
     effectiveShowPreview: Boolean,
     onShowPreviewChanged: (Boolean) -> Unit,
     previewViewFactory: SensorNativePreviewViewFactory,
     roiCenterX: Double,
-    onResetRun: () -> Unit,
 ) {
     val latencyLabel = when (syncModeLabel) {
         "NTP" -> if (latencyMs == null) "-" else "$latencyMs ms"
@@ -484,10 +582,8 @@ private fun MonitoringSummaryCard(
                         connectionTypeLabel = connectionTypeLabel,
                         syncModeLabel = syncModeLabel,
                         latencyLabel = latencyLabel,
-                        previewAvailable = previewAvailable,
                         effectiveShowPreview = effectiveShowPreview,
                         onShowPreviewChanged = onShowPreviewChanged,
-                        onResetRun = onResetRun,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -499,10 +595,8 @@ private fun MonitoringSummaryCard(
                         connectionTypeLabel = connectionTypeLabel,
                         syncModeLabel = syncModeLabel,
                         latencyLabel = latencyLabel,
-                        previewAvailable = previewAvailable,
                         effectiveShowPreview = effectiveShowPreview,
                         onShowPreviewChanged = onShowPreviewChanged,
-                        onResetRun = onResetRun,
                     )
                     if (effectiveShowPreview) {
                         Box(
@@ -528,10 +622,8 @@ private fun MonitoringPreviewInfoPanel(
     connectionTypeLabel: String,
     syncModeLabel: String,
     latencyLabel: String,
-    previewAvailable: Boolean,
     effectiveShowPreview: Boolean,
     onShowPreviewChanged: (Boolean) -> Unit,
-    onResetRun: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -547,11 +639,7 @@ private fun MonitoringPreviewInfoPanel(
                 "Role: ${sessionDeviceRoleLabel(localRole)}",
                 fontWeight = FontWeight.Bold,
             )
-            if (isHost) {
-                TextButton(onClick = onResetRun) {
-                    Text("Reset")
-                }
-            } else {
+            if (!isHost) {
                 Text("Waiting for host...", color = Color.Gray, fontStyle = FontStyle.Italic)
             }
         }
@@ -565,32 +653,9 @@ private fun MonitoringPreviewInfoPanel(
             Spacer(Modifier.width(8.dp))
             Switch(
                 checked = effectiveShowPreview,
-                enabled = previewAvailable,
+                enabled = true,
                 onCheckedChange = onShowPreviewChanged,
             )
-            if (!previewAvailable) {
-                Spacer(Modifier.width(8.dp))
-                Text("Disabled in HS", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-    }
-}
-
-@Composable
-private fun MonitoringConnectionCard(
-    connectionTypeLabel: String,
-    syncModeLabel: String,
-    latencyMs: Int?,
-) {
-    val latencyLabel = when (syncModeLabel) {
-        "NTP" -> if (latencyMs == null) "-" else "$latencyMs ms"
-        "GPS" -> "GPS"
-        else -> "-"
-    }
-    SprintSyncCard {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Connection: $connectionTypeLabel", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-            Text("Sync: $syncModeLabel · Latency: $latencyLabel", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         }
     }
 }
@@ -647,6 +712,7 @@ private fun PreviewSurface(
 @Composable
 private fun AdvancedDetectionCard(
     uiState: SprintSyncUiState,
+    showDebugInfo: Boolean,
     onUpdateThreshold: (Double) -> Unit,
     onUpdateRoiCenter: (Double) -> Unit,
     onUpdateRoiWidth: (Double) -> Unit,
@@ -700,8 +766,10 @@ private fun AdvancedDetectionCard(
                 Text("Raw score: ${uiState.rawScore?.let { String.format("%.4f", it) } ?: "-"}")
                 Text("Baseline: ${uiState.baseline?.let { String.format("%.4f", it) } ?: "-"}")
                 Text("Effective: ${uiState.effectiveScore?.let { String.format("%.4f", it) } ?: "-"}")
-                MetricDisplay(label = "Frame Sensor Nanos", value = "${uiState.frameSensorNanos ?: "-"}")
-                Text("Frames: ${uiState.processedFrameCount}/${uiState.streamFrameCount}")
+                if (showDebugInfo) {
+                    MetricDisplay(label = "Frame Sensor Nanos", value = "${uiState.frameSensorNanos ?: "-"}")
+                    Text("Frames: ${uiState.processedFrameCount}/${uiState.streamFrameCount}")
+                }
 
                 Spacer(Modifier.height(4.dp))
                 SectionHeader("Recent Triggers")
@@ -718,7 +786,11 @@ private fun AdvancedDetectionCard(
 }
 
 @Composable
-private fun RunMetricsCard(uiState: SprintSyncUiState) {
+private fun RunMetricsCard(
+    uiState: SprintSyncUiState,
+    isHost: Boolean,
+    onResetRun: () -> Unit,
+) {
     val fpsLabel = uiState.observedFps?.let { String.format("%.1f", it) } ?: "--.-"
     val targetSuffix = uiState.targetFpsUpper?.let { " · target $it" } ?: ""
     val finishValue = if (uiState.startedSensorNanos != null && uiState.stoppedSensorNanos != null) {
@@ -726,12 +798,26 @@ private fun RunMetricsCard(uiState: SprintSyncUiState) {
     } else {
         "-"
     }
+    val canReset = shouldShowMonitoringResetAction(
+        isHost = isHost,
+        startedSensorNanos = uiState.startedSensorNanos,
+        stoppedSensorNanos = uiState.stoppedSensorNanos,
+    )
     SprintSyncCard {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             SectionHeader("Sprint Stopwatch")
             Text("Camera: $fpsLabel fps · ${uiState.cameraFpsModeLabel}$targetSuffix", style = MaterialTheme.typography.bodySmall)
             Text("Timer")
-            Text(uiState.elapsedDisplay, style = MaterialTheme.typography.displaySmall.merge(TabularMonospaceTypography))
+            Text(
+                text = uiState.elapsedDisplay,
+                style = MaterialTheme.typography.displayLarge.merge(TabularMonospaceTypography),
+                textAlign = TextAlign.Start,
+            )
+            if (canReset) {
+                TextButton(onClick = onResetRun) {
+                    Text("Reset Run")
+                }
+            }
             Spacer(Modifier.height(2.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -759,13 +845,18 @@ private fun ConnectedCard(connectedEndpoints: Set<String>) {
 }
 
 @Composable
-private fun ConnectedDevicesListCard(devices: List<SessionDevice>) {
+private fun ConnectedDevicesListCard(
+    devices: List<SessionDevice>,
+    showDebugInfo: Boolean,
+) {
     SprintSyncCard {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             SectionHeader("Connected Devices")
             devices.forEach { device ->
                 Text(if (device.isLocal) "${device.name} (Local)" else device.name)
-                Text(device.id, style = MaterialTheme.typography.bodySmall)
+                if (showDebugInfo) {
+                    Text(device.id, style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
     }
@@ -784,26 +875,16 @@ private fun EventsCard(recentEvents: List<String>) {
     }
 }
 
-@Composable
-private fun TimelineCard(
+internal fun shouldShowSetupPermissionWarning(
+    permissionGranted: Boolean,
+    deniedPermissions: List<String>,
+): Boolean = !permissionGranted && deniedPermissions.isNotEmpty()
+
+internal fun shouldShowMonitoringResetAction(
+    isHost: Boolean,
     startedSensorNanos: Long?,
     stoppedSensorNanos: Long?,
-) {
-    SprintSyncCard {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            SectionHeader("Race Timeline")
-            if (startedSensorNanos == null) {
-                Text("Ready to start.")
-                return@Column
-            }
-            Text("Started Sensor Nanos: $startedSensorNanos")
-            if (stoppedSensorNanos != null) {
-                val elapsed = (stoppedSensorNanos - startedSensorNanos).coerceAtLeast(0L)
-                Text("Finished: ${formatDurationNanos(elapsed)}", fontWeight = FontWeight.Medium)
-            }
-        }
-    }
-}
+): Boolean = isHost && startedSensorNanos != null && stoppedSensorNanos != null
 
 private fun formatDurationNanos(nanos: Long): String {
     val totalMillis = (nanos / 1_000_000L).coerceAtLeast(0L)

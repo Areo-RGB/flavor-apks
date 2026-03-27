@@ -258,37 +258,6 @@ internal object SensorNativeCameraPolicy {
         return Range(selectedBounds.first, selectedBounds.second)
     }
 
-    fun selectPreferredHsRange(ranges: Iterable<Range<Int>>?): Range<Int>? {
-        val selectedBounds = selectPreferredHsBounds(
-            ranges?.map { it.lower to it.upper },
-        ) ?: return null
-        return Range(selectedBounds.first, selectedBounds.second)
-    }
-
-    fun selectPreferredHsBounds(bounds: Iterable<Pair<Int, Int>>?): Pair<Int, Int>? {
-        if (bounds == null) {
-            return null
-        }
-        val boundList = bounds.toList()
-        if (boundList.isEmpty()) {
-            return null
-        }
-        val fixedRanges = boundList.filter { it.first == it.second }
-        val preferredFixed120 = fixedRanges.firstOrNull { it.second == 120 }
-        if (preferredFixed120 != null) {
-            return preferredFixed120
-        }
-        val fixedAbove120 = fixedRanges
-            .filter { it.second >= 120 }
-            .maxWithOrNull(compareBy<Pair<Int, Int>> { it.second }.thenBy { it.first })
-        if (fixedAbove120 != null) {
-            return fixedAbove120
-        }
-        return boundList
-            .filter { it.second >= 120 }
-            .maxWithOrNull(compareBy<Pair<Int, Int>> { it.second }.thenBy { it.first })
-    }
-
     fun selectHighestFrameRateBounds(
         bounds: Iterable<Pair<Int, Int>>?,
     ): Pair<Int, Int>? {

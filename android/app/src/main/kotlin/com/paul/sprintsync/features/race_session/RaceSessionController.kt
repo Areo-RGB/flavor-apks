@@ -146,7 +146,6 @@ class RaceSessionController(
                         name = deviceName,
                         role = localDeviceRole(),
                         cameraFacing = localCameraFacing(),
-                        highSpeedEnabled = localHighSpeedEnabled(),
                         isLocal = true,
                     ),
                 )
@@ -299,20 +298,6 @@ class RaceSessionController(
         }
     }
 
-    fun assignHighSpeedEnabled(deviceId: String, enabled: Boolean) {
-        val nextDevices = _uiState.value.devices.map { existing ->
-            if (existing.id == deviceId) {
-                existing.copy(highSpeedEnabled = enabled)
-            } else {
-                existing
-            }
-        }
-        _uiState.value = _uiState.value.copy(devices = nextDevices)
-        if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
-            broadcastSnapshotIfHost()
-        }
-    }
-
     fun startMonitoring(): Boolean {
         if (_uiState.value.networkRole == SessionNetworkRole.HOST && !canStartMonitoring()) {
             _uiState.value = _uiState.value.copy(lastError = "Assign start and stop devices before monitoring")
@@ -430,10 +415,6 @@ class RaceSessionController(
 
     fun localCameraFacing(): SessionCameraFacing {
         return localDeviceFromState().cameraFacing
-    }
-
-    fun localHighSpeedEnabled(): Boolean {
-        return localDeviceFromState().highSpeedEnabled
     }
 
     fun startClockSyncBurst(endpointId: String, sampleCount: Int = DEFAULT_CLOCK_SYNC_SAMPLE_COUNT) {
@@ -823,7 +804,6 @@ class RaceSessionController(
                     name = mappedDevices.firstOrNull { it.id == resolvedSelfId }?.name ?: localDeviceName(),
                     role = mappedDevices.firstOrNull { it.id == resolvedSelfId }?.role ?: SessionDeviceRole.UNASSIGNED,
                     cameraFacing = mappedDevices.firstOrNull { it.id == resolvedSelfId }?.cameraFacing ?: SessionCameraFacing.REAR,
-                    highSpeedEnabled = mappedDevices.firstOrNull { it.id == resolvedSelfId }?.highSpeedEnabled ?: false,
                     isLocal = true,
                 ),
                 mappedDevices,

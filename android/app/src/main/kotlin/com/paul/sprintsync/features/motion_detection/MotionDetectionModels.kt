@@ -25,7 +25,6 @@ data class MotionDetectionConfig(
     val cooldownMs: Int,
     val processEveryNFrames: Int,
     val cameraFacing: MotionCameraFacing,
-    val highSpeedEnabled: Boolean,
 ) {
     fun toJsonString(): String {
         return JSONObject()
@@ -35,7 +34,6 @@ data class MotionDetectionConfig(
             .put("cooldownMs", cooldownMs)
             .put("processEveryNFrames", processEveryNFrames)
             .put("cameraFacing", cameraFacing.wireName)
-            .put("highSpeedEnabled", highSpeedEnabled)
             .toString()
     }
 
@@ -48,7 +46,6 @@ data class MotionDetectionConfig(
                 cooldownMs = 900,
                 processEveryNFrames = 2,
                 cameraFacing = MotionCameraFacing.REAR,
-                highSpeedEnabled = false,
             )
         }
 
@@ -65,7 +62,6 @@ data class MotionDetectionConfig(
                 cooldownMs = decoded.optInt("cooldownMs", defaults().cooldownMs),
                 processEveryNFrames = decoded.optInt("processEveryNFrames", defaults().processEveryNFrames),
                 cameraFacing = MotionCameraFacing.fromWireName(decoded.optString("cameraFacing")),
-                highSpeedEnabled = decoded.optBoolean("highSpeedEnabled", defaults().highSpeedEnabled),
             )
         }
     }

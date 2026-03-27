@@ -10,7 +10,6 @@ enum class NativeCameraFacing(val wireName: String) {
 
 enum class NativeCameraFpsMode(val wireName: String) {
     NORMAL("normal"),
-    HS120("hs120"),
 }
 
 data class NativeMonitoringConfig(
@@ -20,7 +19,6 @@ data class NativeMonitoringConfig(
     val cooldownMs: Int,
     val processEveryNFrames: Int,
     val cameraFacing: NativeCameraFacing,
-    val highSpeedEnabled: Boolean,
 ) {
     companion object {
         fun defaults(): NativeMonitoringConfig {
@@ -31,7 +29,6 @@ data class NativeMonitoringConfig(
                 cooldownMs = 900,
                 processEveryNFrames = 1,
                 cameraFacing = NativeCameraFacing.REAR,
-                highSpeedEnabled = false,
             )
         }
 
@@ -70,8 +67,6 @@ data class NativeMonitoringConfig(
                 cameraFacing = nativeCameraFacingFromWire(
                     raw["cameraFacing"]?.toString(),
                 ) ?: defaults.cameraFacing,
-                highSpeedEnabled = (raw["highSpeedEnabled"] as? Boolean)
-                    ?: defaults.highSpeedEnabled,
             )
         }
     }
@@ -90,78 +85,6 @@ data class NativeFrameStats(
     val effectiveScore: Double,
     val frameSensorNanos: Long,
     val triggerEvent: NativeTriggerEvent?,
-)
-
-object HsRecordingPolicy {
-    const val MAX_SECONDS = 10
-    const val TARGET_FPS = 60
-    const val DEFAULT_CAPACITY_FRAMES = MAX_SECONDS * TARGET_FPS
-    const val LIVE_ANALYSIS_STRIDE = 4
-    const val DEFAULT_REFINEMENT_WINDOW_NANOS = 250_000_000L
-}
-
-data class HsRecordedRoiFrame(
-    val timestampNanos: Long,
-    val luma: ByteArray,
-    val sampleCount: Int,
-)
-
-class HsRoiRecordingBuffer(
-    capacityFrames: Int = HsRecordingPolicy.DEFAULT_CAPACITY_FRAMES,
-) {
-    private val boundedCapacityFrames = max(1, capacityFrames)
-    private val frames = ArrayDeque<HsRecordedRoiFrame>(boundedCapacityFrames)
-
-    @Synchronized
-    fun append(frame: HsRecordedRoiFrame) {
-        val safeSampleCount = min(frame.sampleCount, frame.luma.size)
-        if (safeSampleCount <= 0) {
-            return
-        }
-        while (frames.size >= boundedCapacityFrames) {
-            frames.removeFirst()
-        }
-        val safeFrame = HsRecordedRoiFrame(
-            timestampNanos = frame.timestampNanos,
-            luma = frame.luma.copyOf(safeSampleCount),
-            sampleCount = safeSampleCount,
-        )
-        frames.addLast(safeFrame)
-    }
-
-    @Synchronized
-    fun clear() {
-        frames.clear()
-    }
-
-    @Synchronized
-    fun snapshot(): List<HsRecordedRoiFrame> {
-        return frames.map { frame ->
-            HsRecordedRoiFrame(
-                timestampNanos = frame.timestampNanos,
-                luma = frame.luma.copyOf(frame.sampleCount),
-                sampleCount = frame.sampleCount,
-            )
-        }
-    }
-}
-
-data class HsTriggerRefinementRequest(
-    val triggerSensorNanos: Long,
-    val triggerType: String,
-    val splitIndex: Int,
-    val windowNanos: Long? = null,
-)
-
-data class HsTriggerRefinementResult(
-    val triggerType: String,
-    val splitIndex: Int,
-    val provisionalSensorNanos: Long,
-    val refinedSensorNanos: Long,
-    val refined: Boolean,
-    val rawScore: Double? = null,
-    val baseline: Double? = null,
-    val effectiveScore: Double? = null,
 )
 
 private fun clampDouble(value: Double, minValue: Double, maxValue: Double): Double {

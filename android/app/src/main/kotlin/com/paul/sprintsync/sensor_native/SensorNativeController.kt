@@ -18,7 +18,6 @@ import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 
 class SensorNativeController(
@@ -28,16 +27,14 @@ class SensorNativeController(
         private const val TAG = "SensorNativeController"
         private const val PREVIEW_REBIND_RETRY_DELAY_MS = 200L
         private const val PREVIEW_REBIND_MAX_ATTEMPTS = 3
-        private const val HS_FALLBACK_TRIGGER_FPS = 80.0
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val analyzerExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val frameDiffer = RoiFrameDiffer()
     private val offsetSmoother = SensorOffsetSmoother()
-    private val fpsMonitor = SensorNativeFpsMonitor(lowFpsThreshold = HS_FALLBACK_TRIGGER_FPS)
+    private val fpsMonitor = SensorNativeFpsMonitor()
     private val analysisInFlight = AtomicBoolean(false)
-    private val hsRoiRecorder = HsRoiRecordingBuffer()
 
     @Volatile
     private var eventListener: ((SensorNativeEvent) -> Unit)? = null
@@ -96,15 +93,6 @@ class SensorNativeController(
             analyzerExecutor = analyzerExecutor,
             analyzer = this,
             emitError = ::emitError,
-        )
-    }
-
-    private val hsSession: Camera2HsSessionManager by lazy {
-        Camera2HsSessionManager(
-            activity = activity,
-            mainHandler = mainHandler,
-            emitError = ::emitError,
-            emitDiagnostic = ::emitDiagnostic,
         )
     }
 
@@ -173,12 +161,10 @@ class SensorNativeController(
         mainHandler.post {
             previewView = targetPreviewView
             logRuntimeDiagnostic(
-                "preview attached: monitoring=$monitoring hasProvider=${cameraProvider != null} highSpeed=${config.highSpeedEnabled}",
+                "preview attached: monitoring=$monitoring hasProvider=${cameraProvider != null}",
             )
-            if (!config.highSpeedEnabled) {
-                rebindCameraUseCasesIfMonitoring()
-                schedulePreviewRebindRetriesIfMonitoring()
-            }
+            rebindCameraUseCasesIfMonitoring()
+            schedulePreviewRebindRetriesIfMonitoring()
         }
     }
 
@@ -189,12 +175,10 @@ class SensorNativeController(
             }
             previewView = null
             logRuntimeDiagnostic(
-                "preview detached: monitoring=$monitoring hasProvider=${cameraProvider != null} highSpeed=${config.highSpeedEnabled}",
+                "preview detached: monitoring=$monitoring hasProvider=${cameraProvider != null}",
             )
             cancelPreviewRebindRetries()
-            if (!config.highSpeedEnabled) {
-                rebindCameraUseCasesIfMonitoring()
-            }
+            rebindCameraUseCasesIfMonitoring()
         }
     }
 
@@ -228,7 +212,7 @@ class SensorNativeController(
             onComplete(Result.failure(IllegalStateException(message)))
             return
         }
-        config = monitoringConfig.copy(highSpeedEnabled = false)
+        config = monitoringConfig
         detectionMath.updateConfig(config)
         if (monitoring) {
             emitState("monitoring")
@@ -261,7 +245,7 @@ class SensorNativeController(
 
     fun updateNativeConfig(monitoringConfig: NativeMonitoringConfig) {
         val previousFacing = config.cameraFacing
-        config = monitoringConfig.copy(highSpeedEnabled = false)
+        config = monitoringConfig
         detectionMath.updateConfig(config)
 
         if (monitoring && config.cameraFacing != previousFacing) {
@@ -274,30 +258,9 @@ class SensorNativeController(
         resetNativeRunInternal()
     }
 
-    fun refineHsTriggers(requests: List<HsTriggerRefinementRequest>): HsTriggerRefinementResponse {
-        if (requests.isEmpty()) {
-            return HsTriggerRefinementResponse(
-                results = emptyList(),
-                recordedFrameCount = 0,
-            )
-        }
-
-        val recordedFrames = hsRoiRecorder.snapshot()
-        val refined = HsPostRaceRefiner.refineRequests(
-            recordedFrames = recordedFrames,
-            requests = requests,
-            config = config,
-            defaultWindowNanos = HsRecordingPolicy.DEFAULT_REFINEMENT_WINDOW_NANOS,
-        )
-        return HsTriggerRefinementResponse(
-            results = refined,
-            recordedFrameCount = recordedFrames.size,
-        )
-    }
-
     override fun analyze(image: ImageProxy) {
         try {
-            if (!monitoring || config.highSpeedEnabled) {
+            if (!monitoring) {
                 return
             }
             val frameSensorNanos = image.imageInfo.timestamp
@@ -335,71 +298,10 @@ class SensorNativeController(
         }
     }
 
-    private fun onHsFrameConsumed(timestampNanos: Long) {
-        if (!monitoring || !config.highSpeedEnabled) {
-            return
-        }
-        val smoothedOffset = updateStreamTelemetry(timestampNanos)
-        val activeConfig = config
-        val shouldAnalyzeLiveFrame = HsAnalysisPolicy.shouldAnalyzeLiveFrame(streamFrameCount)
-        hsSession.requestReadback(activeConfig.roiCenterX, activeConfig.roiWidth) { result ->
-            if (result == null) {
-                return@requestReadback
-            }
-            hsRoiRecorder.append(
-                HsRecordedRoiFrame(
-                    timestampNanos = result.timestampNanos,
-                    luma = result.luma,
-                    sampleCount = result.sampleCount,
-                ),
-            )
-            if (!shouldAnalyzeLiveFrame) {
-                return@requestReadback
-            }
-            if (!analysisInFlight.compareAndSet(false, true)) {
-                return@requestReadback
-            }
-            try {
-                analyzerExecutor.execute {
-                    processHsReadback(result, smoothedOffset)
-                }
-            } catch (_: RejectedExecutionException) {
-                analysisInFlight.set(false)
-            }
-        }
-    }
-
-    private fun processHsReadback(
-        result: GlLumaExtractor.LumaReadbackResult,
-        smoothedOffset: Long,
-    ) {
-        try {
-            if (!monitoring) {
-                return
-            }
-            val rawScore = frameDiffer.scorePrecroppedLuma(
-                luma = result.luma,
-                sampleCount = result.sampleCount,
-            )
-            processedFrameCount += 1
-            val stats = detectionMath.process(
-                rawScore = rawScore,
-                frameSensorNanos = result.timestampNanos,
-            )
-            emitFrameStats(stats, hostSensorMinusElapsedNanos ?: smoothedOffset)
-            stats.triggerEvent?.let { emitTrigger(it) }
-        } catch (error: Exception) {
-            emitError("Native HS frame analysis failed: ${error.localizedMessage ?: "unknown"}")
-        } finally {
-            analysisInFlight.set(false)
-        }
-    }
-
     private fun startMonitoringBackend(
         onStarted: () -> Unit,
         onError: (String) -> Unit,
     ) {
-        // Live analysis always runs normal mode; dedicated HS recording is a separate workflow.
         startNormalBackend(onStarted = onStarted, onError = onError)
     }
 
@@ -408,7 +310,6 @@ class SensorNativeController(
         onError: (String) -> Unit,
     ) {
         activeCameraFpsMode = NativeCameraFpsMode.NORMAL
-        hsSession.stop()
         val providerFuture = ProcessCameraProvider.getInstance(activity)
         providerFuture.addListener(
             {
@@ -442,7 +343,6 @@ class SensorNativeController(
         stopGpsUpdates()
         cameraSession.stop(cameraProvider)
         cameraProvider = null
-        hsSession.stop()
         resetStreamState()
         activeCameraFpsMode = NativeCameraFpsMode.NORMAL
         targetFpsUpper = null
@@ -452,9 +352,7 @@ class SensorNativeController(
     private fun restartMonitoringBackend() {
         cameraSession.stop(cameraProvider)
         cameraProvider = null
-        hsSession.stop()
         analysisInFlight.set(false)
-        hsRoiRecorder.clear()
         frameDiffer.reset()
         fpsMonitor.reset()
         observedFps = null
@@ -477,7 +375,6 @@ class SensorNativeController(
         processedFrameCount = 0L
         detectionMath.resetRun()
         frameDiffer.reset()
-        hsRoiRecorder.clear()
         emitState(if (monitoring) "monitoring" else "idle")
     }
 
@@ -491,7 +388,6 @@ class SensorNativeController(
         gpsFixElapsedRealtimeNanos = null
         observedFps = null
         analysisInFlight.set(false)
-        hsRoiRecorder.clear()
         offsetSmoother.reset()
         fpsMonitor.reset()
         detectionMath.resetRun()
@@ -499,7 +395,7 @@ class SensorNativeController(
     }
 
     private fun rebindCameraUseCasesIfMonitoring() {
-        if (!monitoring || config.highSpeedEnabled) {
+        if (!monitoring) {
             return
         }
         if (!attemptPreviewRebind()) {
@@ -528,7 +424,6 @@ class SensorNativeController(
         if (
             !shouldSchedulePreviewRebindRetry(
                 monitoring = monitoring,
-                highSpeedEnabled = config.highSpeedEnabled,
                 hasPreviewView = previewView != null,
                 hasCameraProvider = cameraProvider != null,
             )
@@ -543,7 +438,6 @@ class SensorNativeController(
                 if (
                     !shouldSchedulePreviewRebindRetry(
                         monitoring = monitoring,
-                        highSpeedEnabled = config.highSpeedEnabled,
                         hasPreviewView = previewView != null,
                         hasCameraProvider = cameraProvider != null,
                     )
@@ -588,14 +482,8 @@ class SensorNativeController(
         lastSensorElapsedSampleCapturedAtNanos = elapsedNanos
         val fpsObservation = fpsMonitor.update(
             frameSensorNanos = frameSensorNanos,
-            mode = activeCameraFpsMode,
         )
         observedFps = fpsObservation.observedFps
-        if (fpsObservation.shouldDowngradeToNormal && config.highSpeedEnabled) {
-            emitDiagnostic(
-                "hs_low_fps_observed: observed=${fpsObservation.observedFps?.toString() ?: "n/a"} threshold=$HS_FALLBACK_TRIGGER_FPS",
-            )
-        }
         hostSensorMinusElapsedNanos = smoothedOffset
         return smoothedOffset
     }
@@ -692,14 +580,8 @@ class SensorNativeController(
 
 internal fun shouldSchedulePreviewRebindRetry(
     monitoring: Boolean,
-    highSpeedEnabled: Boolean,
     hasPreviewView: Boolean,
     hasCameraProvider: Boolean,
 ): Boolean {
-    return monitoring && !highSpeedEnabled && hasPreviewView && hasCameraProvider
+    return monitoring && hasPreviewView && hasCameraProvider
 }
-
-data class HsTriggerRefinementResponse(
-    val results: List<HsTriggerRefinementResult>,
-    val recordedFrameCount: Int,
-)
