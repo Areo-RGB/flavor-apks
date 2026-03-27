@@ -31,16 +31,12 @@ enum class NearbyTransportStrategy(
     val wireValue: String,
     val nearbyStrategy: Strategy,
 ) {
-    STAR("star", Strategy.P2P_STAR),
     POINT_TO_POINT("point_to_point", Strategy.P2P_POINT_TO_POINT),
     ;
 
     companion object {
         fun fromWireValue(rawValue: String?): NearbyTransportStrategy {
-            return when (rawValue?.trim()) {
-                POINT_TO_POINT.wireValue -> POINT_TO_POINT
-                else -> STAR
-            }
+            return POINT_TO_POINT
         }
     }
 }
@@ -58,7 +54,7 @@ class NearbyConnectionsManager(
     private var eventListener: ((NearbyEvent) -> Unit)? = null
 
     private var activeRole: NearbyRole = NearbyRole.NONE
-    private var activeStrategy: NearbyTransportStrategy = NearbyTransportStrategy.STAR
+    private var activeStrategy: NearbyTransportStrategy = NearbyTransportStrategy.POINT_TO_POINT
     private var pendingEndpointId: String? = null
     private var requestedEndpointId: String? = null
     private var nativeClockSyncHostEnabled = false
@@ -104,7 +100,7 @@ class NearbyConnectionsManager(
         connectionsClient.stopAllEndpoints()
         clearTransientState()
         activeRole = NearbyRole.NONE
-        activeStrategy = NearbyTransportStrategy.STAR
+        activeStrategy = NearbyTransportStrategy.POINT_TO_POINT
     }
 
     fun startDiscovery(
@@ -131,7 +127,7 @@ class NearbyConnectionsManager(
         connectionsClient.stopAllEndpoints()
         clearTransientState()
         activeRole = NearbyRole.NONE
-        activeStrategy = NearbyTransportStrategy.STAR
+        activeStrategy = NearbyTransportStrategy.POINT_TO_POINT
     }
 
     fun requestConnection(
@@ -200,7 +196,7 @@ class NearbyConnectionsManager(
         connectionsClient.stopAllEndpoints()
         clearTransientState()
         activeRole = NearbyRole.NONE
-        activeStrategy = NearbyTransportStrategy.STAR
+        activeStrategy = NearbyTransportStrategy.POINT_TO_POINT
     }
 
     private fun normalizeForRole(role: NearbyRole, strategy: NearbyTransportStrategy) {

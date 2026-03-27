@@ -23,7 +23,6 @@ class RaceSessionModelsTest {
                 ),
             ),
             hostStartSensorNanos = 1_000L,
-            hostSplitSensorNanos = listOf(1_500L),
             hostStopSensorNanos = 2_000L,
             runId = "run-1",
             hostSensorMinusElapsedNanos = 120L,
@@ -43,7 +42,6 @@ class RaceSessionModelsTest {
     fun `timeline snapshot round-trips with optional fields`() {
         val original = SessionTimelineSnapshotMessage(
             hostStartSensorNanos = 1_000L,
-            hostSplitSensorNanos = listOf(1_500L, 2_000L),
             hostStopSensorNanos = 2_500L,
             sentElapsedNanos = 90_000L,
         )
@@ -52,7 +50,6 @@ class RaceSessionModelsTest {
 
         assertNotNull(parsed)
         assertEquals(1_000L, parsed?.hostStartSensorNanos)
-        assertEquals(listOf(1_500L, 2_000L), parsed?.hostSplitSensorNanos)
         assertEquals(2_500L, parsed?.hostStopSensorNanos)
         assertEquals(90_000L, parsed?.sentElapsedNanos)
     }
@@ -60,7 +57,7 @@ class RaceSessionModelsTest {
     @Test
     fun `trigger message parse rejects invalid payload`() {
         val invalid = """
-            {"type":"session_trigger","triggerType":"","splitIndex":-1,"triggerSensorNanos":0}
+            {"type":"session_trigger","triggerType":"","triggerSensorNanos":0}
         """.trimIndent()
 
         val parsed = SessionTriggerMessage.tryParse(invalid)

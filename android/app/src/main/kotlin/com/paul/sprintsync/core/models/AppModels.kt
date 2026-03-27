@@ -1,21 +1,16 @@
 package com.paul.sprintsync.core.models
 
-import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 
 data class LastRunResult(
     val startedSensorNanos: Long,
-    val splitElapsedNanos: List<Long>,
+    val stoppedSensorNanos: Long,
 ) {
     fun toJsonString(): String {
-        val splits = JSONArray()
-        splitElapsedNanos.forEach { split ->
-            splits.put(split)
-        }
         return JSONObject()
             .put("startedSensorNanos", startedSensorNanos)
-            .put("splitElapsedNanos", splits)
+            .put("stoppedSensorNanos", stoppedSensorNanos)
             .toString()
     }
 
@@ -26,24 +21,17 @@ data class LastRunResult(
             } catch (_: JSONException) {
                 return null
             }
-            if (!decoded.has("startedSensorNanos") || !decoded.has("splitElapsedNanos")) {
+            if (!decoded.has("startedSensorNanos") || !decoded.has("stoppedSensorNanos")) {
                 return null
             }
             val startedSensorNanos = decoded.optLong("startedSensorNanos", Long.MIN_VALUE)
-            if (startedSensorNanos == Long.MIN_VALUE) {
+            val stoppedSensorNanos = decoded.optLong("stoppedSensorNanos", Long.MIN_VALUE)
+            if (startedSensorNanos == Long.MIN_VALUE || stoppedSensorNanos == Long.MIN_VALUE) {
                 return null
-            }
-            val splitsRaw = decoded.optJSONArray("splitElapsedNanos") ?: JSONArray()
-            val splitElapsedNanos = mutableListOf<Long>()
-            for (index in 0 until splitsRaw.length()) {
-                val value = splitsRaw.optLong(index, Long.MIN_VALUE)
-                if (value != Long.MIN_VALUE) {
-                    splitElapsedNanos.add(value)
-                }
             }
             return LastRunResult(
                 startedSensorNanos = startedSensorNanos,
-                splitElapsedNanos = splitElapsedNanos,
+                stoppedSensorNanos = stoppedSensorNanos,
             )
         }
     }

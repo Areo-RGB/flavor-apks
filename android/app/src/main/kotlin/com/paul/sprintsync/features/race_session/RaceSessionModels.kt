@@ -19,7 +19,6 @@ enum class SessionNetworkRole {
 enum class SessionDeviceRole {
     UNASSIGNED,
     START,
-    SPLIT,
     STOP,
 }
 
@@ -73,7 +72,6 @@ data class SessionSnapshotMessage(
     val monitoringActive: Boolean,
     val devices: List<SessionDevice>,
     val hostStartSensorNanos: Long?,
-    val hostSplitSensorNanos: List<Long>,
     val hostStopSensorNanos: Long?,
     val runId: String?,
     val hostSensorMinusElapsedNanos: Long?,
@@ -84,11 +82,8 @@ data class SessionSnapshotMessage(
     fun toJsonString(): String {
         val devicesArray = JSONArray()
         devices.forEach { devicesArray.put(it.toJsonObject()) }
-        val splitArray = JSONArray()
-        hostSplitSensorNanos.forEach { splitArray.put(it) }
         val timeline = JSONObject()
             .put("hostStartSensorNanos", hostStartSensorNanos ?: JSONObject.NULL)
-            .put("hostSplitSensorNanos", splitArray)
             .put("hostStopSensorNanos", hostStopSensorNanos ?: JSONObject.NULL)
         return JSONObject()
             .put("type", TYPE)
@@ -128,20 +123,11 @@ data class SessionSnapshotMessage(
                 return null
             }
             val timeline = decoded.optJSONObject("timeline") ?: JSONObject()
-            val splitRaw = timeline.optJSONArray("hostSplitSensorNanos") ?: JSONArray()
-            val splits = mutableListOf<Long>()
-            for (index in 0 until splitRaw.length()) {
-                val value = splitRaw.optLong(index, Long.MIN_VALUE)
-                if (value != Long.MIN_VALUE) {
-                    splits += value
-                }
-            }
             return SessionSnapshotMessage(
                 stage = stage,
                 monitoringActive = decoded.optBoolean("monitoringActive", false),
                 devices = parsedDevices,
                 hostStartSensorNanos = timeline.readOptionalLong("hostStartSensorNanos"),
-                hostSplitSensorNanos = splits,
                 hostStopSensorNanos = timeline.readOptionalLong("hostStopSensorNanos"),
                 runId = decoded.optString("runId", "").ifBlank { null },
                 hostSensorMinusElapsedNanos = decoded.readOptionalLong("hostSensorMinusElapsedNanos"),
@@ -198,7 +184,6 @@ data class SessionTriggerRefinementMessage(
     val role: SessionDeviceRole,
     val provisionalHostSensorNanos: Long,
     val refinedHostSensorNanos: Long,
-    val splitIndex: Int,
 ) {
     fun toJsonString(): String {
         return JSONObject()
@@ -207,7 +192,6 @@ data class SessionTriggerRefinementMessage(
             .put("role", role.name.lowercase())
             .put("provisionalHostSensorNanos", provisionalHostSensorNanos)
             .put("refinedHostSensorNanos", refinedHostSensorNanos)
-            .put("splitIndex", splitIndex)
             .toString()
     }
 
@@ -227,8 +211,7 @@ data class SessionTriggerRefinementMessage(
             val role = sessionDeviceRoleFromName(decoded.readOptionalString("role"))
             val provisional = decoded.optLong("provisionalHostSensorNanos", Long.MIN_VALUE)
             val refined = decoded.optLong("refinedHostSensorNanos", Long.MIN_VALUE)
-            val splitIndex = decoded.optInt("splitIndex", -1)
-            if (runId.isEmpty() || role == null || provisional == Long.MIN_VALUE || refined == Long.MIN_VALUE || splitIndex < 0) {
+            if (runId.isEmpty() || role == null || provisional == Long.MIN_VALUE || refined == Long.MIN_VALUE) {
                 return null
             }
             return SessionTriggerRefinementMessage(
@@ -236,7 +219,6 @@ data class SessionTriggerRefinementMessage(
                 role = role,
                 provisionalHostSensorNanos = provisional,
                 refinedHostSensorNanos = refined,
-                splitIndex = splitIndex,
             )
         }
     }
@@ -319,17 +301,13 @@ data class SessionClockSyncResponseMessage(
 
 data class SessionTimelineSnapshotMessage(
     val hostStartSensorNanos: Long?,
-    val hostSplitSensorNanos: List<Long>,
     val hostStopSensorNanos: Long?,
     val sentElapsedNanos: Long,
 ) {
     fun toJsonString(): String {
-        val splits = JSONArray()
-        hostSplitSensorNanos.forEach { splits.put(it) }
         return JSONObject()
             .put("type", TYPE)
             .put("hostStartSensorNanos", hostStartSensorNanos ?: JSONObject.NULL)
-            .put("hostSplitSensorNanos", splits)
             .put("hostStopSensorNanos", hostStopSensorNanos ?: JSONObject.NULL)
             .put("sentElapsedNanos", sentElapsedNanos)
             .toString()
@@ -353,17 +331,8 @@ data class SessionTimelineSnapshotMessage(
             }
             val hostStartSensorNanos = decoded.readOptionalLong("hostStartSensorNanos")
             val hostStopSensorNanos = decoded.readOptionalLong("hostStopSensorNanos")
-            val splits = decoded.optJSONArray("hostSplitSensorNanos") ?: JSONArray()
-            val parsedSplits = mutableListOf<Long>()
-            for (index in 0 until splits.length()) {
-                val value = splits.optLong(index, Long.MIN_VALUE)
-                if (value != Long.MIN_VALUE) {
-                    parsedSplits += value
-                }
-            }
             return SessionTimelineSnapshotMessage(
                 hostStartSensorNanos = hostStartSensorNanos,
-                hostSplitSensorNanos = parsedSplits,
                 hostStopSensorNanos = hostStopSensorNanos,
                 sentElapsedNanos = sentElapsedNanos,
             )
@@ -373,14 +342,12 @@ data class SessionTimelineSnapshotMessage(
 
 data class SessionTriggerMessage(
     val triggerType: String,
-    val splitIndex: Int,
     val triggerSensorNanos: Long,
 ) {
     fun toJsonString(): String {
         return JSONObject()
             .put("type", TYPE)
             .put("triggerType", triggerType)
-            .put("splitIndex", splitIndex)
             .put("triggerSensorNanos", triggerSensorNanos)
             .toString()
     }
@@ -398,42 +365,13 @@ data class SessionTriggerMessage(
                 return null
             }
             val triggerType = decoded.optString("triggerType", "").trim()
-            val splitIndex = decoded.optInt("splitIndex", -1)
             val triggerSensorNanos = decoded.optLong("triggerSensorNanos", Long.MIN_VALUE)
-            if (triggerType.isEmpty() || splitIndex < 0 || triggerSensorNanos == Long.MIN_VALUE) {
+            if (triggerType.isEmpty() || triggerSensorNanos == Long.MIN_VALUE) {
                 return null
             }
             return SessionTriggerMessage(
                 triggerType = triggerType,
-                splitIndex = splitIndex,
                 triggerSensorNanos = triggerSensorNanos,
-            )
-        }
-    }
-}
-
-data class SessionSwitchToP2pMessage(val timestampNanos: Long) {
-    fun toJsonString(): String {
-        return JSONObject()
-            .put("type", TYPE)
-            .put("timestampNanos", timestampNanos)
-            .toString()
-    }
-
-    companion object {
-        const val TYPE = "switch_to_p2p"
-
-        fun tryParse(raw: String): SessionSwitchToP2pMessage? {
-            val decoded = try {
-                JSONObject(raw)
-            } catch (_: JSONException) {
-                return null
-            }
-            if (decoded.optString("type") != TYPE) {
-                return null
-            }
-            return SessionSwitchToP2pMessage(
-                timestampNanos = decoded.optLong("timestampNanos", 0L)
             )
         }
     }
@@ -501,7 +439,6 @@ fun sessionDeviceRoleLabel(role: SessionDeviceRole): String {
     return when (role) {
         SessionDeviceRole.UNASSIGNED -> "Unassigned"
         SessionDeviceRole.START -> "Start"
-        SessionDeviceRole.SPLIT -> "Split"
         SessionDeviceRole.STOP -> "Stop"
     }
 }

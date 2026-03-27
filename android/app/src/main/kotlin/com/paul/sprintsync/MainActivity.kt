@@ -113,7 +113,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                             nearbyConnectionsManager.startHosting(
                                 serviceId = DEFAULT_SERVICE_ID,
                                 endpointName = localEndpointName(),
-                                strategy = NearbyTransportStrategy.STAR,
+                                strategy = NearbyTransportStrategy.POINT_TO_POINT,
                             ) { result ->
                                 result.exceptionOrNull()?.let { error ->
                                     appendEvent("host error: ${error.localizedMessage ?: "unknown"}")
@@ -136,7 +136,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                         try {
                             nearbyConnectionsManager.startDiscovery(
                                 serviceId = DEFAULT_SERVICE_ID,
-                                strategy = NearbyTransportStrategy.STAR,
+                                strategy = NearbyTransportStrategy.POINT_TO_POINT,
                             ) { result ->
                                 result.exceptionOrNull()?.let { error ->
                                     appendEvent("discovery error: ${error.localizedMessage ?: "unknown"}")
@@ -153,31 +153,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 },
                 onStartMonitoring = {
                     requestPermissionsIfNeeded {
-                        val devicesCount = raceSessionController.totalDeviceCount()
-                        val isStar = nearbyConnectionsManager.currentStrategy() == NearbyTransportStrategy.STAR
-                        val willSwitchToP2p = (devicesCount == 2 && isStar)
-
                         val started = raceSessionController.startMonitoring()
-                        if (started && willSwitchToP2p) {
-                            raceSessionController.broadcastSwitchToP2p()
-                            raceSessionController.setReconnectingToP2p(true)
-                            lifecycleScope.launch {
-                                delay(500)
-                                nearbyConnectionsManager.stopAll()
-                                nearbyConnectionsManager.configureNativeClockSyncHost(
-                                    enabled = true,
-                                    requireSensorDomainClock = false,
-                                )
-                                nearbyConnectionsManager.startHosting(
-                                    serviceId = DEFAULT_SERVICE_ID,
-                                    endpointName = localEndpointName(),
-                                    strategy = NearbyTransportStrategy.POINT_TO_POINT,
-                                ) { result ->
-                                    raceSessionController.setReconnectingToP2p(false)
-                                    // Snapshot broadcast handles the rest
-                                }
-                            }
-                        }
 
                         logRuntimeDiagnostic(
                             "startMonitoring requested: started=$started role=${raceSessionController.localDeviceRole().name} " +
@@ -320,24 +296,8 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                     appendEvent("auto-connect error: ${e.localizedMessage}")
                 }
             }
-        } else if (event is NearbyEvent.PayloadReceived) {
-            if (state.lastEvent == "switch_to_p2p") {
-                lifecycleScope.launch {
-                    nearbyConnectionsManager.stopAll()
-                    delay(500)
-                    nearbyConnectionsManager.startDiscovery(
-                        serviceId = DEFAULT_SERVICE_ID,
-                        strategy = NearbyTransportStrategy.POINT_TO_POINT,
-                    ) { result ->
-                        result.exceptionOrNull()?.let { error ->
-                            appendEvent("p2p discovery error: ${error.localizedMessage}")
-                        }
-                    }
-                }
-            }
         } else if (event is NearbyEvent.EndpointDisconnected) {
             if (state.networkRole == SessionNetworkRole.NONE) {
-                // Controller reset us because host dropped outside of P2P reconnect
                 nearbyConnectionsManager.stopAll()
             }
         }
@@ -421,7 +381,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         if (event is SensorNativeEvent.Trigger) {
             raceSessionController.onLocalMotionTrigger(
                 triggerType = event.trigger.triggerType,
-                splitIndex = event.trigger.splitIndex,
+                splitIndex = 0,
                 triggerSensorNanos = event.trigger.triggerSensorNanos,
             )
         }
@@ -539,8 +499,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             raceState.monitoringActive -> "Running"
             else -> "Armed"
         }
-        val marksCount = raceState.timeline.hostSplitSensorNanos.size +
-            if (raceState.timeline.hostStopSensorNanos != null) 1 else 0
+        val marksCount = if (raceState.timeline.hostStopSensorNanos != null) 1 else 0
 
         val elapsedDisplay = formatElapsedDisplay(
             startedSensorNanos = raceState.timeline.hostStartSensorNanos,
@@ -556,7 +515,6 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             val roleLabel = when (trigger.triggerType.lowercase()) {
                 "start" -> "START"
                 "stop" -> "STOP"
-                "split" -> "SPLIT ${trigger.splitIndex + 1}"
                 else -> trigger.triggerType.uppercase()
             }
             "$roleLabel at ${trigger.triggerSensorNanos}ns (score ${"%.4f".format(trigger.score)})"
@@ -581,11 +539,9 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 monitoringSummary = monitoringSummary,
                 clockSummary = clockSummary,
                 startedSensorNanos = raceState.timeline.hostStartSensorNanos,
-                splitSensorNanos = raceState.timeline.hostSplitSensorNanos,
                 stoppedSensorNanos = raceState.timeline.hostStopSensorNanos,
                 devices = raceState.devices,
                 canStartMonitoring = raceSessionController.canStartMonitoring(),
-                canShowSplitControls = raceSessionController.canShowSplitControls(),
                 isHost = isHost,
                 localRole = localRole,
                 localHighSpeedEnabled = raceSessionController.localHighSpeedEnabled(),

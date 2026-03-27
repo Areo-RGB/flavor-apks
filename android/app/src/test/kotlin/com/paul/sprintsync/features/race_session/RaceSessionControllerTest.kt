@@ -104,16 +104,16 @@ class RaceSessionControllerTest {
     }
 
     @Test
-    fun `timeline start split stop persists completed run`() = runTest {
+    fun `timeline start stop persists completed run`() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         var savedRunStarted: Long? = null
-        var savedRunSplits: List<Long>? = null
+        var savedRunStopped: Long? = null
 
         val controller = RaceSessionController(
             loadLastRun = { null },
             saveLastRun = { run ->
                 savedRunStarted = run.startedSensorNanos
-                savedRunSplits = run.splitElapsedNanos
+                savedRunStopped = run.stoppedSensorNanos
             },
             sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
             startCalibration = { calibrationId, _, profile, sampleCount, _, _ ->
@@ -125,12 +125,11 @@ class RaceSessionControllerTest {
         )
 
         controller.ingestLocalTrigger("start", splitIndex = 0, triggerSensorNanos = 1_000L, broadcast = false)
-        controller.ingestLocalTrigger("split", splitIndex = 0, triggerSensorNanos = 1_500L, broadcast = false)
         controller.ingestLocalTrigger("stop", splitIndex = 0, triggerSensorNanos = 2_000L, broadcast = false)
         advanceUntilIdle()
 
         assertEquals(1_000L, savedRunStarted)
-        assertEquals(listOf(500L), savedRunSplits)
+        assertEquals(2_000L, savedRunStopped)
     }
 
     @Test
@@ -155,7 +154,6 @@ class RaceSessionControllerTest {
         )
         val snapshot = SessionTimelineSnapshotMessage(
             hostStartSensorNanos = 1_000L,
-            hostSplitSensorNanos = listOf(1_500L),
             hostStopSensorNanos = 2_000L,
             sentElapsedNanos = 10L,
         )
@@ -167,7 +165,6 @@ class RaceSessionControllerTest {
         )
 
         assertEquals(600L, controller.uiState.value.timeline.hostStartSensorNanos)
-        assertEquals(listOf(1_100L), controller.uiState.value.timeline.hostSplitSensorNanos)
         assertEquals(1_600L, controller.uiState.value.timeline.hostStopSensorNanos)
     }
 
@@ -326,7 +323,6 @@ class RaceSessionControllerTest {
         controller.setNetworkRole(SessionNetworkRole.CLIENT)
         val raw = SessionTimelineSnapshotMessage(
             hostStartSensorNanos = 1_000L,
-            hostSplitSensorNanos = listOf(1_500L),
             hostStopSensorNanos = 2_000L,
             sentElapsedNanos = 2L,
         ).toJsonString()
@@ -338,7 +334,6 @@ class RaceSessionControllerTest {
         )
 
         assertNull(controller.uiState.value.timeline.hostStartSensorNanos)
-        assertTrue(controller.uiState.value.timeline.hostSplitSensorNanos.isEmpty())
         assertNull(controller.uiState.value.timeline.hostStopSensorNanos)
         assertEquals("timeline_snapshot_dropped_unsynced", controller.uiState.value.lastEvent)
     }
@@ -475,7 +470,6 @@ class RaceSessionControllerTest {
             ),
         )
         controller.assignRole("peer-old", SessionDeviceRole.STOP)
-        controller.setReconnectingToP2p(true)
         controller.onNearbyEvent(NearbyEvent.EndpointDisconnected(endpointId = "peer-old"))
         controller.onNearbyEvent(
             NearbyEvent.ConnectionResult(
@@ -535,7 +529,6 @@ class RaceSessionControllerTest {
                 ).toJsonString(),
             ),
         )
-        controller.setReconnectingToP2p(true)
         controller.onNearbyEvent(
             NearbyEvent.ConnectionResult(
                 endpointId = "peer-new",
@@ -560,7 +553,7 @@ class RaceSessionControllerTest {
     }
 
     @Test
-    fun `reconnect mode keeps disconnected peers until reconnect ends`() = runTest {
+    fun `disconnect prunes non-local peer immediately in p2p mode`() = runTest {
         val controller = RaceSessionController(
             loadLastRun = { null },
             saveLastRun = { },
@@ -583,15 +576,14 @@ class RaceSessionControllerTest {
                 statusMessage = null,
             ),
         )
-        controller.setReconnectingToP2p(true)
         controller.onNearbyEvent(NearbyEvent.EndpointDisconnected(endpointId = "peer-1"))
 
         val peerIds = controller.uiState.value.devices.filterNot { it.isLocal }.map { it.id }
-        assertEquals(listOf("peer-1"), peerIds)
+        assertTrue(peerIds.isEmpty())
     }
 
     @Test
-    fun `reconnect mode false prunes all non connected peers`() = runTest {
+    fun `new connection replaces previous non-local peer in p2p mode`() = runTest {
         val controller = RaceSessionController(
             loadLastRun = { null },
             saveLastRun = { },
@@ -623,17 +615,12 @@ class RaceSessionControllerTest {
                 statusMessage = null,
             ),
         )
-        controller.setReconnectingToP2p(true)
-        controller.onNearbyEvent(NearbyEvent.EndpointDisconnected(endpointId = "peer-1"))
-
-        controller.setReconnectingToP2p(false)
-
         val peerIds = controller.uiState.value.devices.filterNot { it.isLocal }.map { it.id }
         assertEquals(listOf("peer-2"), peerIds)
     }
 
     @Test
-    fun `host snapshot after prune includes only local and connected peers`() = runTest {
+    fun `host snapshot contains only local and currently connected peer after replacement`() = runTest {
         val sentMessages = mutableListOf<Pair<String, String>>()
         val controller = RaceSessionController(
             loadLastRun = { null },
@@ -670,18 +657,53 @@ class RaceSessionControllerTest {
             ),
         )
 
-        sentMessages.clear()
-        controller.onNearbyEvent(NearbyEvent.EndpointDisconnected(endpointId = "peer-2"))
-
-        val latestSnapshotToPeer1 = sentMessages
-            .filter { it.first == "peer-1" }
+        val latestSnapshotToPeer2 = sentMessages
+            .filter { it.first == "peer-2" }
             .mapNotNull { (_, raw) -> SessionSnapshotMessage.tryParse(raw) }
             .lastOrNull()
 
-        assertNotNull(latestSnapshotToPeer1)
-        val snapshotDeviceIds = latestSnapshotToPeer1!!.devices.map { it.id }.toSet()
+        assertNotNull(latestSnapshotToPeer2)
+        val snapshotDeviceIds = latestSnapshotToPeer2!!.devices.map { it.id }.toSet()
         assertTrue(snapshotDeviceIds.contains("local-device"))
-        assertTrue(snapshotDeviceIds.contains("peer-1"))
-        assertFalse(snapshotDeviceIds.contains("peer-2"))
+        assertFalse(snapshotDeviceIds.contains("peer-1"))
+        assertTrue(snapshotDeviceIds.contains("peer-2"))
+    }
+
+    @Test
+    fun `host auto assigns start stop by join order and manual reassignment remains available`() = runTest {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            startCalibration = { calibrationId, _, profile, sampleCount, _, _ ->
+                ChirpCalibrationResult(calibrationId, true, null, null, null, null, profile, sampleCount)
+            },
+            clearCalibration = { },
+            ioDispatcher = StandardTestDispatcher(testScheduler),
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "peer-1",
+                endpointName = "peer",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+
+        val localBeforeManual = controller.uiState.value.devices.first { it.isLocal }
+        val remoteBeforeManual = controller.uiState.value.devices.first { !it.isLocal }
+        assertEquals(SessionDeviceRole.START, localBeforeManual.role)
+        assertEquals(SessionDeviceRole.STOP, remoteBeforeManual.role)
+
+        controller.assignRole("local-device", SessionDeviceRole.STOP)
+
+        val localAfterManual = controller.uiState.value.devices.first { it.isLocal }
+        val remoteAfterManual = controller.uiState.value.devices.first { !it.isLocal }
+        assertEquals(SessionDeviceRole.STOP, localAfterManual.role)
+        assertEquals(SessionDeviceRole.START, remoteAfterManual.role)
     }
 }

@@ -21,7 +21,6 @@ typealias RaceSessionSendMessage = (endpointId: String, messageJson: String, onC
 
 data class SessionRaceTimeline(
     val hostStartSensorNanos: Long? = null,
-    val hostSplitSensorNanos: List<Long> = emptyList(),
     val hostStopSensorNanos: Long? = null,
 )
 
@@ -50,7 +49,6 @@ data class RaceSessionUiState(
     val clockSyncInProgress: Boolean = false,
     val lastError: String? = null,
     val lastEvent: String? = null,
-    val isReconnectingToP2p: Boolean = false,
 )
 
 class RaceSessionController(
@@ -114,8 +112,7 @@ class RaceSessionController(
             val persisted = loadLastRun() ?: return@launch
             val persistedTimeline = SessionRaceTimeline(
                 hostStartSensorNanos = persisted.startedSensorNanos,
-                hostSplitSensorNanos = persisted.splitElapsedNanos.scanSplits(persisted.startedSensorNanos),
-                hostStopSensorNanos = null,
+                hostStopSensorNanos = persisted.stoppedSensorNanos,
             )
             _uiState.value = _uiState.value.copy(timeline = persistedTimeline)
         }
@@ -191,7 +188,6 @@ class RaceSessionController(
             connectedEndpoints = emptySet(),
             deviceRole = localDeviceRole(),
             lastError = null,
-            isReconnectingToP2p = false,
         )
     }
 
@@ -220,16 +216,13 @@ class RaceSessionController(
             }
 
             is NearbyEvent.EndpointDisconnected -> {
-                if (!_uiState.value.isReconnectingToP2p) {
-                    clearIdentityMappingForEndpoint(event.endpointId)
-                }
+                clearIdentityMappingForEndpoint(event.endpointId)
                 val nextConnected = _uiState.value.connectedEndpoints - event.endpointId
                 val nextDevices = ensureLocalDevice(
                     localDeviceFromState(),
                     pruneOrphanedNonLocalDevices(
                         devices = _uiState.value.devices,
                         connectedEndpoints = nextConnected,
-                        isReconnectingToP2p = _uiState.value.isReconnectingToP2p,
                     ),
                 )
 
@@ -237,10 +230,8 @@ class RaceSessionController(
                 var nextRole = _uiState.value.networkRole
 
                 if (_uiState.value.networkRole == SessionNetworkRole.CLIENT && nextConnected.isEmpty()) {
-                    if (!_uiState.value.isReconnectingToP2p) {
-                        nextStage = SessionStage.SETUP
-                        nextRole = SessionNetworkRole.NONE
-                    }
+                    nextStage = SessionStage.SETUP
+                    nextRole = SessionNetworkRole.NONE
                 }
 
                 _uiState.value = _uiState.value.copy(
@@ -389,28 +380,17 @@ class RaceSessionController(
 
         val role = localDeviceRole()
         if (role == SessionDeviceRole.UNASSIGNED) {
-            ingestLocalTrigger(
-                triggerType = triggerType,
-                splitIndex = splitIndex,
-                triggerSensorNanos = triggerSensorNanos,
-                broadcast = _uiState.value.networkRole == SessionNetworkRole.HOST,
-            )
-            if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
-                broadcastSnapshotIfHost()
-            }
             return
         }
 
         if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
             val mappedType = roleToTriggerType(role)
-            val mappedSplitIndex = if (mappedType == "split") {
-                _uiState.value.timeline.hostSplitSensorNanos.size
-            } else {
-                0
+            if (mappedType == null) {
+                return
             }
             ingestLocalTrigger(
                 triggerType = mappedType,
-                splitIndex = mappedSplitIndex,
+                splitIndex = 0,
                 triggerSensorNanos = triggerSensorNanos,
                 broadcast = true,
             )
@@ -433,7 +413,7 @@ class RaceSessionController(
     }
 
     fun canShowSplitControls(): Boolean {
-        return totalDeviceCount() > 2
+        return false
     }
 
     fun canStartMonitoring(): Boolean {
@@ -454,31 +434,6 @@ class RaceSessionController(
 
     fun localHighSpeedEnabled(): Boolean {
         return localDeviceFromState().highSpeedEnabled
-    }
-
-    fun broadcastSwitchToP2p() {
-        val msg = SessionSwitchToP2pMessage(nowElapsedNanos()).toJsonString()
-        broadcastToConnected(msg)
-    }
-
-    fun setReconnectingToP2p(reconnecting: Boolean) {
-        if (reconnecting) {
-            _uiState.value = _uiState.value.copy(isReconnectingToP2p = true)
-            return
-        }
-        val prunedDevices = ensureLocalDevice(
-            localDeviceFromState(),
-            pruneOrphanedNonLocalDevices(
-                devices = _uiState.value.devices,
-                connectedEndpoints = _uiState.value.connectedEndpoints,
-                isReconnectingToP2p = false,
-            ),
-        )
-        _uiState.value = _uiState.value.copy(
-            isReconnectingToP2p = false,
-            devices = prunedDevices,
-            deviceRole = localDeviceRole(),
-        )
     }
 
     fun startClockSyncBurst(endpointId: String, sampleCount: Int = DEFAULT_CLOCK_SYNC_SAMPLE_COUNT) {
@@ -528,7 +483,6 @@ class RaceSessionController(
         }
         val message = SessionTriggerMessage(
             triggerType = triggerType,
-            splitIndex = splitIndex,
             triggerSensorNanos = triggerSensorNanos,
         ).toJsonString()
         broadcastToConnected(message)
@@ -671,11 +625,6 @@ class RaceSessionController(
             return
         }
 
-        SessionSwitchToP2pMessage.tryParse(rawMessage)?.let {
-            _uiState.value = _uiState.value.copy(isReconnectingToP2p = true, lastEvent = "switch_to_p2p")
-            return
-        }
-
         SessionClockSyncRequestMessage.tryParse(rawMessage)?.let { request ->
             handleIncomingClockSyncRequest(endpointId, request)
             return
@@ -709,7 +658,7 @@ class RaceSessionController(
             }
             ingestLocalTrigger(
                 triggerType = trigger.triggerType,
-                splitIndex = trigger.splitIndex,
+                splitIndex = 0,
                 triggerSensorNanos = triggerSensorNanos,
                 broadcast = false,
             )
@@ -724,11 +673,11 @@ class RaceSessionController(
 
     private fun handleConnectionResult(event: NearbyEvent.ConnectionResult) {
         val nextConnected = if (event.connected) {
-            _uiState.value.connectedEndpoints + event.endpointId
+            setOf(event.endpointId)
         } else {
             _uiState.value.connectedEndpoints - event.endpointId
         }
-        if (!event.connected && !_uiState.value.isReconnectingToP2p) {
+        if (!event.connected) {
             clearIdentityMappingForEndpoint(event.endpointId)
         }
         val nextDevices = if (event.connected) {
@@ -765,7 +714,6 @@ class RaceSessionController(
                 pruneOrphanedNonLocalDevices(
                     devices = dedupedDevices,
                     connectedEndpoints = nextConnected,
-                    isReconnectingToP2p = _uiState.value.isReconnectingToP2p,
                 ),
             )
         } else {
@@ -774,20 +722,22 @@ class RaceSessionController(
                 pruneOrphanedNonLocalDevices(
                     devices = _uiState.value.devices,
                     connectedEndpoints = nextConnected,
-                    isReconnectingToP2p = _uiState.value.isReconnectingToP2p,
                 ),
             )
         }
 
-        val nextIsReconnecting = if (event.connected && _uiState.value.isReconnectingToP2p) false else _uiState.value.isReconnectingToP2p
+        val devicesWithDefaults = if (event.connected && _uiState.value.networkRole == SessionNetworkRole.HOST) {
+            applyJoinOrderAutoRoleDefaults(nextDevices)
+        } else {
+            nextDevices
+        }
 
         _uiState.value = _uiState.value.copy(
             connectedEndpoints = nextConnected,
-            devices = nextDevices,
+            devices = devicesWithDefaults,
             deviceRole = localDeviceRole(),
             lastError = if (event.connected) null else (event.statusMessage ?: "Connection failed"),
             lastEvent = "connection_result",
-            isReconnectingToP2p = nextIsReconnecting,
         )
 
         if (event.connected) {
@@ -825,15 +775,13 @@ class RaceSessionController(
             return
         }
         val mappedType = roleToTriggerType(request.role)
-        val mappedSplitIndex = if (mappedType == "split") {
-            _uiState.value.timeline.hostSplitSensorNanos.size
-        } else {
-            0
+        if (mappedType == null) {
+            return
         }
         val hostSensorNanos = request.mappedHostSensorNanos ?: request.triggerSensorNanos
         ingestLocalTrigger(
             triggerType = mappedType,
-            splitIndex = mappedSplitIndex,
+            splitIndex = 0,
             triggerSensorNanos = hostSensorNanos,
             broadcast = true,
         )
@@ -862,7 +810,6 @@ class RaceSessionController(
 
         val timeline = SessionRaceTimeline(
             hostStartSensorNanos = snapshot.hostStartSensorNanos?.let { mapHostSensorToLocalSensor(it) ?: it },
-            hostSplitSensorNanos = snapshot.hostSplitSensorNanos.map { mapHostSensorToLocalSensor(it) ?: it },
             hostStopSensorNanos = snapshot.hostStopSensorNanos?.let { mapHostSensorToLocalSensor(it) ?: it },
         )
 
@@ -885,7 +832,6 @@ class RaceSessionController(
             timeline = timeline,
             lastEvent = "snapshot_applied",
             lastError = null,
-            isReconnectingToP2p = false,
         )
 
         maybePersistCompletedRun(timeline)
@@ -941,13 +887,6 @@ class RaceSessionController(
                 _uiState.value = _uiState.value.copy(lastEvent = "timeline_snapshot_dropped_unsynced")
                 return
             }
-            val localSplits = snapshot.hostSplitSensorNanos.map { hostSplit ->
-                mapHostSensorToLocalSensor(hostSplit)
-            }
-            if (localSplits.any { it == null }) {
-                _uiState.value = _uiState.value.copy(lastEvent = "timeline_snapshot_dropped_unsynced")
-                return
-            }
             val localStop = snapshot.hostStopSensorNanos?.let { hostStop ->
                 mapHostSensorToLocalSensor(hostStop)
             }
@@ -957,13 +896,11 @@ class RaceSessionController(
             }
             SessionRaceTimeline(
                 hostStartSensorNanos = localStart,
-                hostSplitSensorNanos = localSplits.mapNotNull { it },
                 hostStopSensorNanos = localStop,
             )
         } else {
             SessionRaceTimeline(
                 hostStartSensorNanos = snapshot.hostStartSensorNanos,
-                hostSplitSensorNanos = snapshot.hostSplitSensorNanos,
                 hostStopSensorNanos = snapshot.hostStopSensorNanos,
             )
         }
@@ -986,20 +923,6 @@ class RaceSessionController(
                 }
             }
 
-            "split" -> {
-                if (timeline.hostStartSensorNanos == null || timeline.hostStopSensorNanos != null) {
-                    null
-                } else {
-                    val requiredSize = splitIndex + 1
-                    val mutableSplits = timeline.hostSplitSensorNanos.toMutableList()
-                    while (mutableSplits.size < requiredSize) {
-                        mutableSplits += timeline.hostStartSensorNanos
-                    }
-                    mutableSplits[splitIndex] = triggerSensorNanos
-                    timeline.copy(hostSplitSensorNanos = mutableSplits)
-                }
-            }
-
             "stop" -> {
                 if (timeline.hostStartSensorNanos == null || timeline.hostStopSensorNanos != null) {
                     null
@@ -1018,11 +941,9 @@ class RaceSessionController(
         if (stopped <= started) {
             return
         }
-        val splitElapsed = timeline.hostSplitSensorNanos
-            .map { split -> (split - started).coerceAtLeast(0L) }
         val run = LastRunResult(
             startedSensorNanos = started,
-            splitElapsedNanos = splitElapsed,
+            stoppedSensorNanos = stopped,
         )
         viewModelScope.launch(ioDispatcher) {
             saveLastRun(run)
@@ -1032,7 +953,6 @@ class RaceSessionController(
     private fun broadcastTimelineSnapshot(timeline: SessionRaceTimeline) {
         val payload = SessionTimelineSnapshotMessage(
             hostStartSensorNanos = timeline.hostStartSensorNanos,
-            hostSplitSensorNanos = timeline.hostSplitSensorNanos,
             hostStopSensorNanos = timeline.hostStopSensorNanos,
             sentElapsedNanos = nowElapsedNanos(),
         ).toJsonString()
@@ -1049,7 +969,6 @@ class RaceSessionController(
             pruneOrphanedNonLocalDevices(
                 devices = _uiState.value.devices,
                 connectedEndpoints = targetEndpoints,
-                isReconnectingToP2p = _uiState.value.isReconnectingToP2p,
             ),
         )
         if (canonicalDevices != _uiState.value.devices) {
@@ -1065,7 +984,6 @@ class RaceSessionController(
                 monitoringActive = _uiState.value.monitoringActive,
                 devices = devicesForSnapshot,
                 hostStartSensorNanos = _uiState.value.timeline.hostStartSensorNanos,
-                hostSplitSensorNanos = _uiState.value.timeline.hostSplitSensorNanos,
                 hostStopSensorNanos = _uiState.value.timeline.hostStopSensorNanos,
                 runId = _uiState.value.runId,
                 hostSensorMinusElapsedNanos = _clockState.value.hostSensorMinusElapsedNanos,
@@ -1152,11 +1070,15 @@ class RaceSessionController(
             pruneOrphanedNonLocalDevices(
                 devices = dedupedDevices,
                 connectedEndpoints = current.connectedEndpoints,
-                isReconnectingToP2p = current.isReconnectingToP2p,
             ),
         )
+        val devicesWithDefaults = if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
+            applyJoinOrderAutoRoleDefaults(nextDevices)
+        } else {
+            nextDevices
+        }
         _uiState.value = current.copy(
-            devices = nextDevices,
+            devices = devicesWithDefaults,
             deviceRole = localDeviceRole(),
             lastEvent = "device_identity",
         )
@@ -1186,22 +1108,46 @@ class RaceSessionController(
     private fun pruneOrphanedNonLocalDevices(
         devices: List<SessionDevice>,
         connectedEndpoints: Set<String>,
-        isReconnectingToP2p: Boolean,
     ): List<SessionDevice> {
-        if (isReconnectingToP2p) {
-            return devices
-        }
         return devices.filter { device ->
             device.isLocal || connectedEndpoints.contains(device.id)
         }
     }
 
-    private fun roleToTriggerType(role: SessionDeviceRole): String {
+    private fun applyJoinOrderAutoRoleDefaults(devices: List<SessionDevice>): List<SessionDevice> {
+        val local = devices.firstOrNull { it.isLocal } ?: return devices
+        val remote = devices.firstOrNull { !it.isLocal } ?: return devices
+        if (devices.count { !it.isLocal } != 1) {
+            return devices
+        }
+
+        var nextDevices = devices
+        if (nextDevices.none { it.role == SessionDeviceRole.START }) {
+            nextDevices = nextDevices.map { existing ->
+                when {
+                    existing.id == local.id && existing.role == SessionDeviceRole.UNASSIGNED -> existing.copy(role = SessionDeviceRole.START)
+                    existing.id == remote.id && existing.role == SessionDeviceRole.UNASSIGNED -> existing.copy(role = SessionDeviceRole.START)
+                    else -> existing
+                }
+            }
+        }
+        if (nextDevices.none { it.role == SessionDeviceRole.STOP }) {
+            nextDevices = nextDevices.map { existing ->
+                when {
+                    existing.id == remote.id && existing.role == SessionDeviceRole.UNASSIGNED -> existing.copy(role = SessionDeviceRole.STOP)
+                    existing.id == local.id && existing.role == SessionDeviceRole.UNASSIGNED -> existing.copy(role = SessionDeviceRole.STOP)
+                    else -> existing
+                }
+            }
+        }
+        return nextDevices
+    }
+
+    private fun roleToTriggerType(role: SessionDeviceRole): String? {
         return when (role) {
             SessionDeviceRole.START -> "start"
-            SessionDeviceRole.SPLIT -> "split"
             SessionDeviceRole.STOP -> "stop"
-            SessionDeviceRole.UNASSIGNED -> "split"
+            SessionDeviceRole.UNASSIGNED -> null
         }
     }
 
@@ -1222,10 +1168,6 @@ class RaceSessionController(
 
     private fun localDeviceName(): String {
         return localDeviceFromState().name
-    }
-
-    private fun List<Long>.scanSplits(startedSensorNanos: Long): List<Long> {
-        return map { elapsed -> startedSensorNanos + elapsed.coerceAtLeast(0L) }
     }
 
     private fun medianNanos(samples: List<Long>): Long? {
