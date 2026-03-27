@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -143,6 +144,56 @@ class RaceSessionControllerTest {
 
         assertEquals(600L, controller.uiState.value.timeline.hostStartSensorNanos)
         assertEquals(1_600L, controller.uiState.value.timeline.hostStopSensorNanos)
+    }
+
+    @Test
+    fun `single device mode auto resets active timeline and retains latest completed lap`() {
+        val sentMessages = mutableListOf<String>()
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, messageJson, onComplete ->
+                sentMessages += messageJson
+                onComplete(Result.success(Unit))
+            },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.startSingleDeviceMonitoring()
+        controller.onLocalMotionTrigger("motion", splitIndex = 0, triggerSensorNanos = 1_000L)
+        controller.onLocalMotionTrigger("motion", splitIndex = 0, triggerSensorNanos = 2_000L)
+
+        val state = controller.uiState.value
+        assertEquals(SessionOperatingMode.SINGLE_DEVICE, state.operatingMode)
+        assertEquals(SessionStage.MONITORING, state.stage)
+        assertTrue(state.monitoringActive)
+        assertNull(state.timeline.hostStartSensorNanos)
+        assertNull(state.timeline.hostStopSensorNanos)
+        assertEquals(1_000L, state.latestCompletedTimeline?.hostStartSensorNanos)
+        assertEquals(2_000L, state.latestCompletedTimeline?.hostStopSensorNanos)
+        assertEquals("single_device_stop", state.lastEvent)
+        assertTrue(sentMessages.isEmpty())
+    }
+
+    @Test
+    fun `single device mode ignores non-monotonic stop trigger`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.startSingleDeviceMonitoring()
+        controller.onLocalMotionTrigger("motion", splitIndex = 0, triggerSensorNanos = 2_000L)
+        controller.onLocalMotionTrigger("motion", splitIndex = 0, triggerSensorNanos = 1_000L)
+
+        val state = controller.uiState.value
+        assertEquals(2_000L, state.timeline.hostStartSensorNanos)
+        assertNull(state.timeline.hostStopSensorNanos)
+        assertNull(state.latestCompletedTimeline)
     }
 
     @Test

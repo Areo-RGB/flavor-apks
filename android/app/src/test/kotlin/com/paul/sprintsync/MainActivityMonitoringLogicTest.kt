@@ -95,4 +95,43 @@ class MainActivityMonitoringLogicTest {
 
         assertEquals(LocalCaptureAction.NONE, action)
     }
+
+    @Test
+    fun `does not start local capture when user monitoring toggle is off`() {
+        val action = resolveLocalCaptureAction(
+            monitoringActive = true,
+            isAppResumed = true,
+            shouldRunLocalCapture = false,
+            isLocalMotionMonitoring = false,
+            localCaptureStartPending = false,
+        )
+
+        assertEquals(LocalCaptureAction.NONE, action)
+    }
+
+    @Test
+    fun `stops local capture when user monitoring toggle is turned off during monitoring`() {
+        val action = resolveLocalCaptureAction(
+            monitoringActive = true,
+            isAppResumed = true,
+            shouldRunLocalCapture = false,
+            isLocalMotionMonitoring = true,
+            localCaptureStartPending = false,
+        )
+
+        assertEquals(LocalCaptureAction.STOP, action)
+    }
+
+    @Test
+    fun `re-enabling user monitoring toggle allows local capture start when guards are met`() {
+        val action = resolveLocalCaptureAction(
+            monitoringActive = true,
+            isAppResumed = true,
+            shouldRunLocalCapture = true,
+            isLocalMotionMonitoring = false,
+            localCaptureStartPending = false,
+        )
+
+        assertEquals(LocalCaptureAction.START, action)
+    }
 }

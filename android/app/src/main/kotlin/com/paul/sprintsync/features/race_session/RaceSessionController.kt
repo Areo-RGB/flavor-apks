@@ -38,11 +38,13 @@ data class RaceSessionClockState(
 
 data class RaceSessionUiState(
     val stage: SessionStage = SessionStage.SETUP,
+    val operatingMode: SessionOperatingMode = SessionOperatingMode.NETWORK_RACE,
     val networkRole: SessionNetworkRole = SessionNetworkRole.NONE,
     val deviceRole: SessionDeviceRole = SessionDeviceRole.UNASSIGNED,
     val monitoringActive: Boolean = false,
     val runId: String? = null,
     val timeline: SessionRaceTimeline = SessionRaceTimeline(),
+    val latestCompletedTimeline: SessionRaceTimeline? = null,
     val devices: List<SessionDevice> = emptyList(),
     val discoveredEndpoints: Map<String, String> = emptyMap(),
     val connectedEndpoints: Set<String> = emptySet(),
@@ -182,15 +184,107 @@ class RaceSessionController(
         )
         val initialStage = if (role == SessionNetworkRole.HOST) SessionStage.LOBBY else SessionStage.SETUP
         _uiState.value = _uiState.value.copy(
+            operatingMode = SessionOperatingMode.NETWORK_RACE,
             networkRole = role,
             stage = initialStage,
             monitoringActive = false,
             runId = null,
             timeline = SessionRaceTimeline(),
+            latestCompletedTimeline = null,
             devices = local,
             connectedEndpoints = emptySet(),
             deviceRole = localDeviceRole(),
             lastError = null,
+        )
+    }
+
+    fun startSingleDeviceMonitoring() {
+        endpointIdByStableDeviceId.clear()
+        stableDeviceIdByEndpointId.clear()
+        val local = SessionDevice(
+            id = localDeviceId,
+            name = localDeviceName(),
+            role = SessionDeviceRole.START,
+            isLocal = true,
+        )
+        _uiState.value = _uiState.value.copy(
+            operatingMode = SessionOperatingMode.SINGLE_DEVICE,
+            networkRole = SessionNetworkRole.NONE,
+            stage = SessionStage.MONITORING,
+            monitoringActive = true,
+            runId = UUID.randomUUID().toString(),
+            timeline = SessionRaceTimeline(),
+            devices = ensureLocalDevice(local, _uiState.value.devices),
+            discoveredEndpoints = emptyMap(),
+            connectedEndpoints = emptySet(),
+            deviceRole = SessionDeviceRole.START,
+            lastError = null,
+            lastEvent = "single_device_started",
+        )
+    }
+
+    fun stopSingleDeviceMonitoring() {
+        val local = ensureLocalDevice(
+            SessionDevice(
+                id = localDeviceId,
+                name = localDeviceName(),
+                role = SessionDeviceRole.UNASSIGNED,
+                isLocal = true,
+            ),
+            _uiState.value.devices,
+        )
+        _uiState.value = _uiState.value.copy(
+            operatingMode = SessionOperatingMode.SINGLE_DEVICE,
+            networkRole = SessionNetworkRole.NONE,
+            stage = SessionStage.SETUP,
+            monitoringActive = false,
+            runId = null,
+            timeline = SessionRaceTimeline(),
+            devices = local,
+            discoveredEndpoints = emptyMap(),
+            connectedEndpoints = emptySet(),
+            deviceRole = SessionDeviceRole.UNASSIGNED,
+            lastError = null,
+            lastEvent = "single_device_stopped",
+        )
+    }
+
+    fun startDisplayHostMode() {
+        endpointIdByStableDeviceId.clear()
+        stableDeviceIdByEndpointId.clear()
+        val local = ensureLocalDevice(
+            SessionDevice(
+                id = localDeviceId,
+                name = localDeviceName(),
+                role = SessionDeviceRole.UNASSIGNED,
+                isLocal = true,
+            ),
+            _uiState.value.devices,
+        )
+        _uiState.value = _uiState.value.copy(
+            operatingMode = SessionOperatingMode.DISPLAY_HOST,
+            networkRole = SessionNetworkRole.NONE,
+            stage = SessionStage.MONITORING,
+            monitoringActive = false,
+            runId = null,
+            timeline = SessionRaceTimeline(),
+            devices = local,
+            discoveredEndpoints = emptyMap(),
+            connectedEndpoints = emptySet(),
+            deviceRole = SessionDeviceRole.UNASSIGNED,
+            lastError = null,
+            lastEvent = "display_host_started",
+        )
+    }
+
+    fun stopDisplayHostMode() {
+        _uiState.value = _uiState.value.copy(
+            stage = SessionStage.SETUP,
+            monitoringActive = false,
+            discoveredEndpoints = emptyMap(),
+            connectedEndpoints = emptySet(),
+            lastError = null,
+            lastEvent = "display_host_stopped",
         )
     }
 
@@ -354,6 +448,7 @@ class RaceSessionController(
         val nextRunId = if (_uiState.value.monitoringActive) UUID.randomUUID().toString() else null
         _uiState.value = _uiState.value.copy(
             timeline = SessionRaceTimeline(),
+            latestCompletedTimeline = null,
             runId = nextRunId,
             lastEvent = "run_reset",
         )
@@ -364,6 +459,11 @@ class RaceSessionController(
 
     fun onLocalMotionTrigger(triggerType: String, splitIndex: Int, triggerSensorNanos: Long) {
         if (!_uiState.value.monitoringActive) {
+            return
+        }
+
+        if (_uiState.value.operatingMode == SessionOperatingMode.SINGLE_DEVICE) {
+            handleSingleDeviceTrigger(triggerSensorNanos)
             return
         }
 
@@ -917,6 +1017,32 @@ class RaceSessionController(
 
             else -> null
         }
+    }
+
+    private fun handleSingleDeviceTrigger(triggerSensorNanos: Long) {
+        val current = _uiState.value.timeline
+        if (current.hostStartSensorNanos == null) {
+            _uiState.value = _uiState.value.copy(
+                timeline = current.copy(hostStartSensorNanos = triggerSensorNanos),
+                runId = UUID.randomUUID().toString(),
+                lastEvent = "single_device_start",
+            )
+            return
+        }
+        if (current.hostStopSensorNanos != null) {
+            return
+        }
+        if (triggerSensorNanos <= current.hostStartSensorNanos) {
+            return
+        }
+        val completed = current.copy(hostStopSensorNanos = triggerSensorNanos)
+        maybePersistCompletedRun(completed)
+        _uiState.value = _uiState.value.copy(
+            timeline = SessionRaceTimeline(),
+            latestCompletedTimeline = completed,
+            runId = UUID.randomUUID().toString(),
+            lastEvent = "single_device_stop",
+        )
     }
 
     private fun maybePersistCompletedRun(timeline: SessionRaceTimeline) {

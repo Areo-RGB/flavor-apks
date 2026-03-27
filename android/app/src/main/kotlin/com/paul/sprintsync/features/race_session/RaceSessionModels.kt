@@ -10,6 +10,12 @@ enum class SessionStage {
     MONITORING,
 }
 
+enum class SessionOperatingMode {
+    NETWORK_RACE,
+    SINGLE_DEVICE,
+    DISPLAY_HOST,
+}
+
 enum class SessionNetworkRole {
     NONE,
     HOST,
@@ -406,6 +412,52 @@ data class SessionDeviceIdentityMessage(
             return SessionDeviceIdentityMessage(
                 stableDeviceId = stableDeviceId,
                 deviceName = deviceName,
+            )
+        }
+    }
+}
+
+data class SessionLapResultMessage(
+    val senderDeviceName: String,
+    val startedSensorNanos: Long,
+    val stoppedSensorNanos: Long,
+) {
+    fun toJsonString(): String {
+        return JSONObject()
+            .put("type", TYPE)
+            .put("senderDeviceName", senderDeviceName)
+            .put("startedSensorNanos", startedSensorNanos)
+            .put("stoppedSensorNanos", stoppedSensorNanos)
+            .toString()
+    }
+
+    companion object {
+        const val TYPE = "lap_result"
+
+        fun tryParse(raw: String): SessionLapResultMessage? {
+            val decoded = try {
+                JSONObject(raw)
+            } catch (_: JSONException) {
+                return null
+            }
+            if (decoded.optString("type") != TYPE) {
+                return null
+            }
+            val senderDeviceName = decoded.optString("senderDeviceName", "").trim()
+            val startedSensorNanos = decoded.optLong("startedSensorNanos", Long.MIN_VALUE)
+            val stoppedSensorNanos = decoded.optLong("stoppedSensorNanos", Long.MIN_VALUE)
+            if (
+                senderDeviceName.isEmpty() ||
+                startedSensorNanos == Long.MIN_VALUE ||
+                stoppedSensorNanos == Long.MIN_VALUE ||
+                stoppedSensorNanos <= startedSensorNanos
+            ) {
+                return null
+            }
+            return SessionLapResultMessage(
+                senderDeviceName = senderDeviceName,
+                startedSensorNanos = startedSensorNanos,
+                stoppedSensorNanos = stoppedSensorNanos,
             )
         }
     }

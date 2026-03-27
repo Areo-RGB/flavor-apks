@@ -45,15 +45,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.paul.sprintsync.features.race_session.SessionCameraFacing
 import com.paul.sprintsync.features.race_session.SessionDevice
 import com.paul.sprintsync.features.race_session.SessionDeviceRole
 import com.paul.sprintsync.features.race_session.SessionNetworkRole
+import com.paul.sprintsync.features.race_session.SessionOperatingMode
 import com.paul.sprintsync.features.race_session.SessionStage
 import com.paul.sprintsync.features.race_session.sessionCameraFacingLabel
 import com.paul.sprintsync.features.race_session.sessionDeviceRoleLabel
@@ -77,6 +83,7 @@ data class SprintSyncUiState(
     val canStartMonitoring: Boolean = false,
     val isHost: Boolean = false,
     val localRole: SessionDeviceRole = SessionDeviceRole.UNASSIGNED,
+    val userMonitoringEnabled: Boolean = true,
     val monitoringConnectionTypeLabel: String = "-",
     val monitoringSyncModeLabel: String = "-",
     val monitoringLatencyMs: Int? = null,
@@ -103,6 +110,15 @@ data class SprintSyncUiState(
     val lastNearbyEvent: String? = null,
     val lastSensorEvent: String? = null,
     val recentEvents: List<String> = emptyList(),
+    val operatingMode: SessionOperatingMode = SessionOperatingMode.NETWORK_RACE,
+    val displayLapRows: List<DisplayLapRow> = emptyList(),
+    val displayConnectedHostName: String? = null,
+    val displayDiscoveryActive: Boolean = false,
+)
+
+data class DisplayLapRow(
+    val deviceName: String,
+    val lapTimeLabel: String,
 )
 
 @Composable
@@ -112,7 +128,12 @@ fun SprintSyncApp(
     onRequestPermissions: () -> Unit,
     onStartHosting: () -> Unit,
     onStartDiscovery: () -> Unit,
+    onStartSingleDevice: () -> Unit,
+    onStartDisplayHost: () -> Unit,
     onStartMonitoring: () -> Unit,
+    onStartDisplayDiscovery: () -> Unit,
+    onConnectDisplayHost: (String) -> Unit,
+    onSetMonitoringEnabled: (Boolean) -> Unit,
     onStopMonitoring: () -> Unit,
     onResetRun: () -> Unit,
     onAssignRole: (String, SessionDeviceRole) -> Unit,
@@ -126,6 +147,9 @@ fun SprintSyncApp(
     var showPreview by rememberSaveable { mutableStateOf(true) }
     var showDebugInfo by rememberSaveable { mutableStateOf(false) }
     val effectiveShowPreview = showPreview
+    val isDisplayHostMode =
+        uiState.stage == SessionStage.MONITORING &&
+            uiState.operatingMode == SessionOperatingMode.DISPLAY_HOST
 
     Scaffold(
         topBar = {},
@@ -134,43 +158,61 @@ fun SprintSyncApp(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(
+                    horizontal = if (isDisplayHostMode) 6.dp else 16.dp,
+                    vertical = if (isDisplayHostMode) 6.dp else 12.dp,
+                ),
+            verticalArrangement = Arrangement.spacedBy(if (isDisplayHostMode) 4.dp else 12.dp),
         ) {
             item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = when (uiState.stage) {
-                            SessionStage.SETUP -> "Setup Session"
-                            SessionStage.LOBBY -> "Race Lobby"
-                            SessionStage.MONITORING -> "Monitoring"
-                        },
-                        style = MaterialTheme.typography.headlineSmall,
-                    )
+                if (isDisplayHostMode) {
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        if (uiState.stage == SessionStage.LOBBY && uiState.isHost) {
-                            TextButton(onClick = onStopHosting) {
-                                Text("Stop Hosting")
+                        SecondaryButton(text = "Stop", onClick = onStopMonitoring)
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = when {
+                                uiState.operatingMode == SessionOperatingMode.DISPLAY_HOST -> "Display Monitor"
+                                uiState.operatingMode == SessionOperatingMode.SINGLE_DEVICE -> "Single Device"
+                                uiState.stage == SessionStage.SETUP -> "Setup Session"
+                                uiState.stage == SessionStage.LOBBY -> "Race Lobby"
+                                else -> "Monitoring"
+                            },
+                            style = MaterialTheme.typography.headlineSmall,
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (uiState.stage == SessionStage.LOBBY && uiState.isHost) {
+                                TextButton(onClick = onStopHosting) {
+                                    Text("Stop Hosting")
+                                }
                             }
-                        }
-                        if (uiState.stage == SessionStage.MONITORING && uiState.isHost) {
-                            SecondaryButton(text = "Stop", onClick = onStopMonitoring)
-                        }
-                        TextButton(onClick = { showDebugInfo = !showDebugInfo }) {
-                            Text(if (showDebugInfo) "Debug On" else "Debug Off")
+                            if (
+                                uiState.stage == SessionStage.MONITORING &&
+                                (uiState.isHost || uiState.operatingMode != SessionOperatingMode.NETWORK_RACE)
+                            ) {
+                                SecondaryButton(text = "Stop", onClick = onStopMonitoring)
+                            }
+                            TextButton(onClick = { showDebugInfo = !showDebugInfo }) {
+                                Text(if (showDebugInfo) "Debug On" else "Debug Off")
+                            }
                         }
                     }
                 }
             }
 
-            if (showDebugInfo && uiState.stage != SessionStage.MONITORING) {
+            if (showDebugInfo && uiState.stage != SessionStage.MONITORING && !isDisplayHostMode) {
                 item {
                     StatusCard(uiState)
                 }
@@ -190,6 +232,8 @@ fun SprintSyncApp(
                             onRequestPermissions = onRequestPermissions,
                             onStartHosting = onStartHosting,
                             onStartDiscovery = onStartDiscovery,
+                            onStartSingleDevice = onStartSingleDevice,
+                            onStartDisplayHost = onStartDisplayHost,
                         )
                     }
                     item {
@@ -231,6 +275,16 @@ fun SprintSyncApp(
                 }
 
                 SessionStage.MONITORING -> {
+                    if (uiState.operatingMode == SessionOperatingMode.DISPLAY_HOST) {
+                        item {
+                            DisplayResultsCard(
+                                rows = uiState.displayLapRows,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .fillParentMaxHeight(),
+                            )
+                        }
+                    } else {
                     item {
                         RunMetricsCard(
                             uiState = uiState,
@@ -250,10 +304,18 @@ fun SprintSyncApp(
                             connectionTypeLabel = uiState.monitoringConnectionTypeLabel,
                             syncModeLabel = uiState.monitoringSyncModeLabel,
                             latencyMs = uiState.monitoringLatencyMs,
+                            userMonitoringEnabled = uiState.userMonitoringEnabled,
+                            onSetMonitoringEnabled = onSetMonitoringEnabled,
                             effectiveShowPreview = effectiveShowPreview,
                             onShowPreviewChanged = { showPreview = it },
                             previewViewFactory = previewViewFactory,
                             roiCenterX = uiState.roiCenterX,
+                            operatingMode = uiState.operatingMode,
+                            discoveredDisplayHosts = uiState.discoveredEndpoints,
+                            displayConnectedHostName = uiState.displayConnectedHostName,
+                            displayDiscoveryActive = uiState.displayDiscoveryActive,
+                            onStartDisplayDiscovery = onStartDisplayDiscovery,
+                            onConnectDisplayHost = onConnectDisplayHost,
                         )
                     }
                     item {
@@ -265,6 +327,7 @@ fun SprintSyncApp(
                             onUpdateRoiWidth = onUpdateRoiWidth,
                             onUpdateCooldown = onUpdateCooldown,
                         )
+                    }
                     }
                 }
             }
@@ -330,6 +393,8 @@ private fun SetupActionsCard(
     onRequestPermissions: () -> Unit,
     onStartHosting: () -> Unit,
     onStartDiscovery: () -> Unit,
+    onStartSingleDevice: () -> Unit,
+    onStartDisplayHost: () -> Unit,
 ) {
     val setupActionsEnabled = !setupBusy
 
@@ -353,6 +418,18 @@ private fun SetupActionsCard(
             PrimaryButton(
                 text = "Join",
                 onClick = onStartDiscovery,
+                enabled = setupActionsEnabled,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            PrimaryButton(
+                text = "Single Device",
+                onClick = onStartSingleDevice,
+                enabled = setupActionsEnabled,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            PrimaryButton(
+                text = "Display",
+                onClick = onStartDisplayHost,
                 enabled = setupActionsEnabled,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -551,10 +628,18 @@ private fun MonitoringSummaryCard(
     connectionTypeLabel: String,
     syncModeLabel: String,
     latencyMs: Int?,
+    userMonitoringEnabled: Boolean,
+    onSetMonitoringEnabled: (Boolean) -> Unit,
     effectiveShowPreview: Boolean,
     onShowPreviewChanged: (Boolean) -> Unit,
     previewViewFactory: SensorNativePreviewViewFactory,
     roiCenterX: Double,
+    operatingMode: SessionOperatingMode,
+    discoveredDisplayHosts: Map<String, String>,
+    displayConnectedHostName: String?,
+    displayDiscoveryActive: Boolean,
+    onStartDisplayDiscovery: () -> Unit,
+    onConnectDisplayHost: (String) -> Unit,
 ) {
     val latencyLabel = when (syncModeLabel) {
         "NTP" -> if (latencyMs == null) "-" else "$latencyMs ms"
@@ -582,8 +667,16 @@ private fun MonitoringSummaryCard(
                         connectionTypeLabel = connectionTypeLabel,
                         syncModeLabel = syncModeLabel,
                         latencyLabel = latencyLabel,
+                        userMonitoringEnabled = userMonitoringEnabled,
+                        onSetMonitoringEnabled = onSetMonitoringEnabled,
                         effectiveShowPreview = effectiveShowPreview,
                         onShowPreviewChanged = onShowPreviewChanged,
+                        operatingMode = operatingMode,
+                        discoveredDisplayHosts = discoveredDisplayHosts,
+                        displayConnectedHostName = displayConnectedHostName,
+                        displayDiscoveryActive = displayDiscoveryActive,
+                        onStartDisplayDiscovery = onStartDisplayDiscovery,
+                        onConnectDisplayHost = onConnectDisplayHost,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -595,8 +688,16 @@ private fun MonitoringSummaryCard(
                         connectionTypeLabel = connectionTypeLabel,
                         syncModeLabel = syncModeLabel,
                         latencyLabel = latencyLabel,
+                        userMonitoringEnabled = userMonitoringEnabled,
+                        onSetMonitoringEnabled = onSetMonitoringEnabled,
                         effectiveShowPreview = effectiveShowPreview,
                         onShowPreviewChanged = onShowPreviewChanged,
+                        operatingMode = operatingMode,
+                        discoveredDisplayHosts = discoveredDisplayHosts,
+                        displayConnectedHostName = displayConnectedHostName,
+                        displayDiscoveryActive = displayDiscoveryActive,
+                        onStartDisplayDiscovery = onStartDisplayDiscovery,
+                        onConnectDisplayHost = onConnectDisplayHost,
                     )
                     if (effectiveShowPreview) {
                         Box(
@@ -622,8 +723,16 @@ private fun MonitoringPreviewInfoPanel(
     connectionTypeLabel: String,
     syncModeLabel: String,
     latencyLabel: String,
+    userMonitoringEnabled: Boolean,
+    onSetMonitoringEnabled: (Boolean) -> Unit,
     effectiveShowPreview: Boolean,
     onShowPreviewChanged: (Boolean) -> Unit,
+    operatingMode: SessionOperatingMode,
+    discoveredDisplayHosts: Map<String, String>,
+    displayConnectedHostName: String?,
+    displayDiscoveryActive: Boolean,
+    onStartDisplayDiscovery: () -> Unit,
+    onConnectDisplayHost: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -649,6 +758,21 @@ private fun MonitoringPreviewInfoPanel(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Text(
+                "Monitoring: ${if (userMonitoringEnabled) "On" else "Off"}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.width(8.dp))
+            Switch(
+                checked = userMonitoringEnabled,
+                enabled = true,
+                onCheckedChange = onSetMonitoringEnabled,
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text("Preview", style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.width(8.dp))
             Switch(
@@ -656,6 +780,33 @@ private fun MonitoringPreviewInfoPanel(
                 enabled = true,
                 onCheckedChange = onShowPreviewChanged,
             )
+        }
+        if (shouldShowDisplayRelayControls(operatingMode)) {
+            Spacer(Modifier.height(4.dp))
+            SectionHeader("Display Relay")
+            PrimaryButton(
+                text = if (displayDiscoveryActive) "Display: Discovering" else "Display",
+                onClick = onStartDisplayDiscovery,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (displayConnectedHostName != null) {
+                Text(
+                    text = "Connected to $displayConnectedHostName",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray,
+                )
+            }
+            val hosts = discoveredDisplayHosts.entries.toList()
+            if (hosts.isNotEmpty()) {
+                hosts.forEach { host ->
+                    OutlinedButton(
+                        onClick = { onConnectDisplayHost(host.key) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Join ${host.value}")
+                    }
+                }
+            }
         }
     }
 }
@@ -833,6 +984,80 @@ private fun RunMetricsCard(
 }
 
 @Composable
+private fun DisplayResultsCard(
+    rows: List<DisplayLapRow>,
+    modifier: Modifier = Modifier,
+) {
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val density = LocalDensity.current
+        val layout = displayLayoutSpecForCount(rows.size)
+        if (rows.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(260.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "WAITING FOR LAP RESULTS",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = Color.Gray,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            return@BoxWithConstraints
+        }
+
+        val count = rows.size.coerceAtLeast(1)
+        val availableHeight = maxHeight.takeIf { it > 0.dp } ?: (layout.rowHeight * count) + (layout.rowSpacing * (count - 1))
+        val rowHeight = ((availableHeight - (layout.rowSpacing * (count - 1))) / count).coerceAtLeast(layout.minRowHeight)
+        val clampedTimeFont = clampDisplayTimeFont(layout.timeFont, rowHeight, density)
+        val clampedDeviceFont = clampDisplayLabelFont(layout.deviceFont, rowHeight, density)
+
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(layout.rowSpacing),
+        ) {
+            rows.forEach { row ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(rowHeight)
+                        .clip(MaterialTheme.shapes.large)
+                        .background(Color(0xFFEDEDF1))
+                        .padding(horizontal = layout.horizontalPadding, vertical = layout.verticalPadding),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = row.deviceName,
+                        style = MaterialTheme.typography.bodySmall.merge(
+                            TextStyle(
+                                fontSize = clampedDeviceFont,
+                                fontWeight = FontWeight.Medium,
+                            ),
+                        ),
+                        color = Color(0xFF3F3F48),
+                    )
+                    Text(
+                        text = row.lapTimeLabel,
+                        style = MaterialTheme.typography.displayLarge.merge(
+                            TabularMonospaceTypography.merge(
+                                TextStyle(
+                                    fontSize = clampedTimeFont,
+                                    fontWeight = FontWeight.Bold,
+                                ),
+                            ),
+                        ),
+                        color = Color(0xFF101015),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ConnectedCard(connectedEndpoints: Set<String>) {
     SprintSyncCard {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -885,6 +1110,72 @@ internal fun shouldShowMonitoringResetAction(
     startedSensorNanos: Long?,
     stoppedSensorNanos: Long?,
 ): Boolean = isHost && startedSensorNanos != null && stoppedSensorNanos != null
+
+internal fun shouldShowDisplayRelayControls(mode: SessionOperatingMode): Boolean =
+    mode == SessionOperatingMode.SINGLE_DEVICE
+
+internal data class DisplayLayoutSpec(
+    val rowHeight: Dp,
+    val minRowHeight: Dp,
+    val rowSpacing: Dp,
+    val horizontalPadding: Dp,
+    val verticalPadding: Dp,
+    val timeFont: TextUnit,
+    val deviceFont: TextUnit,
+)
+
+internal fun displayLayoutSpecForCount(count: Int): DisplayLayoutSpec {
+    return when {
+        count <= 1 -> DisplayLayoutSpec(
+            rowHeight = 360.dp,
+            minRowHeight = 260.dp,
+            rowSpacing = 24.dp,
+            horizontalPadding = 26.dp,
+            verticalPadding = 22.dp,
+            timeFont = 128.sp,
+            deviceFont = 26.sp,
+        )
+        count == 2 -> DisplayLayoutSpec(
+            rowHeight = 290.dp,
+            minRowHeight = 210.dp,
+            rowSpacing = 18.dp,
+            horizontalPadding = 22.dp,
+            verticalPadding = 18.dp,
+            timeFont = 104.sp,
+            deviceFont = 22.sp,
+        )
+        count in 3..4 -> DisplayLayoutSpec(
+            rowHeight = 220.dp,
+            minRowHeight = 160.dp,
+            rowSpacing = 12.dp,
+            horizontalPadding = 18.dp,
+            verticalPadding = 14.dp,
+            timeFont = 78.sp,
+            deviceFont = 18.sp,
+        )
+        else -> DisplayLayoutSpec(
+            rowHeight = 170.dp,
+            minRowHeight = 120.dp,
+            rowSpacing = 8.dp,
+            horizontalPadding = 14.dp,
+            verticalPadding = 10.dp,
+            timeFont = 56.sp,
+            deviceFont = 15.sp,
+        )
+    }
+}
+
+internal fun clampDisplayTimeFont(base: TextUnit, rowHeight: Dp, density: androidx.compose.ui.unit.Density): TextUnit {
+    val maxByHeight = with(density) { (rowHeight * 0.58f).toSp() }
+    return minOf(base.value, maxByHeight.value).sp
+}
+
+internal fun clampDisplayLabelFont(base: TextUnit, rowHeight: Dp, density: androidx.compose.ui.unit.Density): TextUnit {
+    val maxByHeight = with(density) { (rowHeight * 0.16f).toSp() }
+    val minReadable = 12.sp
+    val clamped = minOf(base.value, maxByHeight.value).sp
+    return maxOf(clamped.value, minReadable.value).sp
+}
 
 private fun formatDurationNanos(nanos: Long): String {
     val totalMillis = (nanos / 1_000_000L).coerceAtLeast(0L)

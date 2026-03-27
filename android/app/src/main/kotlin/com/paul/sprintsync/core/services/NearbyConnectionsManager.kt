@@ -32,11 +32,12 @@ enum class NearbyTransportStrategy(
     val nearbyStrategy: Strategy,
 ) {
     POINT_TO_POINT("point_to_point", Strategy.P2P_POINT_TO_POINT),
+    POINT_TO_STAR("point_to_star", Strategy.P2P_STAR),
     ;
 
     companion object {
         fun fromWireValue(rawValue: String?): NearbyTransportStrategy {
-            return POINT_TO_POINT
+            return values().firstOrNull { it.wireValue == rawValue } ?: POINT_TO_POINT
         }
     }
 }
