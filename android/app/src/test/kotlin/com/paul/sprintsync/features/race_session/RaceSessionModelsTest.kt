@@ -29,6 +29,8 @@ class RaceSessionModelsTest {
             hostGpsUtcOffsetNanos = 8_000L,
             hostGpsFixAgeNanos = 600_000_000L,
             selfDeviceId = "peer-1",
+            anchorDeviceId = "local-device",
+            anchorState = SessionAnchorState.ACTIVE,
         )
 
         val parsed = SessionSnapshotMessage.tryParse(original.toJsonString())

@@ -33,6 +33,19 @@ enum class SessionCameraFacing {
     FRONT,
 }
 
+enum class SessionAnchorState {
+    READY,
+    ACTIVE,
+    LOST,
+}
+
+enum class SessionClockLockReason {
+    OK,
+    NO_ANCHOR,
+    LOCK_STALE,
+    ANCHOR_LOST,
+}
+
 data class SessionDevice(
     val id: String,
     val name: String,
@@ -81,6 +94,8 @@ data class SessionSnapshotMessage(
     val hostGpsUtcOffsetNanos: Long?,
     val hostGpsFixAgeNanos: Long?,
     val selfDeviceId: String?,
+    val anchorDeviceId: String?,
+    val anchorState: SessionAnchorState?,
 ) {
     fun toJsonString(): String {
         val devicesArray = JSONArray()
@@ -99,6 +114,8 @@ data class SessionSnapshotMessage(
             .put("hostGpsUtcOffsetNanos", hostGpsUtcOffsetNanos ?: JSONObject.NULL)
             .put("hostGpsFixAgeNanos", hostGpsFixAgeNanos ?: JSONObject.NULL)
             .put("selfDeviceId", selfDeviceId ?: JSONObject.NULL)
+            .put("anchorDeviceId", anchorDeviceId ?: JSONObject.NULL)
+            .put("anchorState", anchorState?.name?.lowercase() ?: JSONObject.NULL)
             .toString()
     }
 
@@ -137,6 +154,8 @@ data class SessionSnapshotMessage(
                 hostGpsUtcOffsetNanos = decoded.readOptionalLong("hostGpsUtcOffsetNanos"),
                 hostGpsFixAgeNanos = decoded.readOptionalLong("hostGpsFixAgeNanos"),
                 selfDeviceId = decoded.optString("selfDeviceId", "").ifBlank { null },
+                anchorDeviceId = decoded.optString("anchorDeviceId", "").ifBlank { null },
+                anchorState = sessionAnchorStateFromName(decoded.readOptionalString("anchorState")),
             )
         }
     }
@@ -146,6 +165,9 @@ data class SessionTriggerRequestMessage(
     val role: SessionDeviceRole,
     val triggerSensorNanos: Long,
     val mappedHostSensorNanos: Long?,
+    val sourceDeviceId: String,
+    val sourceElapsedNanos: Long,
+    val mappedAnchorElapsedNanos: Long?,
 ) {
     fun toJsonString(): String {
         return JSONObject()
@@ -153,6 +175,9 @@ data class SessionTriggerRequestMessage(
             .put("role", role.name.lowercase())
             .put("triggerSensorNanos", triggerSensorNanos)
             .put("mappedHostSensorNanos", mappedHostSensorNanos ?: JSONObject.NULL)
+            .put("sourceDeviceId", sourceDeviceId)
+            .put("sourceElapsedNanos", sourceElapsedNanos)
+            .put("mappedAnchorElapsedNanos", mappedAnchorElapsedNanos ?: JSONObject.NULL)
             .toString()
     }
 
@@ -173,10 +198,18 @@ data class SessionTriggerRequestMessage(
             if (triggerSensorNanos == Long.MIN_VALUE) {
                 return null
             }
+            val sourceDeviceId = decoded.optString("sourceDeviceId", "").trim()
+            val sourceElapsedNanos = decoded.optLong("sourceElapsedNanos", Long.MIN_VALUE)
+            if (sourceDeviceId.isEmpty() || sourceElapsedNanos == Long.MIN_VALUE) {
+                return null
+            }
             return SessionTriggerRequestMessage(
                 role = role,
                 triggerSensorNanos = triggerSensorNanos,
                 mappedHostSensorNanos = decoded.readOptionalLong("mappedHostSensorNanos"),
+                sourceDeviceId = sourceDeviceId,
+                sourceElapsedNanos = sourceElapsedNanos,
+                mappedAnchorElapsedNanos = decoded.readOptionalLong("mappedAnchorElapsedNanos"),
             )
         }
     }
@@ -415,6 +448,13 @@ fun sessionDeviceRoleLabel(role: SessionDeviceRole): String {
         SessionDeviceRole.START -> "Start"
         SessionDeviceRole.STOP -> "Stop"
     }
+}
+
+fun sessionAnchorStateFromName(name: String?): SessionAnchorState? {
+    if (name == null) {
+        return null
+    }
+    return SessionAnchorState.values().firstOrNull { it.name.equals(name.trim(), ignoreCase = true) }
 }
 
 fun sessionCameraFacingLabel(facing: SessionCameraFacing): String {

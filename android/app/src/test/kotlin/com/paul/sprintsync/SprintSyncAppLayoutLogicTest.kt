@@ -4,6 +4,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.paul.sprintsync.features.race_session.SessionOperatingMode
+import com.paul.sprintsync.features.race_session.SessionStage
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -112,6 +113,36 @@ class SprintSyncAppLayoutLogicTest {
     fun `monitoring connection panel only shows when debug is on`() {
         assertTrue(shouldShowMonitoringConnectionDebugInfo(showDebugInfo = true))
         assertFalse(shouldShowMonitoringConnectionDebugInfo(showDebugInfo = false))
+    }
+
+    @Test
+    fun `monitoring header reset run button only shows for xiaomi host flavor`() {
+        assertTrue(
+            shouldShowMonitoringTopResetRunButton(
+                stage = SessionStage.MONITORING,
+                isHost = true,
+                operatingMode = SessionOperatingMode.NETWORK_RACE,
+                deviceProfile = "host_xiaomi",
+            ),
+        )
+
+        assertFalse(
+            shouldShowMonitoringTopResetRunButton(
+                stage = SessionStage.MONITORING,
+                isHost = true,
+                operatingMode = SessionOperatingMode.NETWORK_RACE,
+                deviceProfile = "client_pixel",
+            ),
+        )
+
+        assertFalse(
+            shouldShowMonitoringTopResetRunButton(
+                stage = SessionStage.LOBBY,
+                isHost = true,
+                operatingMode = SessionOperatingMode.NETWORK_RACE,
+                deviceProfile = "host_xiaomi",
+            ),
+        )
     }
 
     @Test

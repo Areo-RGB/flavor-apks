@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.os.SystemClock
 import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -21,14 +22,19 @@ import com.paul.sprintsync.core.repositories.LocalRepository
 import com.paul.sprintsync.core.services.NearbyConnectionsManager
 import com.paul.sprintsync.core.services.NearbyEvent
 import com.paul.sprintsync.core.services.NearbyTransportStrategy
+import com.paul.sprintsync.core.services.SessionConnectionsManager
+import com.paul.sprintsync.core.services.TcpConnectionsManager
 import com.paul.sprintsync.features.motion_detection.MotionCameraFacing
 import com.paul.sprintsync.features.motion_detection.MotionDetectionController
 import com.paul.sprintsync.features.race_session.RaceSessionController
+import com.paul.sprintsync.features.race_session.RaceSessionUiState
 import com.paul.sprintsync.features.race_session.SessionCameraFacing
+import com.paul.sprintsync.features.race_session.SessionClockLockReason
 import com.paul.sprintsync.features.race_session.SessionDeviceRole
 import com.paul.sprintsync.features.race_session.SessionLapResultMessage
 import com.paul.sprintsync.features.race_session.SessionNetworkRole
 import com.paul.sprintsync.features.race_session.SessionOperatingMode
+import com.paul.sprintsync.features.race_session.SessionAnchorState
 import com.paul.sprintsync.features.race_session.SessionStage
 import com.paul.sprintsync.sensor_native.SensorNativeController
 import com.paul.sprintsync.sensor_native.SensorNativeEvent
@@ -47,10 +53,12 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         private const val TIMER_REFRESH_INTERVAL_MS = 100L
         private const val TAG = "SprintSyncRuntime"
         private const val MAX_PENDING_LAPS = 100
+        private const val LOCAL_CAPTURE_RETRY_BACKOFF_MS = 1_500L
+        private const val LOCAL_CAPTURE_FRAME_WATCHDOG_MS = 2_500L
     }
 
     private lateinit var sensorNativeController: SensorNativeController
-    private lateinit var nearbyConnectionsManager: NearbyConnectionsManager
+    private lateinit var connectionsManager: SessionConnectionsManager
     private lateinit var motionDetectionController: MotionDetectionController
     private lateinit var raceSessionController: RaceSessionController
     private lateinit var previewViewFactory: SensorNativePreviewViewFactory
@@ -59,6 +67,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     private var timerRefreshJob: Job? = null
     private var isAppResumed: Boolean = false
     private var localCaptureStartPending: Boolean = false
+    private var localCaptureRetryBlockedUntilMs: Long = 0L
     private var userMonitoringEnabled: Boolean = true
     private var displayDiscoveryActive: Boolean = false
     private var displayConnectedHostEndpointId: String? = null
@@ -70,6 +79,11 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     private var displayReconnectionPending: Boolean = false
     private val pendingLapResults = ArrayDeque<SessionLapResultMessage>()
     private var pendingPermissionScope: PermissionScope = PermissionScope.NETWORK_ONLY
+    private var lastNativeFrameStatsRealtimeMs: Long = 0L
+    private var localCaptureWatchdogRestartRunId: String? = null
+    private var lastCaptureDebugKey: String? = null
+    private val isControllerOnlyHost: Boolean
+        get() = BuildConfig.HOST_CONTROLLER_ONLY && BuildConfig.AUTO_START_ROLE == "host"
 
     private enum class PermissionScope {
         NETWORK_ONLY,
@@ -87,22 +101,36 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 requireSensorDomain = requireSensorDomain,
             )
         }
-        nearbyConnectionsManager = NearbyConnectionsManager(
-            context = this,
-            nowNativeClockSyncElapsedNanos = nativeClockSyncElapsedNanos,
-        )
+        connectionsManager = if (BuildConfig.TCP_ONLY) {
+            TcpConnectionsManager(
+                hostIp = BuildConfig.TCP_HOST_IP,
+                hostPort = BuildConfig.TCP_HOST_PORT,
+                nowNativeClockSyncElapsedNanos = nativeClockSyncElapsedNanos,
+            )
+        } else {
+            NearbyConnectionsManager(
+                context = this,
+                nowNativeClockSyncElapsedNanos = nativeClockSyncElapsedNanos,
+            )
+        }
         motionDetectionController = MotionDetectionController(
             localRepository = localRepository,
             sensorNativeController = sensorNativeController,
         )
         previewViewFactory = SensorNativePreviewViewFactory(sensorNativeController)
         raceSessionController = RaceSessionController(
-            localRepository = localRepository,
-            nearbyConnectionsManager = nearbyConnectionsManager,
+            loadLastRun = { localRepository.loadLastRun() },
+            saveLastRun = { run -> localRepository.saveLastRun(run) },
+            sendMessage = { endpointId, payload, onComplete ->
+                connectionsManager.sendMessage(endpointId, payload, onComplete)
+            },
+            sendClockSyncPayload = { endpointId, payloadBytes, onComplete ->
+                connectionsManager.sendClockSyncPayload(endpointId, payloadBytes, onComplete)
+            },
         )
         raceSessionController.setLocalDeviceIdentity(localDeviceId(), localEndpointName())
         sensorNativeController.setEventListener(::onSensorEvent)
-        nearbyConnectionsManager.setEventListener(::onNearbyEvent)
+        connectionsManager.setEventListener(::onNearbyEvent)
 
         val denied = deniedPermissions(PermissionScope.NETWORK_ONLY)
         updateUiState {
@@ -135,19 +163,19 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                             displayConnectedHostName = null
                             displayDiscoveredHosts.clear()
                             raceSessionController.setNetworkRole(SessionNetworkRole.HOST)
-                            nearbyConnectionsManager.configureNativeClockSyncHost(
+                            connectionsManager.configureNativeClockSyncHost(
                                 enabled = true,
                                 requireSensorDomainClock = false,
                             )
                             try {
-                                nearbyConnectionsManager.startHosting(
+                                connectionsManager.startHosting(
                                     serviceId = DEFAULT_SERVICE_ID,
                                     endpointName = localEndpointName(),
-                                    strategy = NearbyTransportStrategy.POINT_TO_POINT,
+                                    strategy = NearbyTransportStrategy.POINT_TO_STAR,
                                 ) { result ->
                                     if (result.isSuccess) {
                                         // Defensive re-apply after startHosting normalization.
-                                        nearbyConnectionsManager.configureNativeClockSyncHost(
+                                        connectionsManager.configureNativeClockSyncHost(
                                             enabled = true,
                                             requireSensorDomainClock = false,
                                         )
@@ -175,12 +203,12 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                             displayConnectedHostName = null
                             displayDiscoveredHosts.clear()
                             raceSessionController.setNetworkRole(SessionNetworkRole.CLIENT)
-                            nearbyConnectionsManager.configureNativeClockSyncHost(
+                            connectionsManager.configureNativeClockSyncHost(
                                 enabled = false,
                                 requireSensorDomainClock = false,
                             )
                             try {
-                                nearbyConnectionsManager.startDiscovery(
+                                connectionsManager.startDiscovery(
                                     serviceId = DEFAULT_SERVICE_ID,
                                     strategy = NearbyTransportStrategy.POINT_TO_POINT,
                                 ) { result ->
@@ -198,12 +226,16 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                         }
                     },
                     onStartSingleDevice = {
+                        if (isControllerOnlyHost) {
+                            appendEvent("single device mode unavailable on controller host")
+                            return@SprintSyncApp
+                        }
                         if (uiState.value.setupBusy) return@SprintSyncApp
                         setSetupBusy(true)
                         requestPermissionsIfNeeded(PermissionScope.CAMERA_AND_NETWORK) {
                             clearDisplayRelayReconnectionState()
-                            nearbyConnectionsManager.stopAll()
-                            nearbyConnectionsManager.configureNativeClockSyncHost(
+                            connectionsManager.stopAll()
+                            connectionsManager.configureNativeClockSyncHost(
                                 enabled = false,
                                 requireSensorDomainClock = false,
                             )
@@ -229,12 +261,12 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                             displayConnectedHostEndpointId = null
                             displayConnectedHostName = null
                             displayDiscoveredHosts.clear()
-                            nearbyConnectionsManager.configureNativeClockSyncHost(
+                            connectionsManager.configureNativeClockSyncHost(
                                 enabled = false,
                                 requireSensorDomainClock = false,
                             )
                             try {
-                                nearbyConnectionsManager.startHosting(
+                                connectionsManager.startHosting(
                                     serviceId = DEFAULT_SERVICE_ID,
                                     endpointName = localEndpointName(),
                                     strategy = NearbyTransportStrategy.POINT_TO_STAR,
@@ -252,11 +284,16 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                             }
                         }
                     },
+                    onReconnectClient = {
+                        if (uiState.value.setupBusy) return@SprintSyncApp
+                        startClientDiscoveryFlow(errorPrefix = "client reconnect", setBusy = true)
+                    },
                     onStartMonitoring = {
-                        requestPermissionsIfNeeded(PermissionScope.CAMERA_AND_NETWORK) {
+                        val scope = if (isControllerOnlyHost) PermissionScope.NETWORK_ONLY else PermissionScope.CAMERA_AND_NETWORK
+                        requestPermissionsIfNeeded(scope) {
                             val started = raceSessionController.startMonitoring()
                             if (started) {
-                                userMonitoringEnabled = true
+                                userMonitoringEnabled = !isControllerOnlyHost
                             }
 
                             logRuntimeDiagnostic(
@@ -271,7 +308,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                             displayDiscoveryActive = true
                             displayDiscoveredHosts.clear()
                             try {
-                                nearbyConnectionsManager.startDiscovery(
+                                connectionsManager.startDiscovery(
                                     serviceId = DEFAULT_SERVICE_ID,
                                     strategy = NearbyTransportStrategy.POINT_TO_STAR,
                                 ) { result ->
@@ -290,7 +327,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                     },
                     onConnectDisplayHost = { endpointId ->
                         try {
-                            nearbyConnectionsManager.requestConnection(
+                            connectionsManager.requestConnection(
                                 endpointId = endpointId,
                                 endpointName = localEndpointName(),
                             ) { result ->
@@ -305,6 +342,11 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                         }
                     },
                     onSetMonitoringEnabled = { enabled ->
+                        if (isControllerOnlyHost) {
+                            userMonitoringEnabled = false
+                            syncControllerSummaries()
+                            return@SprintSyncApp
+                        }
                         userMonitoringEnabled = enabled
                         if (!enabled) {
                             localCaptureStartPending = false
@@ -317,8 +359,8 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                         when (uiState.value.operatingMode) {
                             SessionOperatingMode.SINGLE_DEVICE -> {
                                 raceSessionController.stopSingleDeviceMonitoring()
-                                nearbyConnectionsManager.stopAll()
-                                nearbyConnectionsManager.configureNativeClockSyncHost(
+                                connectionsManager.stopAll()
+                                connectionsManager.configureNativeClockSyncHost(
                                     enabled = false,
                                     requireSensorDomainClock = false,
                                 )
@@ -330,8 +372,8 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                             }
                             SessionOperatingMode.DISPLAY_HOST -> {
                                 raceSessionController.stopDisplayHostMode()
-                                nearbyConnectionsManager.stopAll()
-                                nearbyConnectionsManager.configureNativeClockSyncHost(
+                                connectionsManager.stopAll()
+                                connectionsManager.configureNativeClockSyncHost(
                                     enabled = false,
                                     requireSensorDomainClock = false,
                                 )
@@ -364,18 +406,22 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                         syncControllerSummaries()
                     },
                     onUpdateThreshold = { value ->
+                        if (isControllerOnlyHost) return@SprintSyncApp
                         motionDetectionController.updateThreshold(value)
                         syncControllerSummaries()
                     },
                     onUpdateRoiCenter = { value ->
+                        if (isControllerOnlyHost) return@SprintSyncApp
                         motionDetectionController.updateRoiCenter(value)
                         syncControllerSummaries()
                     },
                     onUpdateRoiWidth = { value ->
+                        if (isControllerOnlyHost) return@SprintSyncApp
                         motionDetectionController.updateRoiWidth(value)
                         syncControllerSummaries()
                     },
                     onUpdateCooldown = { value ->
+                        if (isControllerOnlyHost) return@SprintSyncApp
                         motionDetectionController.updateCooldown(value)
                         syncControllerSummaries()
                     },
@@ -386,7 +432,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                         } else {
                             raceSessionController.stopHostingAndReturnToSetup()
                         }
-                        nearbyConnectionsManager.stopAll()
+                        connectionsManager.stopAll()
                         if (motionDetectionController.uiState.value.monitoring) {
                             motionDetectionController.stopMonitoring()
                         }
@@ -399,6 +445,40 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                         syncControllerSummaries()
                     },
                 )
+            }
+        }
+
+        if (BuildConfig.TCP_ONLY && BuildConfig.AUTO_START_ROLE != "none") {
+            lifecycleScope.launch {
+                delay(250)
+                if (BuildConfig.AUTO_START_ROLE == "host") {
+                    setSetupBusy(true)
+                    requestPermissionsIfNeeded(PermissionScope.NETWORK_ONLY) {
+                        clearDisplayRelayReconnectionState()
+                        displayDiscoveryActive = false
+                        displayConnectedHostEndpointId = null
+                        displayConnectedHostName = null
+                        displayDiscoveredHosts.clear()
+                        raceSessionController.setNetworkRole(SessionNetworkRole.HOST)
+                        connectionsManager.configureNativeClockSyncHost(
+                            enabled = true,
+                            requireSensorDomainClock = false,
+                        )
+                        connectionsManager.startHosting(
+                            serviceId = DEFAULT_SERVICE_ID,
+                            endpointName = localEndpointName(),
+                            strategy = NearbyTransportStrategy.POINT_TO_STAR,
+                        ) { result ->
+                            result.exceptionOrNull()?.let { error ->
+                                appendEvent("host auto-start error: ${error.localizedMessage ?: "unknown"}")
+                            }
+                            setSetupBusy(false)
+                            syncControllerSummaries()
+                        }
+                    }
+                } else if (BuildConfig.AUTO_START_ROLE == "client") {
+                    startClientDiscoveryFlow(errorPrefix = "client auto-start", setBusy = true)
+                }
             }
         }
     }
@@ -430,8 +510,8 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     override fun onDestroy() {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         stopTimerRefreshLoop()
-        nearbyConnectionsManager.stopAll()
-        nearbyConnectionsManager.setEventListener(null)
+        connectionsManager.stopAll()
+        connectionsManager.setEventListener(null)
         sensorNativeController.setEventListener(null)
         sensorNativeController.dispose()
         super.onDestroy()
@@ -476,6 +556,36 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         updateUiState { copy(setupBusy = busy) }
     }
 
+    private fun startClientDiscoveryFlow(errorPrefix: String, setBusy: Boolean) {
+        if (setBusy) {
+            setSetupBusy(true)
+        }
+        requestPermissionsIfNeeded(PermissionScope.NETWORK_ONLY) {
+            clearDisplayRelayReconnectionState()
+            displayDiscoveryActive = false
+            displayConnectedHostEndpointId = null
+            displayConnectedHostName = null
+            displayDiscoveredHosts.clear()
+            raceSessionController.setNetworkRole(SessionNetworkRole.CLIENT)
+            connectionsManager.configureNativeClockSyncHost(
+                enabled = false,
+                requireSensorDomainClock = false,
+            )
+            connectionsManager.startDiscovery(
+                serviceId = DEFAULT_SERVICE_ID,
+                strategy = NearbyTransportStrategy.POINT_TO_POINT,
+            ) { result ->
+                result.exceptionOrNull()?.let { error ->
+                    appendEvent("$errorPrefix error: ${error.localizedMessage ?: "unknown"}")
+                }
+                if (setBusy) {
+                    setSetupBusy(false)
+                }
+                syncControllerSummaries()
+            }
+        }
+    }
+
     private fun onNearbyEvent(event: NearbyEvent) {
         when (uiState.value.operatingMode) {
             SessionOperatingMode.NETWORK_RACE -> {
@@ -485,7 +595,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                     val role = state.networkRole
                     if (role == SessionNetworkRole.CLIENT && state.connectedEndpoints.isEmpty()) {
                         try {
-                            nearbyConnectionsManager.requestConnection(
+                            connectionsManager.requestConnection(
                                 endpointId = event.endpointId,
                                 endpointName = localEndpointName(),
                             ) { result ->
@@ -499,7 +609,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                     }
                 } else if (event is NearbyEvent.EndpointDisconnected) {
                     if (state.networkRole == SessionNetworkRole.NONE) {
-                        nearbyConnectionsManager.stopAll()
+                        connectionsManager.stopAll()
                     }
                 }
             }
@@ -510,7 +620,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                         // Auto-connect if not connected or if reconnection is pending
                         if (displayConnectedHostEndpointId == null || displayReconnectionPending) {
                             try {
-                                nearbyConnectionsManager.requestConnection(
+                                connectionsManager.requestConnection(
                                     endpointId = event.endpointId,
                                     endpointName = localEndpointName(),
                                 ) { result ->
@@ -553,7 +663,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                                 displayDiscoveryActive = true
                                 displayDiscoveredHosts.clear()
                                 try {
-                                    nearbyConnectionsManager.startDiscovery(
+                                    connectionsManager.startDiscovery(
                                         serviceId = DEFAULT_SERVICE_ID,
                                         strategy = NearbyTransportStrategy.POINT_TO_STAR,
                                     ) { result ->
@@ -628,8 +738,8 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             is NearbyEvent.ClockSyncSampleReceived -> "clock_sync_sample_received"
             is NearbyEvent.Error -> "error"
         }
-        val connectedCount = nearbyConnectionsManager.connectedEndpoints().size
-        val role = nearbyConnectionsManager.currentRole().name.lowercase()
+        val connectedCount = connectionsManager.connectedEndpoints().size
+        val role = connectionsManager.currentRole().name.lowercase()
         updateUiState {
             copy(
                 networkSummary = "$role mode, $connectedCount connected",
@@ -641,8 +751,30 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     }
 
     private fun onSensorEvent(event: SensorNativeEvent) {
-        if (event is SensorNativeEvent.State || event is SensorNativeEvent.Error) {
+        if (isControllerOnlyHost) {
+            val type = when (event) {
+                is SensorNativeEvent.FrameStats -> "native_frame_stats"
+                is SensorNativeEvent.Trigger -> "native_trigger"
+                is SensorNativeEvent.State -> "native_state"
+                is SensorNativeEvent.Diagnostic -> "native_diagnostic"
+                is SensorNativeEvent.Error -> "native_error"
+            }
+            updateUiState { copy(lastSensorEvent = type) }
+            return
+        }
+        if (event is SensorNativeEvent.Error) {
+            if (localCaptureStartPending) {
+                localCaptureStartPending = false
+                localCaptureRetryBlockedUntilMs = SystemClock.elapsedRealtime() + LOCAL_CAPTURE_RETRY_BACKOFF_MS
+            }
+            logRuntimeDiagnostic("sensor error: ${event.message}")
+        }
+        if (event is SensorNativeEvent.State && event.monitoring) {
             localCaptureStartPending = false
+            localCaptureRetryBlockedUntilMs = 0L
+        }
+        if (event is SensorNativeEvent.FrameStats) {
+            lastNativeFrameStatsRealtimeMs = SystemClock.elapsedRealtime()
         }
         motionDetectionController.handleSensorEvent(event)
         val localOffsetNanos = when (event) {
@@ -710,13 +842,16 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             is SensorNativeEvent.Diagnostic -> "native_diagnostic"
             is SensorNativeEvent.Error -> "native_error"
         }
+        val controllerEvent = raceSessionController.uiState.value.lastEvent ?: "-"
+        val motionMonitoring = motionDetectionController.uiState.value.monitoring
+        logRuntimeDiagnostic("sensor:$type controllerEvent=$controllerEvent motionMonitoring=$motionMonitoring")
         updateUiState { copy(lastSensorEvent = type) }
         syncControllerSummaries()
         appendEvent("sensor:$type")
     }
 
     private fun firstConnectedEndpointId(): String? {
-        return nearbyConnectionsManager.connectedEndpoints().firstOrNull()
+        return connectionsManager.connectedEndpoints().firstOrNull()
     }
 
     private fun syncControllerSummaries() {
@@ -726,6 +861,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         val mode = raceState.operatingMode
         applyRequestedOrientationForMode(mode)
         val shouldRunLocalCapture = shouldRunLocalMonitoring()
+        val startRetryBlocked = SystemClock.elapsedRealtime() < localCaptureRetryBlockedUntilMs
 
         if (raceState.stage == SessionStage.LOBBY || raceState.stage == SessionStage.MONITORING) {
             sensorNativeController.warmupGpsSync()
@@ -737,11 +873,15 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 isAppResumed = isAppResumed,
                 shouldRunLocalCapture = shouldRunLocalCapture,
                 isLocalMotionMonitoring = motionBefore.monitoring,
-                localCaptureStartPending = localCaptureStartPending,
+                localCaptureStartPending = localCaptureStartPending || startRetryBlocked,
             )
         ) {
             LocalCaptureAction.START -> {
                 localCaptureStartPending = true
+                localCaptureRetryBlockedUntilMs = 0L
+                if (lastNativeFrameStatsRealtimeMs == 0L) {
+                    lastNativeFrameStatsRealtimeMs = SystemClock.elapsedRealtime()
+                }
                 logRuntimeDiagnostic(
                     "local capture start: role=${raceSessionController.localDeviceRole().name} stage=${raceState.stage.name}",
                 )
@@ -751,6 +891,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
 
             LocalCaptureAction.STOP -> {
                 localCaptureStartPending = false
+                localCaptureRetryBlockedUntilMs = 0L
                 logRuntimeDiagnostic(
                     "local capture stop: role=${raceSessionController.localDeviceRole().name} stage=${raceState.stage.name}",
                 )
@@ -758,6 +899,21 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             }
 
             LocalCaptureAction.NONE -> Unit
+        }
+
+        maybeRestartLocalCaptureIfFrameStatsStalled(
+            raceState = raceState,
+            motionMonitoring = motionBefore.monitoring,
+            shouldRunLocalCapture = shouldRunLocalCapture,
+        )
+
+        val captureDebugKey =
+            "${raceState.lastEvent}|${motionBefore.monitoring}|${raceSessionController.localDeviceRole().name}|${raceState.stage.name}"
+        if (lastCaptureDebugKey != captureDebugKey) {
+            lastCaptureDebugKey = captureDebugKey
+            logRuntimeDiagnostic(
+                "capture summary: controllerEvent=${raceState.lastEvent ?: "-"} motionMonitoring=${motionBefore.monitoring} role=${raceSessionController.localDeviceRole().name} stage=${raceState.stage.name}",
+            )
         }
 
         if (
@@ -774,7 +930,9 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
 
         val motionState = motionDetectionController.uiState.value
 
-        val monitoringSummary = if (motionState.monitoring) {
+        val monitoringSummary = if (isControllerOnlyHost) {
+            "Controller"
+        } else if (motionState.monitoring) {
             "Monitoring"
         } else {
             "Idle"
@@ -784,7 +942,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         val liveConnectedEndpoints = when (mode) {
             SessionOperatingMode.NETWORK_RACE -> raceState.connectedEndpoints
             SessionOperatingMode.SINGLE_DEVICE -> setOfNotNull(displayConnectedHostEndpointId)
-            SessionOperatingMode.DISPLAY_HOST -> nearbyConnectionsManager.connectedEndpoints()
+            SessionOperatingMode.DISPLAY_HOST -> connectionsManager.connectedEndpoints()
         }
         val hasPeers = liveConnectedEndpoints.isNotEmpty()
         val localRole = raceSessionController.localDeviceRole()
@@ -816,7 +974,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
 
                 if (hostEndpoint != null) {
                     // Connected - send immediately
-                    nearbyConnectionsManager.sendMessage(hostEndpoint, lapMessage.toJsonString()) { result ->
+                    connectionsManager.sendMessage(hostEndpoint, lapMessage.toJsonString()) { result ->
                         result.exceptionOrNull()?.let { error ->
                             appendEvent("lap relay error: ${error.localizedMessage ?: "unknown"}")
                         }
@@ -856,11 +1014,24 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             raceState.monitoringActive &&
             hasPeers &&
             localRole != SessionDeviceRole.UNASSIGNED &&
-            !raceSessionController.hasFreshAnyClockLock()
+            (!raceSessionController.hasFreshAnyClockLock() || raceState.anchorState == SessionAnchorState.LOST)
         ) {
-            "Clock sync lock is invalid. Triggers from this device are being dropped until sync recovers."
+            if (raceState.anchorState == SessionAnchorState.LOST) {
+                "Start anchor disconnected. Run is frozen until anchor reconnects or run is reset."
+            } else {
+                "Clock sync lock is invalid. Triggers from this device are being dropped until sync recovers."
+            }
         } else {
             null
+        }
+        val anchorDeviceName = raceState.anchorDeviceId?.let { anchorId ->
+            raceState.devices.firstOrNull { it.id == anchorId }?.name ?: anchorId
+        }
+        val clockLockReasonLabel = when (clockState.lockReason) {
+            SessionClockLockReason.OK -> "OK"
+            SessionClockLockReason.NO_ANCHOR -> "No anchor"
+            SessionClockLockReason.LOCK_STALE -> "Stale/invalid"
+            SessionClockLockReason.ANCHOR_LOST -> "Anchor lost"
         }
 
         val runStatusLabel = when {
@@ -899,7 +1070,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             else -> "Unlocked"
         }
         val displayLapRows = buildDisplayLapRowsForConnectedDevices(
-            connectedEndpointIds = nearbyConnectionsManager.connectedEndpoints(),
+            connectedEndpointIds = connectionsManager.connectedEndpoints(),
             deviceNamesByEndpointId = displayHostDeviceNamesByEndpointId,
             elapsedByEndpointId = displayLatestLapByEndpointId,
         )
@@ -911,6 +1082,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 sessionSummary = raceState.stage.name.lowercase(),
                 monitoringSummary = monitoringSummary,
                 userMonitoringEnabled = userMonitoringEnabled,
+                isControllerOnlyHost = isControllerOnlyHost,
                 clockSummary = clockSummary,
                 startedSensorNanos = timelineForUi.hostStartSensorNanos,
                 stoppedSensorNanos = timelineForUi.hostStopSensorNanos,
@@ -918,7 +1090,11 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 canStartMonitoring = mode == SessionOperatingMode.NETWORK_RACE && raceSessionController.canStartMonitoring(),
                 isHost = isHost,
                 localRole = localRole,
-                monitoringConnectionTypeLabel = if (hasPeers) "Nearby (auto BT/Wi-Fi Direct)" else "-",
+                monitoringConnectionTypeLabel = if (hasPeers) {
+                    if (BuildConfig.TCP_ONLY) "TCP (${BuildConfig.TCP_HOST_IP}:${BuildConfig.TCP_HOST_PORT})" else "Nearby (auto BT/Wi-Fi Direct)"
+                } else {
+                    "-"
+                },
                 monitoringSyncModeLabel = monitoringSyncMode,
                 monitoringLatencyMs = monitoringLatencyMs,
                 hasConnectedPeers = hasPeers,
@@ -947,10 +1123,13 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                     raceState.discoveredEndpoints
                 },
                 connectedEndpoints = liveConnectedEndpoints,
-                networkSummary = "${nearbyConnectionsManager.currentRole().name.lowercase()} mode, ${liveConnectedEndpoints.size} connected",
+                networkSummary = "${connectionsManager.currentRole().name.lowercase()} mode, ${liveConnectedEndpoints.size} connected",
                 displayLapRows = displayLapRows,
                 displayConnectedHostName = displayConnectedHostName,
                 displayDiscoveryActive = displayDiscoveryActive,
+                anchorDeviceName = anchorDeviceName,
+                anchorState = raceState.anchorState,
+                clockLockReasonLabel = clockLockReasonLabel,
             )
         }
     }
@@ -968,20 +1147,21 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     }
 
     private fun requiredPermissions(scope: PermissionScope): List<String> {
-        val permissions = mutableListOf(
-            Manifest.permission.ACCESS_COARSE_LOCATION,
-            Manifest.permission.ACCESS_FINE_LOCATION,
-        )
+        val permissions = mutableListOf<String>()
         if (scope == PermissionScope.CAMERA_AND_NETWORK) {
             permissions += Manifest.permission.CAMERA
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissions += Manifest.permission.NEARBY_WIFI_DEVICES
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            permissions += Manifest.permission.BLUETOOTH_ADVERTISE
-            permissions += Manifest.permission.BLUETOOTH_CONNECT
-            permissions += Manifest.permission.BLUETOOTH_SCAN
+        if (!BuildConfig.TCP_ONLY) {
+            permissions += Manifest.permission.ACCESS_COARSE_LOCATION
+            permissions += Manifest.permission.ACCESS_FINE_LOCATION
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                permissions += Manifest.permission.NEARBY_WIFI_DEVICES
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                permissions += Manifest.permission.BLUETOOTH_ADVERTISE
+                permissions += Manifest.permission.BLUETOOTH_CONNECT
+                permissions += Manifest.permission.BLUETOOTH_SCAN
+            }
         }
         return permissions.distinct()
     }
@@ -1009,6 +1189,12 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     }
 
     private fun shouldRunLocalMonitoring(): Boolean {
+        if (isControllerOnlyHost) {
+            return false
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            return false
+        }
         val mode = raceSessionController.uiState.value.operatingMode
         if (mode == SessionOperatingMode.DISPLAY_HOST) {
             return false
@@ -1017,6 +1203,9 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     }
 
     private fun applyLocalMonitoringConfigFromSession() {
+        if (isControllerOnlyHost) {
+            return
+        }
         val current = motionDetectionController.uiState.value.config
         val cameraFacing = when (raceSessionController.localCameraFacing()) {
             SessionCameraFacing.FRONT -> MotionCameraFacing.FRONT
@@ -1084,6 +1273,41 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         timerRefreshJob = null
     }
 
+    private fun maybeRestartLocalCaptureIfFrameStatsStalled(
+        raceState: RaceSessionUiState,
+        motionMonitoring: Boolean,
+        shouldRunLocalCapture: Boolean,
+    ) {
+        val runId = raceState.runId ?: return
+        val role = raceSessionController.localDeviceRole()
+        if (
+            raceState.stage != SessionStage.MONITORING ||
+            !raceState.monitoringActive ||
+            role == SessionDeviceRole.UNASSIGNED ||
+            !shouldRunLocalCapture ||
+            !motionMonitoring ||
+            localCaptureWatchdogRestartRunId == runId
+        ) {
+            return
+        }
+        val nowMs = SystemClock.elapsedRealtime()
+        if (lastNativeFrameStatsRealtimeMs == 0L) {
+            return
+        }
+        val staleForMs = nowMs - lastNativeFrameStatsRealtimeMs
+        if (staleForMs < LOCAL_CAPTURE_FRAME_WATCHDOG_MS) {
+            return
+        }
+        localCaptureWatchdogRestartRunId = runId
+        localCaptureStartPending = false
+        localCaptureRetryBlockedUntilMs = 0L
+        logRuntimeDiagnostic("watchdog restart local capture: staleFrameStatsMs=$staleForMs role=${role.name} runId=$runId")
+        appendEvent("watchdog: restart local capture ($staleForMs ms stale)")
+        motionDetectionController.stopMonitoring()
+        applyLocalMonitoringConfigFromSession()
+        motionDetectionController.startMonitoring()
+    }
+
     private fun applyRequestedOrientationForMode(mode: SessionOperatingMode) {
         val targetOrientation = requestedOrientationForMode(mode)
         if (requestedOrientation != targetOrientation) {
@@ -1109,7 +1333,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
 
         while (pendingLapResults.isNotEmpty()) {
             val lapMessage = pendingLapResults.removeFirst()
-            nearbyConnectionsManager.sendMessage(hostEndpoint, lapMessage.toJsonString()) { result ->
+            connectionsManager.sendMessage(hostEndpoint, lapMessage.toJsonString()) { result ->
                 if (result.isFailure) {
                     // Re-queue at front if send fails, will retry on next flush
                     pendingLapResults.addFirst(lapMessage)
@@ -1221,3 +1445,4 @@ internal fun requestedOrientationForMode(mode: SessionOperatingMode): Int = if (
 } else {
     ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
 }
+

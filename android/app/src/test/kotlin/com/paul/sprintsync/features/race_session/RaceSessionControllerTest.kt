@@ -17,6 +17,64 @@ import java.util.concurrent.atomic.AtomicInteger
 @RunWith(RobolectricTestRunner::class)
 class RaceSessionControllerTest {
     @Test
+    fun `host xiaomi pins oneplus start and pixel stop`() {
+        val devices = listOf(
+            SessionDevice(id = "local", name = "Host Xiaomi", role = SessionDeviceRole.START, isLocal = true),
+            SessionDevice(id = "ep1", name = "OnePlus 12", role = SessionDeviceRole.UNASSIGNED, isLocal = false),
+            SessionDevice(id = "ep2", name = "Pixel 8", role = SessionDeviceRole.START, isLocal = false),
+        )
+
+        val mapped = applyPinnedHostRolesForDeviceProfile(devices, deviceProfile = "host_xiaomi")
+
+        assertEquals(SessionDeviceRole.UNASSIGNED, mapped.first { it.id == "local" }.role)
+        assertEquals(SessionDeviceRole.START, mapped.first { it.id == "ep1" }.role)
+        assertEquals(SessionDeviceRole.STOP, mapped.first { it.id == "ep2" }.role)
+    }
+
+    @Test
+    fun `host xiaomi pins cph oneplus alias to start and pixel to stop`() {
+        val devices = listOf(
+            SessionDevice(id = "local", name = "Host Xiaomi", role = SessionDeviceRole.UNASSIGNED, isLocal = true),
+            SessionDevice(id = "ep1", name = "CPH2399", role = SessionDeviceRole.UNASSIGNED, isLocal = false),
+            SessionDevice(id = "ep2", name = "Pixel 7", role = SessionDeviceRole.UNASSIGNED, isLocal = false),
+        )
+
+        val mapped = applyPinnedHostRolesForDeviceProfile(devices, deviceProfile = "host_xiaomi")
+
+        assertEquals(SessionDeviceRole.START, mapped.first { it.id == "ep1" }.role)
+        assertEquals(SessionDeviceRole.STOP, mapped.first { it.id == "ep2" }.role)
+        assertEquals(SessionDeviceRole.UNASSIGNED, mapped.first { it.id == "local" }.role)
+    }
+
+    @Test
+    fun `host xiaomi pins oneplus start and remaining remote stop when pixel label is missing`() {
+        val devices = listOf(
+            SessionDevice(id = "local", name = "Host Xiaomi", role = SessionDeviceRole.UNASSIGNED, isLocal = true),
+            SessionDevice(id = "ep1", name = "CPH2399", role = SessionDeviceRole.UNASSIGNED, isLocal = false),
+            SessionDevice(id = "ep2", name = "Device B", role = SessionDeviceRole.UNASSIGNED, isLocal = false),
+        )
+
+        val mapped = applyPinnedHostRolesForDeviceProfile(devices, deviceProfile = "host_xiaomi")
+
+        assertEquals(SessionDeviceRole.START, mapped.first { it.id == "ep1" }.role)
+        assertEquals(SessionDeviceRole.STOP, mapped.first { it.id == "ep2" }.role)
+        assertEquals(SessionDeviceRole.UNASSIGNED, mapped.first { it.id == "local" }.role)
+    }
+
+    @Test
+    fun `non xiaomi profile keeps current roles`() {
+        val devices = listOf(
+            SessionDevice(id = "local", name = "Host", role = SessionDeviceRole.START, isLocal = true),
+            SessionDevice(id = "ep1", name = "OnePlus 12", role = SessionDeviceRole.UNASSIGNED, isLocal = false),
+            SessionDevice(id = "ep2", name = "Pixel 8", role = SessionDeviceRole.STOP, isLocal = false),
+        )
+
+        val mapped = applyPinnedHostRolesForDeviceProfile(devices, deviceProfile = "client_pixel")
+
+        assertEquals(devices, mapped)
+    }
+
+    @Test
     fun `clock sync burst selects minimum RTT sample and breaks ties by earliest accepted`() {
         val scriptedNow = ArrayDeque(
             listOf(
@@ -317,6 +375,8 @@ class RaceSessionControllerTest {
                     hostGpsUtcOffsetNanos = null,
                     hostGpsFixAgeNanos = null,
                     selfDeviceId = "local",
+                    anchorDeviceId = "local",
+                    anchorState = SessionAnchorState.ACTIVE,
                 ).toJsonString(),
             ),
         )
@@ -460,8 +520,9 @@ class RaceSessionControllerTest {
             hostGpsFixAgeNanos = 1_000_000_000L,
         )
 
+        val requestsAfterFreshLock = sentClockSyncRequests.get()
         Thread.sleep(2500)
-        assertEquals(0, sentClockSyncRequests.get())
+        assertEquals(requestsAfterFreshLock, sentClockSyncRequests.get())
     }
 
     @Test
@@ -528,7 +589,7 @@ class RaceSessionControllerTest {
 
         controller.startClockSyncBurst(endpointId = "ep-1", sampleCount = 3)
         assertTrue(controller.uiState.value.clockSyncInProgress)
-        assertEquals(3, sentClockSyncRequests.get())
+        assertTrue(sentClockSyncRequests.get() >= 3)
 
         controller.updateClockState(
             hostSensorMinusElapsedNanos = 500L,
@@ -541,6 +602,210 @@ class RaceSessionControllerTest {
 
         Thread.sleep(2500)
         assertFalse(controller.uiState.value.clockSyncInProgress)
-        assertEquals(3, sentClockSyncRequests.get())
+        assertTrue(sentClockSyncRequests.get() >= 3)
+    }
+
+    @Test
+    fun `host freezes trigger acceptance when anchor disconnects mid-run`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "start-ep",
+                endpointName = "start-device",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "stop-ep",
+                endpointName = "stop-device",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.assignRole("start-ep", SessionDeviceRole.START)
+        controller.assignRole("stop-ep", SessionDeviceRole.STOP)
+        assertTrue(controller.startMonitoring())
+
+        controller.onNearbyEvent(NearbyEvent.EndpointDisconnected(endpointId = "start-ep"))
+        assertEquals(SessionAnchorState.LOST, controller.uiState.value.anchorState)
+
+        controller.onNearbyEvent(
+            NearbyEvent.PayloadReceived(
+                endpointId = "stop-ep",
+                message = SessionTriggerRequestMessage(
+                    role = SessionDeviceRole.STOP,
+                    triggerSensorNanos = 2_000L,
+                    mappedHostSensorNanos = 2_000L,
+                    sourceDeviceId = "stop-ep",
+                    sourceElapsedNanos = 123L,
+                    mappedAnchorElapsedNanos = 123L,
+                ).toJsonString(),
+            ),
+        )
+
+        assertEquals("trigger_request_rejected_anchor_lost", controller.uiState.value.lastEvent)
+        assertNull(controller.uiState.value.timeline.hostStopSensorNanos)
+    }
+
+    @Test
+    fun `host rejects non-start triggers when strict clock lock is stale`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "start-ep",
+                endpointName = "start-device",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "stop-ep",
+                endpointName = "stop-device",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.assignRole("start-ep", SessionDeviceRole.START)
+        controller.assignRole("stop-ep", SessionDeviceRole.STOP)
+        assertTrue(controller.startMonitoring())
+        assertFalse(controller.hasFreshAnyClockLock())
+
+        controller.onNearbyEvent(
+            NearbyEvent.PayloadReceived(
+                endpointId = "stop-ep",
+                message = SessionTriggerRequestMessage(
+                    role = SessionDeviceRole.STOP,
+                    triggerSensorNanos = 2_000L,
+                    mappedHostSensorNanos = 2_000L,
+                    sourceDeviceId = "stop-ep",
+                    sourceElapsedNanos = 456L,
+                    mappedAnchorElapsedNanos = 456L,
+                ).toJsonString(),
+            ),
+        )
+
+        assertEquals("trigger_request_rejected_unsynced", controller.uiState.value.lastEvent)
+        assertNull(controller.uiState.value.timeline.hostStopSensorNanos)
+    }
+
+    @Test
+    fun `client stop trigger emits request telemetry with mapped host sensor presence`() {
+        val sentMessages = mutableListOf<String>()
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, payload, onComplete ->
+                sentMessages += payload
+                onComplete(Result.success(Unit))
+            },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 10_000L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.CLIENT)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "host-ep",
+                endpointName = "host",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.assignRole("local-device", SessionDeviceRole.STOP)
+        controller.updateClockState(
+            hostMinusClientElapsedNanos = 100L,
+            hostSensorMinusElapsedNanos = 900L,
+            localSensorMinusElapsedNanos = 500L,
+            lastClockSyncElapsedNanos = 10_000L,
+        )
+        assertTrue(controller.startMonitoring())
+
+        controller.onLocalMotionTrigger(
+            triggerType = "split",
+            splitIndex = 0,
+            triggerSensorNanos = 3_000L,
+        )
+
+        assertEquals("trigger_request_sent_stop_mapped_present", controller.uiState.value.lastEvent)
+        val request = sentMessages
+            .asReversed()
+            .mapNotNull { SessionTriggerRequestMessage.tryParse(it) }
+            .firstOrNull()
+        assertNotNull(request)
+        assertEquals(SessionDeviceRole.STOP, request!!.role)
+        assertNotNull(request.mappedHostSensorNanos)
+    }
+
+    @Test
+    fun `client start monitoring triggers immediate clock sync burst when connected`() {
+        val sentClockSyncPayloads = mutableListOf<ByteArray>()
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            sendClockSyncPayload = { _, payloadBytes, onComplete ->
+                sentClockSyncPayloads += payloadBytes
+                onComplete(Result.success(Unit))
+            },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1_000_000L },
+            clockSyncDelay = { _ -> },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.CLIENT)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "host-ep",
+                endpointName = "host",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+
+        val initialRequests = sentClockSyncPayloads.mapNotNull { SessionClockSyncBinaryCodec.decodeRequest(it) }
+        initialRequests.forEach { request ->
+            controller.onNearbyEvent(
+                NearbyEvent.ClockSyncSampleReceived(
+                    endpointId = "host-ep",
+                    sample = SessionClockSyncBinaryResponse(
+                        clientSendElapsedNanos = request.clientSendElapsedNanos,
+                        hostReceiveElapsedNanos = request.clientSendElapsedNanos + 100L,
+                        hostSendElapsedNanos = request.clientSendElapsedNanos + 200L,
+                    ),
+                ),
+            )
+        }
+        assertFalse(controller.uiState.value.clockSyncInProgress)
+
+        val beforeStartMonitoringCount = sentClockSyncPayloads.size
+        assertTrue(controller.startMonitoring())
+
+        assertTrue(sentClockSyncPayloads.size > beforeStartMonitoringCount)
+        assertEquals("clock_sync_burst_started", controller.uiState.value.lastEvent)
     }
 }

@@ -3,8 +3,11 @@
   "private": true,
   "scripts": {
     "build:debug:apk": "cd android && gradlew.bat :app:assembleDebug",
+    "build:debug:device-flavors": "cd android && gradlew.bat :app:assembleHostXiaomiDebug :app:assembleClientPixelDebug :app:assembleClientOneplusDebug",
     "build:release:apk": "cd android && gradlew.bat :app:assembleRelease",
     "rebuild:debug:devices": "npm run build:debug:apk && node scripts/install-debug-apk.mjs",
+    "install:debug:device-flavors:adb": "node scripts/install-debug-device-flavors-adb.mjs",
+    "rebuild:debug:device-flavors:adb": "npm run build:debug:device-flavors && npm run install:debug:device-flavors:adb",
     "install:release:devices": "node scripts/install-release-apk.mjs",
     "rebuild:release:devices": "npm run build:release:apk && node scripts/install-release-apk.mjs",
     "install:debug:devices:build": "npm run rebuild:debug:devices"

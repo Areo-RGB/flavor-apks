@@ -27,6 +27,8 @@ class SensorNativeController(
         private const val TAG = "SensorNativeController"
         private const val PREVIEW_REBIND_RETRY_DELAY_MS = 200L
         private const val PREVIEW_REBIND_MAX_ATTEMPTS = 3
+        private const val ANALYZER_INACTIVITY_CHECK_MS = 1_500L
+        private const val ANALYZER_INACTIVITY_WARN_MS = 3_500L
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -83,7 +85,10 @@ class SensorNativeController(
     private var locationManager: LocationManager? = null
     private var previewView: PreviewView? = null
     private var pendingPreviewRebindRunnable: Runnable? = null
+    private var analyzerInactivityWatchdogRunnable: Runnable? = null
     private var previewRebindAttemptCount = 0
+    private var analyzerInactivityLastProcessedCount = 0L
+    private var analyzerInactivityLastProgressElapsedMs = 0L
     private val detectionMath = NativeDetectionMath(config)
 
     private val cameraSession: SensorNativeCameraSession by lazy {
@@ -218,6 +223,7 @@ class SensorNativeController(
         startMonitoringBackend(
             onStarted = {
                 monitoring = true
+                scheduleAnalyzerInactivityWatchdog()
                 emitState("monitoring")
                 onComplete(Result.success(Unit))
             },
@@ -326,6 +332,7 @@ class SensorNativeController(
     }
 
     private fun stopNativeMonitoringInternal() {
+        cancelAnalyzerInactivityWatchdog()
         cancelPreviewRebindRetries()
         monitoring = false
         stopGpsUpdates()
@@ -349,6 +356,7 @@ class SensorNativeController(
         startMonitoringBackend(
             onStarted = {
                 monitoring = true
+                scheduleAnalyzerInactivityWatchdog()
                 emitState("monitoring")
             },
             onError = { error ->
@@ -380,6 +388,8 @@ class SensorNativeController(
         fpsMonitor.reset()
         detectionMath.resetRun()
         frameDiffer.reset()
+        analyzerInactivityLastProcessedCount = 0L
+        analyzerInactivityLastProgressElapsedMs = 0L
     }
 
     private fun rebindCameraUseCasesIfMonitoring() {
@@ -455,6 +465,38 @@ class SensorNativeController(
         pendingPreviewRebindRunnable?.let(mainHandler::removeCallbacks)
         pendingPreviewRebindRunnable = null
         previewRebindAttemptCount = 0
+    }
+
+    private fun scheduleAnalyzerInactivityWatchdog() {
+        cancelAnalyzerInactivityWatchdog()
+        analyzerInactivityLastProcessedCount = processedFrameCount
+        analyzerInactivityLastProgressElapsedMs = SystemClock.elapsedRealtime()
+        val runnable = object : Runnable {
+            override fun run() {
+                if (!monitoring) {
+                    cancelAnalyzerInactivityWatchdog()
+                    return
+                }
+                val nowMs = SystemClock.elapsedRealtime()
+                if (processedFrameCount != analyzerInactivityLastProcessedCount) {
+                    analyzerInactivityLastProcessedCount = processedFrameCount
+                    analyzerInactivityLastProgressElapsedMs = nowMs
+                } else if (nowMs - analyzerInactivityLastProgressElapsedMs >= ANALYZER_INACTIVITY_WARN_MS) {
+                    emitDiagnostic(
+                        "analyzer inactivity: no processed frames for ${nowMs - analyzerInactivityLastProgressElapsedMs}ms while monitoring=true (preview=${previewView != null})",
+                    )
+                    analyzerInactivityLastProgressElapsedMs = nowMs
+                }
+                mainHandler.postDelayed(this, ANALYZER_INACTIVITY_CHECK_MS)
+            }
+        }
+        analyzerInactivityWatchdogRunnable = runnable
+        mainHandler.postDelayed(runnable, ANALYZER_INACTIVITY_CHECK_MS)
+    }
+
+    private fun cancelAnalyzerInactivityWatchdog() {
+        analyzerInactivityWatchdogRunnable?.let(mainHandler::removeCallbacks)
+        analyzerInactivityWatchdogRunnable = null
     }
 
     private fun logRuntimeDiagnostic(message: String) {
@@ -566,10 +608,11 @@ class SensorNativeController(
     }
 }
 
+@Suppress("UNUSED_PARAMETER")
 internal fun shouldSchedulePreviewRebindRetry(
     monitoring: Boolean,
     hasPreviewView: Boolean,
     hasCameraProvider: Boolean,
 ): Boolean {
-    return monitoring && hasPreviewView && hasCameraProvider
+    return monitoring && hasCameraProvider
 }

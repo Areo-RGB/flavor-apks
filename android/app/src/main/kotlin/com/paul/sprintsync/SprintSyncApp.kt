@@ -56,6 +56,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.paul.sprintsync.features.race_session.SessionCameraFacing
 import com.paul.sprintsync.features.race_session.SessionDevice
 import com.paul.sprintsync.features.race_session.SessionDeviceRole
+import com.paul.sprintsync.features.race_session.SessionAnchorState
 import com.paul.sprintsync.features.race_session.SessionNetworkRole
 import com.paul.sprintsync.features.race_session.SessionOperatingMode
 import com.paul.sprintsync.features.race_session.SessionStage
@@ -115,6 +116,10 @@ data class SprintSyncUiState(
     val displayLapRows: List<DisplayLapRow> = emptyList(),
     val displayConnectedHostName: String? = null,
     val displayDiscoveryActive: Boolean = false,
+    val isControllerOnlyHost: Boolean = false,
+    val anchorDeviceName: String? = null,
+    val anchorState: SessionAnchorState = SessionAnchorState.READY,
+    val clockLockReasonLabel: String = "-",
 )
 
 data class DisplayLapRow(
@@ -131,6 +136,7 @@ fun SprintSyncApp(
     onStartDiscovery: () -> Unit,
     onStartSingleDevice: () -> Unit,
     onStartDisplayHost: () -> Unit,
+    onReconnectClient: () -> Unit,
     onStartMonitoring: () -> Unit,
     onStartDisplayDiscovery: () -> Unit,
     onConnectDisplayHost: (String) -> Unit,
@@ -201,6 +207,18 @@ fun SprintSyncApp(
                                 (uiState.isHost || uiState.operatingMode != SessionOperatingMode.NETWORK_RACE)
                             ) {
                                 SecondaryButton(text = "Stop", onClick = onStopMonitoring)
+                                if (
+                                    shouldShowMonitoringTopResetRunButton(
+                                        stage = uiState.stage,
+                                        isHost = uiState.isHost,
+                                        operatingMode = uiState.operatingMode,
+                                        deviceProfile = BuildConfig.DEVICE_PROFILE,
+                                    )
+                                ) {
+                                    TextButton(onClick = onResetRun) {
+                                        Text("Reset Run")
+                                    }
+                                }
                             }
                             TextButton(onClick = { showDebugInfo = !showDebugInfo }) {
                                 Text(if (showDebugInfo) "Debug On" else "Debug Off")
@@ -232,6 +250,9 @@ fun SprintSyncApp(
                             onStartDiscovery = onStartDiscovery,
                             onStartSingleDevice = onStartSingleDevice,
                             onStartDisplayHost = onStartDisplayHost,
+                            onReconnectClient = onReconnectClient,
+                            showReconnectClientAction = BuildConfig.TCP_ONLY && BuildConfig.AUTO_START_ROLE == "client",
+                            hideSingleDeviceAction = uiState.isControllerOnlyHost,
                         )
                     }
                     item {
@@ -262,8 +283,14 @@ fun SprintSyncApp(
                         )
                     }
                     item {
+                        val hideLocalDeviceInAssignments = uiState.isControllerOnlyHost ||
+                            (BuildConfig.HOST_CONTROLLER_ONLY && uiState.networkRole == SessionNetworkRole.HOST)
                         DeviceAssignmentsCard(
-                            devices = uiState.devices,
+                            devices = if (hideLocalDeviceInAssignments) {
+                                uiState.devices.filterNot { it.isLocal || it.id == localDevice?.id }
+                            } else {
+                                uiState.devices
+                            },
                             editable = uiState.networkRole == SessionNetworkRole.HOST,
                             showDebugInfo = showDebugInfo,
                             onAssignRole = onAssignRole,
@@ -299,6 +326,7 @@ fun SprintSyncApp(
                         item {
                             MonitoringSummaryCard(
                                 isHost = uiState.isHost,
+                                controllerOnlyHost = uiState.isControllerOnlyHost,
                                 localRole = uiState.localRole,
                                 localCameraFacing = localDevice?.cameraFacing ?: SessionCameraFacing.REAR,
                                 showDebugInfo = showDebugInfo,
@@ -320,12 +348,15 @@ fun SprintSyncApp(
                                 discoveredDisplayHosts = uiState.discoveredEndpoints,
                                 displayConnectedHostName = uiState.displayConnectedHostName,
                                 displayDiscoveryActive = uiState.displayDiscoveryActive,
+                                anchorDeviceName = uiState.anchorDeviceName,
+                                anchorState = uiState.anchorState,
+                                clockLockReasonLabel = uiState.clockLockReasonLabel,
                                 onStartDisplayDiscovery = onStartDisplayDiscovery,
                                 onConnectDisplayHost = onConnectDisplayHost,
                                 onResetRun = onResetRun,
                             )
                         }
-                        if (showDebugInfo) {
+                        if (showDebugInfo && !uiState.isControllerOnlyHost) {
                             item {
                                 AdvancedDetectionCard(
                                     uiState = uiState,
@@ -384,7 +415,9 @@ private fun StatusCard(uiState: SprintSyncUiState) {
             SectionHeader("Session Status")
             MetricDisplay(label = "Stage", value = uiState.sessionSummary)
             MetricDisplay(label = "Network", value = uiState.networkSummary)
-            MetricDisplay(label = "Motion", value = uiState.monitoringSummary)
+            if (!uiState.isControllerOnlyHost) {
+                MetricDisplay(label = "Motion", value = uiState.monitoringSummary)
+            }
             MetricDisplay(label = "Clock", value = uiState.clockSummary)
             uiState.lastNearbyEvent?.let { Text("Last Nearby: $it") }
             uiState.lastSensorEvent?.let { Text("Last Sensor: $it") }
@@ -425,6 +458,9 @@ private fun SetupActionsCard(
     onStartDiscovery: () -> Unit,
     onStartSingleDevice: () -> Unit,
     onStartDisplayHost: () -> Unit,
+    onReconnectClient: () -> Unit,
+    showReconnectClientAction: Boolean = false,
+    hideSingleDeviceAction: Boolean = false,
 ) {
     val setupActionsEnabled = !setupBusy
 
@@ -451,12 +487,22 @@ private fun SetupActionsCard(
                 enabled = setupActionsEnabled,
                 modifier = Modifier.fillMaxWidth(),
             )
-            PrimaryButton(
-                text = "Single Device",
-                onClick = onStartSingleDevice,
-                enabled = setupActionsEnabled,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            if (showReconnectClientAction) {
+                PrimaryButton(
+                    text = "Reconnect to Pad",
+                    onClick = onReconnectClient,
+                    enabled = setupActionsEnabled,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            if (!hideSingleDeviceAction) {
+                PrimaryButton(
+                    text = "Single Device",
+                    onClick = onStartSingleDevice,
+                    enabled = setupActionsEnabled,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             PrimaryButton(
                 text = "Display",
                 onClick = onStartDisplayHost,
@@ -654,6 +700,7 @@ private fun DeviceAssignmentRow(
 @Composable
 private fun MonitoringSummaryCard(
     isHost: Boolean,
+    controllerOnlyHost: Boolean,
     localRole: SessionDeviceRole,
     localCameraFacing: SessionCameraFacing,
     showDebugInfo: Boolean,
@@ -671,6 +718,9 @@ private fun MonitoringSummaryCard(
     discoveredDisplayHosts: Map<String, String>,
     displayConnectedHostName: String?,
     displayDiscoveryActive: Boolean,
+    anchorDeviceName: String?,
+    anchorState: SessionAnchorState,
+    clockLockReasonLabel: String,
     onStartDisplayDiscovery: () -> Unit,
     onConnectDisplayHost: (String) -> Unit,
     onResetRun: () -> Unit,
@@ -685,7 +735,42 @@ private fun MonitoringSummaryCard(
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
             val useTwoColumns = maxWidth >= 340.dp
 
-            if (operatingMode == SessionOperatingMode.SINGLE_DEVICE) {
+            if (controllerOnlyHost && operatingMode != SessionOperatingMode.SINGLE_DEVICE) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Controller mode active",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "This host handles connections and race orchestration only.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray,
+                    )
+                    if (shouldShowMonitoringConnectionDebugInfo(showDebugInfo)) {
+                        Text(
+                            "Connection: $connectionTypeLabel",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
+                        )
+                        Text(
+                            "Sync: $syncModeLabel · Latency: $latencyLabel",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
+                        )
+                        Text(
+                            "Anchor: ${anchorDeviceName ?: "-"} · State: ${anchorState.name}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
+                        )
+                        Text(
+                            "Clock Lock: $clockLockReasonLabel",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
+                        )
+                    }
+                }
+            } else if (operatingMode == SessionOperatingMode.SINGLE_DEVICE) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (shouldShowMonitoringConnectionDebugInfo(showDebugInfo)) {
                         Text(
@@ -695,6 +780,16 @@ private fun MonitoringSummaryCard(
                         )
                         Text(
                             "Sync: $syncModeLabel · Latency: $latencyLabel",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
+                        )
+                        Text(
+                            "Anchor: ${anchorDeviceName ?: "-"} · State: ${anchorState.name}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
+                        )
+                        Text(
+                            "Clock Lock: $clockLockReasonLabel",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.Gray,
                         )
@@ -780,6 +875,7 @@ private fun MonitoringSummaryCard(
                     )
                     MonitoringPreviewInfoPanel(
                         isHost = isHost,
+                        controllerOnlyHost = controllerOnlyHost,
                         localRole = localRole,
                         localCameraFacing = localCameraFacing,
                         showDebugInfo = showDebugInfo,
@@ -804,6 +900,7 @@ private fun MonitoringSummaryCard(
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     MonitoringPreviewInfoPanel(
                         isHost = isHost,
+                        controllerOnlyHost = controllerOnlyHost,
                         localRole = localRole,
                         localCameraFacing = localCameraFacing,
                         showDebugInfo = showDebugInfo,
@@ -842,6 +939,7 @@ private fun MonitoringSummaryCard(
 @Composable
 private fun MonitoringPreviewInfoPanel(
     isHost: Boolean,
+    controllerOnlyHost: Boolean,
     localRole: SessionDeviceRole,
     localCameraFacing: SessionCameraFacing,
     showDebugInfo: Boolean,
@@ -888,7 +986,7 @@ private fun MonitoringPreviewInfoPanel(
                 color = Color.Gray,
             )
         }
-        if (shouldShowMonitoringPreviewToggle(operatingMode)) {
+        if (!controllerOnlyHost && shouldShowMonitoringPreviewToggle(operatingMode)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -902,7 +1000,7 @@ private fun MonitoringPreviewInfoPanel(
                 )
             }
         }
-        if (shouldShowSingleDeviceCameraFacingToggle(operatingMode)) {
+        if (!controllerOnlyHost && shouldShowSingleDeviceCameraFacingToggle(operatingMode)) {
             Spacer(Modifier.height(4.dp))
             SingleChoiceSegmentedButtonRow {
                 SegmentedButton(
@@ -1234,6 +1332,18 @@ internal fun shouldShowMonitoringResetAction(
     startedSensorNanos: Long?,
     stoppedSensorNanos: Long?,
 ): Boolean = isHost && startedSensorNanos != null
+
+internal fun shouldShowMonitoringTopResetRunButton(
+    stage: SessionStage,
+    isHost: Boolean,
+    operatingMode: SessionOperatingMode,
+    deviceProfile: String,
+): Boolean {
+    val canStopMonitoring =
+        stage == SessionStage.MONITORING &&
+            (isHost || operatingMode != SessionOperatingMode.NETWORK_RACE)
+    return canStopMonitoring && deviceProfile == "host_xiaomi"
+}
 
 internal fun shouldShowDisplayRelayControls(mode: SessionOperatingMode): Boolean =
     mode == SessionOperatingMode.SINGLE_DEVICE

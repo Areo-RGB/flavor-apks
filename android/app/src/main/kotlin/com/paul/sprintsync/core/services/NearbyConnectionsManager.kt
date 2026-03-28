@@ -48,7 +48,7 @@ class NearbyConnectionsManager(
     context: Context,
     private val nowNativeClockSyncElapsedNanos: (requireSensorDomainClock: Boolean) -> Long?,
     private val connectionsClient: ConnectionsClient = Nearby.getConnectionsClient(context),
-) {
+) : SessionConnectionsManager {
     companion object {
         private const val CONNECTION_REQUEST_STALE_TIMEOUT_MILLIS = 10_000L
     }
@@ -68,18 +68,13 @@ class NearbyConnectionsManager(
     private var requestedEndpointSetAtMillis: Long = 0L
     private var nativeClockSyncHostEnabled = false
     private var nativeClockSyncRequireSensorDomain = false
-
-    fun setEventListener(listener: ((NearbyEvent) -> Unit)?) {
+    override fun setEventListener(listener: ((NearbyEvent) -> Unit)?) {
         eventListener = listener
     }
-
-    fun currentRole(): NearbyRole = activeRole
-
-    fun currentStrategy(): NearbyTransportStrategy = activeStrategy
-
-    fun connectedEndpoints(): Set<String> = connectedEndpointIds.toSet()
-
-    fun configureNativeClockSyncHost(enabled: Boolean, requireSensorDomainClock: Boolean) {
+    override fun currentRole(): NearbyRole = activeRole
+    override fun currentStrategy(): NearbyTransportStrategy = activeStrategy
+    override fun connectedEndpoints(): Set<String> = connectedEndpointIds.toSet()
+    override fun configureNativeClockSyncHost(enabled: Boolean, requireSensorDomainClock: Boolean) {
         nativeClockSyncHostEnabled = enabled
         nativeClockSyncRequireSensorDomain = requireSensorDomainClock
     }
@@ -87,8 +82,7 @@ class NearbyConnectionsManager(
     @VisibleForTesting
     internal fun nativeClockSyncHostConfigForTest(): Pair<Boolean, Boolean> =
         nativeClockSyncHostEnabled to nativeClockSyncRequireSensorDomain
-
-    fun startHosting(
+    override fun startHosting(
         serviceId: String,
         endpointName: String,
         strategy: NearbyTransportStrategy,
@@ -115,8 +109,7 @@ class NearbyConnectionsManager(
         activeRole = NearbyRole.NONE
         activeStrategy = NearbyTransportStrategy.POINT_TO_POINT
     }
-
-    fun startDiscovery(serviceId: String, strategy: NearbyTransportStrategy, onComplete: (Result<Unit>) -> Unit) {
+    override fun startDiscovery(serviceId: String, strategy: NearbyTransportStrategy, onComplete: (Result<Unit>) -> Unit) {
         normalizeForRole(NearbyRole.CLIENT, strategy)
         val options = DiscoveryOptions.Builder()
             .setStrategy(strategy.nearbyStrategy)
@@ -138,8 +131,7 @@ class NearbyConnectionsManager(
         activeRole = NearbyRole.NONE
         activeStrategy = NearbyTransportStrategy.POINT_TO_POINT
     }
-
-    fun requestConnection(endpointId: String, endpointName: String, onComplete: (Result<Unit>) -> Unit) {
+    override fun requestConnection(endpointId: String, endpointName: String, onComplete: (Result<Unit>) -> Unit) {
         expireStaleConnectionRequestState()
         if (activeRole != NearbyRole.CLIENT) {
             onComplete(Result.failure(IllegalStateException("requestConnection ignored: not in client mode.")))
@@ -178,8 +170,7 @@ class NearbyConnectionsManager(
                 onComplete(Result.failure(error))
             }
     }
-
-    fun sendMessage(endpointId: String, messageJson: String, onComplete: (Result<Unit>) -> Unit) {
+    override fun sendMessage(endpointId: String, messageJson: String, onComplete: (Result<Unit>) -> Unit) {
         if (!connectedEndpointIds.contains(endpointId)) {
             onComplete(
                 Result.failure(IllegalStateException("sendMessage ignored: endpoint not connected ($endpointId).")),
@@ -195,8 +186,7 @@ class NearbyConnectionsManager(
                 onComplete(Result.failure(error))
             }
     }
-
-    fun sendClockSyncPayload(endpointId: String, payloadBytes: ByteArray, onComplete: (Result<Unit>) -> Unit) {
+    override fun sendClockSyncPayload(endpointId: String, payloadBytes: ByteArray, onComplete: (Result<Unit>) -> Unit) {
         if (!connectedEndpointIds.contains(endpointId)) {
             onComplete(
                 Result.failure(
@@ -220,8 +210,7 @@ class NearbyConnectionsManager(
         clearEndpointState(endpointId)
         emitEvent(NearbyEvent.EndpointDisconnected(endpointId = endpointId))
     }
-
-    fun stopAll() {
+    override fun stopAll() {
         connectionsClient.stopAdvertising()
         connectionsClient.stopDiscovery()
         connectionsClient.stopAllEndpoints()
@@ -496,3 +485,4 @@ class NearbyConnectionsManager(
         mainHandler.post { listener(event) }
     }
 }
+

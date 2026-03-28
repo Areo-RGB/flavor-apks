@@ -27,10 +27,58 @@ android {
         versionCode = 1
         versionName = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("boolean", "TCP_ONLY", "false")
+        buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.10\"")
+        buildConfigField("int", "TCP_HOST_PORT", "9000")
+        buildConfigField("String", "AUTO_START_ROLE", "\"none\"")
+        buildConfigField("String", "DEVICE_PROFILE", "\"default\"")
+        buildConfigField("boolean", "HOST_CONTROLLER_ONLY", "false")
+        resValue("string", "app_name", "Sprint Sync")
+    }
+
+    flavorDimensions += "deviceProfile"
+    productFlavors {
+        create("hostXiaomi") {
+            dimension = "deviceProfile"
+            applicationIdSuffix = ".host.xiaomi"
+            versionNameSuffix = "-host-xiaomi"
+            buildConfigField("boolean", "TCP_ONLY", "true")
+            buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.10\"")
+            buildConfigField("int", "TCP_HOST_PORT", "9000")
+            buildConfigField("String", "AUTO_START_ROLE", "\"host\"")
+            buildConfigField("String", "DEVICE_PROFILE", "\"host_xiaomi\"")
+            buildConfigField("boolean", "HOST_CONTROLLER_ONLY", "true")
+            resValue("string", "app_name", "Sprint Sync Host (Xiaomi)")
+        }
+        create("clientPixel") {
+            dimension = "deviceProfile"
+            applicationIdSuffix = ".client.pixel"
+            versionNameSuffix = "-client-pixel"
+            buildConfigField("boolean", "TCP_ONLY", "true")
+            buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.103\"")
+            buildConfigField("int", "TCP_HOST_PORT", "9000")
+            buildConfigField("String", "AUTO_START_ROLE", "\"client\"")
+            buildConfigField("String", "DEVICE_PROFILE", "\"client_pixel\"")
+            buildConfigField("boolean", "HOST_CONTROLLER_ONLY", "false")
+            resValue("string", "app_name", "Sprint Sync Client (Pixel)")
+        }
+        create("clientOneplus") {
+            dimension = "deviceProfile"
+            applicationIdSuffix = ".client.oneplus"
+            versionNameSuffix = "-client-oneplus"
+            buildConfigField("boolean", "TCP_ONLY", "true")
+            buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.103\"")
+            buildConfigField("int", "TCP_HOST_PORT", "9000")
+            buildConfigField("String", "AUTO_START_ROLE", "\"client\"")
+            buildConfigField("String", "DEVICE_PROFILE", "\"client_oneplus\"")
+            buildConfigField("boolean", "HOST_CONTROLLER_ONLY", "false")
+            resValue("string", "app_name", "Sprint Sync Client (OnePlus)")
+        }
     }
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     buildTypes {
@@ -90,7 +138,7 @@ tasks.withType<Test>().configureEach {
 }
 
 tasks.register<JacocoReport>("jacocoTestReport") {
-    dependsOn("testDebugUnitTest")
+    dependsOn("testHostXiaomiDebugUnitTest")
 
     reports {
         xml.required.set(true)
@@ -109,7 +157,7 @@ tasks.register<JacocoReport>("jacocoTestReport") {
         )
 
     val kotlinClasses =
-        fileTree("${layout.buildDirectory.get()}/tmp/kotlin-classes/debug") {
+        fileTree("${layout.buildDirectory.get()}/tmp/kotlin-classes/hostXiaomiDebug") {
             exclude(coverageExclusions)
         }
 
@@ -117,8 +165,8 @@ tasks.register<JacocoReport>("jacocoTestReport") {
     sourceDirectories.setFrom(files("src/main/java", "src/main/kotlin"))
     executionData.setFrom(
         fileTree(layout.buildDirectory.get().asFile) {
-            include("outputs/unit_test_code_coverage/debugUnitTest/testDebugUnitTest.exec")
-            include("jacoco/testDebugUnitTest.exec")
+            include("outputs/unit_test_code_coverage/*DebugUnitTest/*.exec")
+            include("jacoco/test*DebugUnitTest.exec")
         },
     )
 }
