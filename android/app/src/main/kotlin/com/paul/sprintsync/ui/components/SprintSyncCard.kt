@@ -12,14 +12,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
 enum class CardHighlightIntent {
-    NONE, ACTIVE, WARNING, ERROR
+    NONE,
+    ACTIVE,
+    WARNING,
+    ERROR,
 }
 
 @Composable
 fun SprintSyncCard(
     modifier: Modifier = Modifier,
     highlightIntent: CardHighlightIntent = CardHighlightIntent.NONE,
-    content: @Composable ColumnScope.() -> Unit
+    content: @Composable ColumnScope.() -> Unit,
 ) {
     val containerColor = when (highlightIntent) {
         CardHighlightIntent.ACTIVE -> MaterialTheme.colorScheme.secondaryContainer
@@ -40,12 +43,12 @@ fun SprintSyncCard(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
             containerColor = containerColor,
-            contentColor = contentColor
-        )
+            contentColor = contentColor,
+        ),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
-            content = content
+            content = content,
         )
     }
 }

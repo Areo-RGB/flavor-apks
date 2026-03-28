@@ -182,10 +182,7 @@ class SensorNativeController(
         }
     }
 
-    fun currentClockSyncElapsedNanos(
-        maxSensorSampleAgeNanos: Long,
-        requireSensorDomain: Boolean,
-    ): Long? {
+    fun currentClockSyncElapsedNanos(maxSensorSampleAgeNanos: Long, requireSensorDomain: Boolean): Long? {
         val nowElapsedNanos = SystemClock.elapsedRealtimeNanos()
         val sampledElapsedNanos = lastSensorElapsedSampleNanos
         val sampledCapturedAtNanos = lastSensorElapsedSampleCapturedAtNanos
@@ -201,10 +198,7 @@ class SensorNativeController(
         return nowElapsedNanos
     }
 
-    fun startNativeMonitoring(
-        monitoringConfig: NativeMonitoringConfig,
-        onComplete: (Result<Unit>) -> Unit,
-    ) {
+    fun startNativeMonitoring(monitoringConfig: NativeMonitoringConfig, onComplete: (Result<Unit>) -> Unit) {
         val permission = ContextCompat.checkSelfPermission(activity, Manifest.permission.CAMERA)
         if (permission != PackageManager.PERMISSION_GRANTED) {
             val message = "Camera permission is required before starting native monitoring."
@@ -298,17 +292,11 @@ class SensorNativeController(
         }
     }
 
-    private fun startMonitoringBackend(
-        onStarted: () -> Unit,
-        onError: (String) -> Unit,
-    ) {
+    private fun startMonitoringBackend(onStarted: () -> Unit, onError: (String) -> Unit) {
         startNormalBackend(onStarted = onStarted, onError = onError)
     }
 
-    private fun startNormalBackend(
-        onStarted: () -> Unit,
-        onError: (String) -> Unit,
-    ) {
+    private fun startNormalBackend(onStarted: () -> Unit, onError: (String) -> Unit) {
         activeCameraFpsMode = NativeCameraFpsMode.NORMAL
         val providerFuture = ProcessCameraProvider.getInstance(activity)
         providerFuture.addListener(

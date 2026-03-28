@@ -20,7 +20,11 @@ import java.util.concurrent.ConcurrentHashMap
 typealias RaceSessionLoadLastRun = suspend () -> LastRunResult?
 typealias RaceSessionSaveLastRun = suspend (LastRunResult) -> Unit
 typealias RaceSessionSendMessage = (endpointId: String, messageJson: String, onComplete: (Result<Unit>) -> Unit) -> Unit
-typealias RaceSessionSendClockSyncPayload = (endpointId: String, payloadBytes: ByteArray, onComplete: (Result<Unit>) -> Unit) -> Unit
+typealias RaceSessionSendClockSyncPayload = (
+    endpointId: String,
+    payloadBytes: ByteArray,
+    onComplete: (Result<Unit>) -> Unit,
+) -> Unit
 typealias RaceSessionClockSyncDelay = suspend (delayMillis: Long) -> Unit
 
 private data class AcceptedClockSyncSample(
@@ -163,8 +167,9 @@ class RaceSessionController(
             while (true) {
                 kotlinx.coroutines.delay(2000)
                 val state = _uiState.value
-                if (state.networkRole == SessionNetworkRole.CLIENT && 
-                    (state.stage == SessionStage.LOBBY || state.stage == SessionStage.MONITORING)) {
+                if (state.networkRole == SessionNetworkRole.CLIENT &&
+                    (state.stage == SessionStage.LOBBY || state.stage == SessionStage.MONITORING)
+                ) {
                     val endpointId = state.connectedEndpoints.firstOrNull()
                     if (endpointId != null &&
                         !state.clockSyncInProgress &&
@@ -852,12 +857,14 @@ class RaceSessionController(
                 !existing.isLocal && existing.id == event.endpointId
             }
             val preserved = stableEntry ?: existingForEndpoint
-            val reconciled = (preserved ?: SessionDevice(
-                id = event.endpointId,
-                name = endpointName,
-                role = SessionDeviceRole.UNASSIGNED,
-                isLocal = false,
-            )).copy(
+            val reconciled = (
+                preserved ?: SessionDevice(
+                    id = event.endpointId,
+                    name = endpointName,
+                    role = SessionDeviceRole.UNASSIGNED,
+                    isLocal = false,
+                )
+                ).copy(
                 id = event.endpointId,
                 name = endpointName,
                 isLocal = false,
@@ -998,8 +1005,8 @@ class RaceSessionController(
         }
         val offset = (
             (response.hostReceiveElapsedNanos - response.clientSendElapsedNanos) +
-            (response.hostSendElapsedNanos - receiveElapsedNanos)
-        ) / 2L
+                (response.hostSendElapsedNanos - receiveElapsedNanos)
+            ) / 2L
         acceptedClockSyncSamples += AcceptedClockSyncSample(
             offsetNanos = offset,
             roundTripNanos = roundTripNanos,
@@ -1233,12 +1240,14 @@ class RaceSessionController(
                     (previousEndpointId != null && previousEndpointId != endpointId && existing.id == previousEndpointId)
                 )
         }
-        val reconciledDevice = (preservedDevice ?: SessionDevice(
-            id = endpointId,
-            name = identity.deviceName,
-            role = SessionDeviceRole.UNASSIGNED,
-            isLocal = false,
-        )).copy(
+        val reconciledDevice = (
+            preservedDevice ?: SessionDevice(
+                id = endpointId,
+                name = identity.deviceName,
+                role = SessionDeviceRole.UNASSIGNED,
+                isLocal = false,
+            )
+            ).copy(
             id = endpointId,
             name = identity.deviceName,
             isLocal = false,
@@ -1353,5 +1362,4 @@ class RaceSessionController(
     private fun localDeviceName(): String {
         return localDeviceFromState().name
     }
-
 }

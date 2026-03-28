@@ -5,17 +5,11 @@ import android.os.SystemClock
 object ClockDomain {
     fun nowElapsedNanos(): Long = SystemClock.elapsedRealtimeNanos()
 
-    fun sensorToElapsedNanos(
-        sensorNanos: Long,
-        sensorMinusElapsedNanos: Long,
-    ): Long {
+    fun sensorToElapsedNanos(sensorNanos: Long, sensorMinusElapsedNanos: Long): Long {
         return sensorNanos - sensorMinusElapsedNanos
     }
 
-    fun elapsedToSensorNanos(
-        elapsedNanos: Long,
-        sensorMinusElapsedNanos: Long,
-    ): Long {
+    fun elapsedToSensorNanos(elapsedNanos: Long, sensorMinusElapsedNanos: Long): Long {
         return elapsedNanos + sensorMinusElapsedNanos
     }
 

@@ -116,11 +116,7 @@ class NearbyConnectionsManager(
         activeStrategy = NearbyTransportStrategy.POINT_TO_POINT
     }
 
-    fun startDiscovery(
-        serviceId: String,
-        strategy: NearbyTransportStrategy,
-        onComplete: (Result<Unit>) -> Unit,
-    ) {
+    fun startDiscovery(serviceId: String, strategy: NearbyTransportStrategy, onComplete: (Result<Unit>) -> Unit) {
         normalizeForRole(NearbyRole.CLIENT, strategy)
         val options = DiscoveryOptions.Builder()
             .setStrategy(strategy.nearbyStrategy)
@@ -143,22 +139,24 @@ class NearbyConnectionsManager(
         activeStrategy = NearbyTransportStrategy.POINT_TO_POINT
     }
 
-    fun requestConnection(
-        endpointId: String,
-        endpointName: String,
-        onComplete: (Result<Unit>) -> Unit,
-    ) {
+    fun requestConnection(endpointId: String, endpointName: String, onComplete: (Result<Unit>) -> Unit) {
         expireStaleConnectionRequestState()
         if (activeRole != NearbyRole.CLIENT) {
             onComplete(Result.failure(IllegalStateException("requestConnection ignored: not in client mode.")))
             return
         }
         if (connectedEndpointIds.isNotEmpty() && !connectedEndpointIds.contains(endpointId)) {
-            onComplete(Result.failure(IllegalStateException("requestConnection ignored: already connected to another endpoint.")))
+            onComplete(
+                Result.failure(
+                    IllegalStateException("requestConnection ignored: already connected to another endpoint."),
+                ),
+            )
             return
         }
         if (pendingEndpointId != null && pendingEndpointId != endpointId) {
-            onComplete(Result.failure(IllegalStateException("requestConnection ignored: another connection is pending.")))
+            onComplete(
+                Result.failure(IllegalStateException("requestConnection ignored: another connection is pending.")),
+            )
             return
         }
         if (requestedEndpointId != null && requestedEndpointId != endpointId) {
@@ -181,13 +179,11 @@ class NearbyConnectionsManager(
             }
     }
 
-    fun sendMessage(
-        endpointId: String,
-        messageJson: String,
-        onComplete: (Result<Unit>) -> Unit,
-    ) {
+    fun sendMessage(endpointId: String, messageJson: String, onComplete: (Result<Unit>) -> Unit) {
         if (!connectedEndpointIds.contains(endpointId)) {
-            onComplete(Result.failure(IllegalStateException("sendMessage ignored: endpoint not connected ($endpointId).")))
+            onComplete(
+                Result.failure(IllegalStateException("sendMessage ignored: endpoint not connected ($endpointId).")),
+            )
             return
         }
         val payload = Payload.fromBytes(messageJson.toByteArray(StandardCharsets.UTF_8))
@@ -200,13 +196,13 @@ class NearbyConnectionsManager(
             }
     }
 
-    fun sendClockSyncPayload(
-        endpointId: String,
-        payloadBytes: ByteArray,
-        onComplete: (Result<Unit>) -> Unit,
-    ) {
+    fun sendClockSyncPayload(endpointId: String, payloadBytes: ByteArray, onComplete: (Result<Unit>) -> Unit) {
         if (!connectedEndpointIds.contains(endpointId)) {
-            onComplete(Result.failure(IllegalStateException("sendClockSyncPayload ignored: endpoint not connected ($endpointId).")))
+            onComplete(
+                Result.failure(
+                    IllegalStateException("sendClockSyncPayload ignored: endpoint not connected ($endpointId)."),
+                ),
+            )
             return
         }
         val payload = Payload.fromBytes(payloadBytes)

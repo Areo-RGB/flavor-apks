@@ -195,4 +195,61 @@ class MainActivityMonitoringLogicTest {
             ),
         )
     }
+
+    @Test
+    fun `display rows show READY for connected endpoints with no lap yet`() {
+        val rows = buildDisplayLapRowsForConnectedDevices(
+            connectedEndpointIds = linkedSetOf("ep-1"),
+            deviceNamesByEndpointId = mapOf("ep-1" to "Pixel 7"),
+            elapsedByEndpointId = emptyMap(),
+        )
+
+        assertEquals(1, rows.size)
+        assertEquals("Pixel 7", rows[0].deviceName)
+        assertEquals("READY", rows[0].lapTimeLabel)
+    }
+
+    @Test
+    fun `display rows show formatted lap for connected endpoints with lap`() {
+        val rows = buildDisplayLapRowsForConnectedDevices(
+            connectedEndpointIds = linkedSetOf("ep-1"),
+            deviceNamesByEndpointId = mapOf("ep-1" to "Pixel 7"),
+            elapsedByEndpointId = mapOf("ep-1" to 1_730_000_000L),
+        )
+
+        assertEquals(1, rows.size)
+        assertEquals("Pixel 7", rows[0].deviceName)
+        assertEquals(formatElapsedTimerDisplay(1_730L), rows[0].lapTimeLabel)
+    }
+
+    @Test
+    fun `display rows include mixed connected devices with lap and READY`() {
+        val rows = buildDisplayLapRowsForConnectedDevices(
+            connectedEndpointIds = linkedSetOf("ep-1", "ep-2"),
+            deviceNamesByEndpointId = mapOf("ep-1" to "Pixel 7", "ep-2" to "CPH2399"),
+            elapsedByEndpointId = mapOf("ep-1" to 1_730_000_000L),
+        )
+
+        assertEquals(2, rows.size)
+        assertEquals("Pixel 7", rows[0].deviceName)
+        assertEquals(formatElapsedTimerDisplay(1_730L), rows[0].lapTimeLabel)
+        assertEquals("CPH2399", rows[1].deviceName)
+        assertEquals("READY", rows[1].lapTimeLabel)
+    }
+
+    @Test
+    fun `display rows only include currently connected endpoints`() {
+        val rows = buildDisplayLapRowsForConnectedDevices(
+            connectedEndpointIds = linkedSetOf("ep-2"),
+            deviceNamesByEndpointId = mapOf("ep-1" to "Pixel 7", "ep-2" to "CPH2399"),
+            elapsedByEndpointId = mapOf(
+                "ep-1" to 1_730_000_000L,
+                "ep-2" to 1_770_000_000L,
+            ),
+        )
+
+        assertEquals(1, rows.size)
+        assertEquals("CPH2399", rows[0].deviceName)
+        assertEquals(formatElapsedTimerDisplay(1_770L), rows[0].lapTimeLabel)
+    }
 }

@@ -134,10 +134,7 @@ internal class SensorNativeCameraSession(
         emitError("Failed to apply max FPS controls; keeping preview with camera defaults: $reason")
     }
 
-    private fun scheduleAeAwbLock(
-        binding: CameraBinding,
-        fpsRange: Range<Int>,
-    ) {
+    private fun scheduleAeAwbLock(binding: CameraBinding, fpsRange: Range<Int>) {
         cancelPendingAeAwbLock()
         val warmupStartMs = SystemClock.elapsedRealtime()
         val lockRunnable = Runnable {
@@ -231,9 +228,7 @@ internal object SensorNativeCameraPolicy {
         return Range(selectedBounds.first, selectedBounds.second)
     }
 
-    fun selectPreferredNormalFrameRateBounds(
-        bounds: Iterable<Pair<Int, Int>>?,
-    ): Pair<Int, Int>? {
+    fun selectPreferredNormalFrameRateBounds(bounds: Iterable<Pair<Int, Int>>?): Pair<Int, Int>? {
         if (bounds == null) {
             return null
         }
@@ -258,9 +253,7 @@ internal object SensorNativeCameraPolicy {
         return Range(selectedBounds.first, selectedBounds.second)
     }
 
-    fun selectHighestFrameRateBounds(
-        bounds: Iterable<Pair<Int, Int>>?,
-    ): Pair<Int, Int>? {
+    fun selectHighestFrameRateBounds(bounds: Iterable<Pair<Int, Int>>?): Pair<Int, Int>? {
         if (bounds == null) {
             return null
         }

@@ -18,16 +18,16 @@ fun PrimaryButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     icon: ImageVector? = null,
-    enabled: Boolean = true
+    enabled: Boolean = true,
 ) {
     Button(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier
+        modifier = modifier,
     ) {
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             icon?.let {
                 Icon(imageVector = it, contentDescription = null)
@@ -43,16 +43,16 @@ fun SecondaryButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     icon: ImageVector? = null,
-    enabled: Boolean = true
+    enabled: Boolean = true,
 ) {
     OutlinedButton(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier
+        modifier = modifier,
     ) {
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             icon?.let {
                 Icon(imageVector = it, contentDescription = null)

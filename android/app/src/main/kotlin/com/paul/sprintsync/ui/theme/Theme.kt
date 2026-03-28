@@ -37,7 +37,7 @@ private val LightColorScheme = lightColorScheme(
 fun SprintSyncTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = false, // disabled to enforce branding
-    content: @Composable () -> Unit
+    content: @Composable () -> Unit,
 ) {
     val colorScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
@@ -61,6 +61,6 @@ fun SprintSyncTheme(
         colorScheme = colorScheme,
         typography = Typography,
         shapes = Shapes,
-        content = content
+        content = content,
     )
 }

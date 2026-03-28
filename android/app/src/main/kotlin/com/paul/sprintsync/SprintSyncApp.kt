@@ -1,18 +1,15 @@
 package com.paul.sprintsync
 
-import com.paul.sprintsync.ui.components.*
-import com.paul.sprintsync.ui.theme.*
-
-import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,7 +19,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -31,8 +27,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.Slider
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -49,9 +45,9 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
@@ -66,6 +62,9 @@ import com.paul.sprintsync.features.race_session.SessionStage
 import com.paul.sprintsync.features.race_session.sessionCameraFacingLabel
 import com.paul.sprintsync.features.race_session.sessionDeviceRoleLabel
 import com.paul.sprintsync.sensor_native.SensorNativePreviewViewFactory
+import com.paul.sprintsync.ui.components.*
+import com.paul.sprintsync.ui.theme.*
+import com.paul.sprintsync.ui.theme.InterExtraBoldTabularTypography
 
 data class SprintSyncUiState(
     val permissionGranted: Boolean = false,
@@ -157,26 +156,22 @@ fun SprintSyncApp(
     Scaffold(
         topBar = {},
     ) { paddingValues ->
-        LazyColumn(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
-                .padding(
-                    horizontal = if (isDisplayHostMode) 6.dp else 16.dp,
-                    vertical = if (isDisplayHostMode) 6.dp else 12.dp,
-                ),
-            verticalArrangement = Arrangement.spacedBy(if (isDisplayHostMode) 4.dp else 12.dp),
+                .padding(paddingValues),
         ) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(
+                        horizontal = if (isDisplayHostMode) 6.dp else 16.dp,
+                        vertical = if (isDisplayHostMode) 6.dp else 12.dp,
+                    ),
+                verticalArrangement = Arrangement.spacedBy(if (isDisplayHostMode) 4.dp else 12.dp),
+            ) {
             item {
-                if (isDisplayHostMode) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        SecondaryButton(text = "Stop", onClick = onStopMonitoring)
-                    }
-                } else {
+                if (!isDisplayHostMode) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -288,60 +283,60 @@ fun SprintSyncApp(
                             )
                         }
                     } else {
-                    item {
-                        RunMetricsCard(
-                            uiState = uiState,
-                            isHost = uiState.isHost,
-                            showDebugInfo = showDebugInfo,
-                            onResetRun = onResetRun,
-                        )
-                    }
-                    if (uiState.clockLockWarningText != null) {
                         item {
-                            ClockWarningCard(uiState.clockLockWarningText)
-                        }
-                    }
-                    item {
-                        MonitoringSummaryCard(
-                            isHost = uiState.isHost,
-                            localRole = uiState.localRole,
-                            localCameraFacing = localDevice?.cameraFacing ?: SessionCameraFacing.REAR,
-                            showDebugInfo = showDebugInfo,
-                            connectionTypeLabel = uiState.monitoringConnectionTypeLabel,
-                            syncModeLabel = uiState.monitoringSyncModeLabel,
-                            latencyMs = uiState.monitoringLatencyMs,
-                            userMonitoringEnabled = uiState.userMonitoringEnabled,
-                            onSetMonitoringEnabled = onSetMonitoringEnabled,
-                            onAssignLocalCameraFacing = { facing ->
-                                localDevice?.let { device ->
-                                    onAssignCameraFacing(device.id, facing)
-                                }
-                            },
-                            effectiveShowPreview = effectiveShowPreview,
-                            onShowPreviewChanged = { showPreview = it },
-                            previewViewFactory = previewViewFactory,
-                            roiCenterX = uiState.roiCenterX,
-                            operatingMode = uiState.operatingMode,
-                            discoveredDisplayHosts = uiState.discoveredEndpoints,
-                            displayConnectedHostName = uiState.displayConnectedHostName,
-                            displayDiscoveryActive = uiState.displayDiscoveryActive,
-                            onStartDisplayDiscovery = onStartDisplayDiscovery,
-                            onConnectDisplayHost = onConnectDisplayHost,
-                            onResetRun = onResetRun,
-                        )
-                    }
-                    if (showDebugInfo) {
-                        item {
-                            AdvancedDetectionCard(
+                            RunMetricsCard(
                                 uiState = uiState,
+                                isHost = uiState.isHost,
                                 showDebugInfo = showDebugInfo,
-                                onUpdateThreshold = onUpdateThreshold,
-                                onUpdateRoiCenter = onUpdateRoiCenter,
-                                onUpdateRoiWidth = onUpdateRoiWidth,
-                                onUpdateCooldown = onUpdateCooldown,
+                                onResetRun = onResetRun,
                             )
                         }
-                    }
+                        if (uiState.clockLockWarningText != null) {
+                            item {
+                                ClockWarningCard(uiState.clockLockWarningText)
+                            }
+                        }
+                        item {
+                            MonitoringSummaryCard(
+                                isHost = uiState.isHost,
+                                localRole = uiState.localRole,
+                                localCameraFacing = localDevice?.cameraFacing ?: SessionCameraFacing.REAR,
+                                showDebugInfo = showDebugInfo,
+                                connectionTypeLabel = uiState.monitoringConnectionTypeLabel,
+                                syncModeLabel = uiState.monitoringSyncModeLabel,
+                                latencyMs = uiState.monitoringLatencyMs,
+                                userMonitoringEnabled = uiState.userMonitoringEnabled,
+                                onSetMonitoringEnabled = onSetMonitoringEnabled,
+                                onAssignLocalCameraFacing = { facing ->
+                                    localDevice?.let { device ->
+                                        onAssignCameraFacing(device.id, facing)
+                                    }
+                                },
+                                effectiveShowPreview = effectiveShowPreview,
+                                onShowPreviewChanged = { showPreview = it },
+                                previewViewFactory = previewViewFactory,
+                                roiCenterX = uiState.roiCenterX,
+                                operatingMode = uiState.operatingMode,
+                                discoveredDisplayHosts = uiState.discoveredEndpoints,
+                                displayConnectedHostName = uiState.displayConnectedHostName,
+                                displayDiscoveryActive = uiState.displayDiscoveryActive,
+                                onStartDisplayDiscovery = onStartDisplayDiscovery,
+                                onConnectDisplayHost = onConnectDisplayHost,
+                                onResetRun = onResetRun,
+                            )
+                        }
+                        if (showDebugInfo) {
+                            item {
+                                AdvancedDetectionCard(
+                                    uiState = uiState,
+                                    showDebugInfo = showDebugInfo,
+                                    onUpdateThreshold = onUpdateThreshold,
+                                    onUpdateRoiCenter = onUpdateRoiCenter,
+                                    onUpdateRoiWidth = onUpdateRoiWidth,
+                                    onUpdateCooldown = onUpdateCooldown,
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -355,6 +350,27 @@ fun SprintSyncApp(
             if (showDebugInfo && uiState.recentEvents.isNotEmpty()) {
                 item {
                     EventsCard(uiState.recentEvents)
+                }
+            }
+            }
+
+            if (isDisplayHostMode) {
+                OutlinedButton(
+                    onClick = onStopMonitoring,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 20.dp, end = 20.dp),
+                    border = BorderStroke(2.5.dp, Color.Black),
+                    shape = RoundedCornerShape(50.dp),
+                ) {
+                    Text(
+                        text = "STOP",
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.8.sp,
+                        ),
+                        color = Color.Black,
+                    )
                 }
             }
         }
@@ -672,8 +688,16 @@ private fun MonitoringSummaryCard(
             if (operatingMode == SessionOperatingMode.SINGLE_DEVICE) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (shouldShowMonitoringConnectionDebugInfo(showDebugInfo)) {
-                        Text("Connection: $connectionTypeLabel", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                        Text("Sync: $syncModeLabel · Latency: $latencyLabel", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        Text(
+                            "Connection: $connectionTypeLabel",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
+                        )
+                        Text(
+                            "Sync: $syncModeLabel · Latency: $latencyLabel",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
+                        )
                     }
                     if (shouldShowSingleDeviceCameraFacingToggle(operatingMode)) {
                         Box(
@@ -858,7 +882,11 @@ private fun MonitoringPreviewInfoPanel(
         }
         if (shouldShowMonitoringConnectionDebugInfo(showDebugInfo)) {
             Text("Connection: $connectionTypeLabel", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-            Text("Sync: $syncModeLabel · Latency: $latencyLabel", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Text(
+                "Sync: $syncModeLabel · Latency: $latencyLabel",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray,
+            )
         }
         if (shouldShowMonitoringPreviewToggle(operatingMode)) {
             Row(
@@ -935,10 +963,7 @@ private fun ClockWarningCard(text: String) {
 }
 
 @Composable
-private fun PreviewSurface(
-    previewViewFactory: SensorNativePreviewViewFactory,
-    roiCenterX: Double,
-) {
+private fun PreviewSurface(previewViewFactory: SensorNativePreviewViewFactory, roiCenterX: Double) {
     Box(
         modifier = Modifier
             .width(180.dp)
@@ -954,7 +979,7 @@ private fun PreviewSurface(
             },
             onRelease = { view ->
                 previewViewFactory.detachPreviewView(view)
-            }
+            },
         )
         Canvas(modifier = Modifier.fillMaxSize()) {
             val normalized = roiCenterX.coerceIn(0.0, 1.0).toFloat()
@@ -1061,7 +1086,10 @@ private fun RunMetricsCard(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             if (shouldShowCameraFpsInfo(showDebugInfo)) {
-                Text("Camera: $fpsLabel fps · ${uiState.cameraFpsModeLabel}$targetSuffix", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "Camera: $fpsLabel fps · ${uiState.cameraFpsModeLabel}$targetSuffix",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
             Text(
                 text = uiState.elapsedDisplay,
@@ -1076,11 +1104,11 @@ private fun RunMetricsCard(
 }
 
 @Composable
-private fun DisplayResultsCard(
-    rows: List<DisplayLapRow>,
-    modifier: Modifier = Modifier,
-) {
+private fun DisplayResultsCard(rows: List<DisplayLapRow>, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val displayCardBackground = Color(0xFFFFCC00)
+        val displayTimeColor = Color(0xFF000000)
+        val displayDeviceColor = Color(0xFF000000)
         val density = LocalDensity.current
         val layout = displayLayoutSpecForCount(rows.size)
         if (rows.isEmpty()) {
@@ -1119,8 +1147,8 @@ private fun DisplayResultsCard(
                     modifier = Modifier
                         .width(cardWidth)
                         .height(cardHeight)
-                        .clip(MaterialTheme.shapes.large)
-                        .background(Color(0xFFEDEDF1))
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(displayCardBackground)
                         .padding(horizontal = layout.horizontalPadding, vertical = layout.verticalPadding),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
@@ -1130,24 +1158,24 @@ private fun DisplayResultsCard(
                         style = MaterialTheme.typography.bodySmall.merge(
                             TextStyle(
                                 fontSize = clampedDeviceFont,
-                                fontWeight = FontWeight.Medium,
+                                fontWeight = FontWeight.SemiBold,
+                                letterSpacing = 0.5.sp,
                             ),
                         ),
-                        color = Color(0xFF3F3F48),
+                        color = displayDeviceColor,
                         textAlign = TextAlign.Center,
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = row.lapTimeLabel,
                         style = MaterialTheme.typography.displayLarge.merge(
-                            TabularMonospaceTypography.merge(
+                            InterExtraBoldTabularTypography.merge(
                                 TextStyle(
                                     fontSize = clampedTimeFont,
-                                    fontWeight = FontWeight.Bold,
                                 ),
                             ),
                         ),
-                        color = Color(0xFF101015),
+                        color = displayTimeColor,
                         textAlign = TextAlign.Center,
                         maxLines = 1,
                         softWrap = false,
@@ -1171,10 +1199,7 @@ private fun ConnectedCard(connectedEndpoints: Set<String>) {
 }
 
 @Composable
-private fun ConnectedDevicesListCard(
-    devices: List<SessionDevice>,
-    showDebugInfo: Boolean,
-) {
+private fun ConnectedDevicesListCard(devices: List<SessionDevice>, showDebugInfo: Boolean) {
     SprintSyncCard {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             SectionHeader("Connected Devices")
@@ -1191,7 +1216,7 @@ private fun ConnectedDevicesListCard(
 @Composable
 private fun EventsCard(recentEvents: List<String>) {
     SprintSyncCard {
-        Column() {
+        Column {
             SectionHeader("Recent Events")
             Spacer(Modifier.height(8.dp))
             recentEvents.forEach { event ->
@@ -1201,10 +1226,8 @@ private fun EventsCard(recentEvents: List<String>) {
     }
 }
 
-internal fun shouldShowSetupPermissionWarning(
-    permissionGranted: Boolean,
-    deniedPermissions: List<String>,
-): Boolean = !permissionGranted && deniedPermissions.isNotEmpty()
+internal fun shouldShowSetupPermissionWarning(permissionGranted: Boolean, deniedPermissions: List<String>): Boolean =
+    !permissionGranted && deniedPermissions.isNotEmpty()
 
 internal fun shouldShowMonitoringResetAction(
     isHost: Boolean,

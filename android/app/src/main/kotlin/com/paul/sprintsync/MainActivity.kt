@@ -17,27 +17,26 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import com.paul.sprintsync.core.repositories.LocalRepository
-import com.paul.sprintsync.core.services.NearbyEvent
 import com.paul.sprintsync.core.services.NearbyConnectionsManager
+import com.paul.sprintsync.core.services.NearbyEvent
 import com.paul.sprintsync.core.services.NearbyTransportStrategy
 import com.paul.sprintsync.features.motion_detection.MotionCameraFacing
 import com.paul.sprintsync.features.motion_detection.MotionDetectionController
 import com.paul.sprintsync.features.race_session.RaceSessionController
 import com.paul.sprintsync.features.race_session.SessionCameraFacing
-import com.paul.sprintsync.features.race_session.SessionLapResultMessage
 import com.paul.sprintsync.features.race_session.SessionDeviceRole
+import com.paul.sprintsync.features.race_session.SessionLapResultMessage
 import com.paul.sprintsync.features.race_session.SessionNetworkRole
 import com.paul.sprintsync.features.race_session.SessionOperatingMode
 import com.paul.sprintsync.features.race_session.SessionStage
 import com.paul.sprintsync.sensor_native.SensorNativeController
 import com.paul.sprintsync.sensor_native.SensorNativeEvent
 import com.paul.sprintsync.sensor_native.SensorNativePreviewViewFactory
-import com.paul.sprintsync.features.race_session.sessionDeviceRoleLabel
-import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsResultCallback {
     companion object {
@@ -46,6 +45,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         private const val SENSOR_ELAPSED_PROJECTION_MAX_AGE_NANOS = 3_000_000_000L
         private const val TIMER_REFRESH_INTERVAL_MS = 100L
         private const val TAG = "SprintSyncRuntime"
+        private const val MAX_PENDING_LAPS = 100
     }
 
     private lateinit var sensorNativeController: SensorNativeController
@@ -63,8 +63,11 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     private var displayConnectedHostEndpointId: String? = null
     private var displayConnectedHostName: String? = null
     private val displayDiscoveredHosts = linkedMapOf<String, String>()
-    private val displayLatestLapByDevice = linkedMapOf<String, Long>()
+    private val displayHostDeviceNamesByEndpointId = linkedMapOf<String, String>()
+    private val displayLatestLapByEndpointId = linkedMapOf<String, Long>()
     private var lastRelayedStopSensorNanos: Long? = null
+    private var displayReconnectionPending: Boolean = false
+    private val pendingLapResults = ArrayDeque<SessionLapResultMessage>()
     private var pendingPermissionScope: PermissionScope = PermissionScope.NETWORK_ONLY
 
     private enum class PermissionScope {
@@ -111,203 +114,92 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         setContent {
             com.paul.sprintsync.ui.theme.SprintSyncTheme {
                 SprintSyncApp(
-                uiState = uiState.value,
-                previewViewFactory = previewViewFactory,
-                onRequestPermissions = {
-                    if (uiState.value.setupBusy) return@SprintSyncApp
-                    setSetupBusy(true)
-                    requestPermissionsIfNeeded(PermissionScope.NETWORK_ONLY) {
-                        setSetupBusy(false)
-                    }
-                },
-                onStartHosting = {
-                    if (uiState.value.setupBusy) return@SprintSyncApp
-                    setSetupBusy(true)
-                    requestPermissionsIfNeeded(PermissionScope.NETWORK_ONLY) {
-                        displayDiscoveryActive = false
-                        displayConnectedHostEndpointId = null
-                        displayConnectedHostName = null
-                        displayDiscoveredHosts.clear()
-                        raceSessionController.setNetworkRole(SessionNetworkRole.HOST)
-                        nearbyConnectionsManager.configureNativeClockSyncHost(
-                            enabled = true,
-                            requireSensorDomainClock = false,
-                        )
-                        try {
-                            nearbyConnectionsManager.startHosting(
-                                serviceId = DEFAULT_SERVICE_ID,
-                                endpointName = localEndpointName(),
-                                strategy = NearbyTransportStrategy.POINT_TO_POINT,
-                            ) { result ->
-                                if (result.isSuccess) {
-                                    // Defensive re-apply after startHosting normalization.
-                                    nearbyConnectionsManager.configureNativeClockSyncHost(
-                                        enabled = true,
-                                        requireSensorDomainClock = false,
-                                    )
-                                }
-                                result.exceptionOrNull()?.let { error ->
-                                    appendEvent("host error: ${error.localizedMessage ?: "unknown"}")
-                                }
-                                setSetupBusy(false)
-                                syncControllerSummaries()
-                            }
-                        } catch (error: Throwable) {
-                            appendEvent("host error: ${error.localizedMessage ?: "unknown"}")
+                    uiState = uiState.value,
+                    previewViewFactory = previewViewFactory,
+                    onRequestPermissions = {
+                        if (uiState.value.setupBusy) return@SprintSyncApp
+                        setSetupBusy(true)
+                        requestPermissionsIfNeeded(PermissionScope.NETWORK_ONLY) {
                             setSetupBusy(false)
-                            syncControllerSummaries()
                         }
-                    }
-                },
-                onStartDiscovery = {
-                    if (uiState.value.setupBusy) return@SprintSyncApp
-                    setSetupBusy(true)
-                    requestPermissionsIfNeeded(PermissionScope.NETWORK_ONLY) {
-                        displayDiscoveryActive = false
-                        displayConnectedHostEndpointId = null
-                        displayConnectedHostName = null
-                        displayDiscoveredHosts.clear()
-                        raceSessionController.setNetworkRole(SessionNetworkRole.CLIENT)
-                        nearbyConnectionsManager.configureNativeClockSyncHost(
-                            enabled = false,
-                            requireSensorDomainClock = false,
-                        )
-                        try {
-                            nearbyConnectionsManager.startDiscovery(
-                                serviceId = DEFAULT_SERVICE_ID,
-                                strategy = NearbyTransportStrategy.POINT_TO_POINT,
-                            ) { result ->
-                                result.exceptionOrNull()?.let { error ->
-                                    appendEvent("discovery error: ${error.localizedMessage ?: "unknown"}")
-                                }
-                                setSetupBusy(false)
-                                syncControllerSummaries()
-                            }
-                        } catch (error: Throwable) {
-                            appendEvent("discovery error: ${error.localizedMessage ?: "unknown"}")
-                            setSetupBusy(false)
-                            syncControllerSummaries()
-                        }
-                    }
-                },
-                onStartSingleDevice = {
-                    if (uiState.value.setupBusy) return@SprintSyncApp
-                    setSetupBusy(true)
-                    requestPermissionsIfNeeded(PermissionScope.CAMERA_AND_NETWORK) {
-                        nearbyConnectionsManager.stopAll()
-                        nearbyConnectionsManager.configureNativeClockSyncHost(
-                            enabled = false,
-                            requireSensorDomainClock = false,
-                        )
-                        displayDiscoveryActive = false
-                        displayConnectedHostEndpointId = null
-                        displayConnectedHostName = null
-                        displayDiscoveredHosts.clear()
-                        lastRelayedStopSensorNanos = null
-                        raceSessionController.startSingleDeviceMonitoring()
-                        userMonitoringEnabled = true
-                        setSetupBusy(false)
-                        syncControllerSummaries()
-                    }
-                },
-                onStartDisplayHost = {
-                    if (uiState.value.setupBusy) return@SprintSyncApp
-                    setSetupBusy(true)
-                    requestPermissionsIfNeeded(PermissionScope.NETWORK_ONLY) {
-                        raceSessionController.startDisplayHostMode()
-                        displayLatestLapByDevice.clear()
-                        displayDiscoveryActive = false
-                        displayConnectedHostEndpointId = null
-                        displayConnectedHostName = null
-                        displayDiscoveredHosts.clear()
-                        nearbyConnectionsManager.configureNativeClockSyncHost(
-                            enabled = false,
-                            requireSensorDomainClock = false,
-                        )
-                        try {
-                            nearbyConnectionsManager.startHosting(
-                                serviceId = DEFAULT_SERVICE_ID,
-                                endpointName = localEndpointName(),
-                                strategy = NearbyTransportStrategy.POINT_TO_STAR,
-                            ) { result ->
-                                result.exceptionOrNull()?.let { error ->
-                                    appendEvent("display host error: ${error.localizedMessage ?: "unknown"}")
-                                }
-                                setSetupBusy(false)
-                                syncControllerSummaries()
-                            }
-                        } catch (error: Throwable) {
-                            appendEvent("display host error: ${error.localizedMessage ?: "unknown"}")
-                            setSetupBusy(false)
-                            syncControllerSummaries()
-                        }
-                    }
-                },
-                onStartMonitoring = {
-                    requestPermissionsIfNeeded(PermissionScope.CAMERA_AND_NETWORK) {
-                        val started = raceSessionController.startMonitoring()
-                        if (started) {
-                            userMonitoringEnabled = true
-                        }
-
-                        logRuntimeDiagnostic(
-                            "startMonitoring requested: started=$started role=${raceSessionController.localDeviceRole().name} " +
-                                "shouldRunLocal=${shouldRunLocalMonitoring()} resumed=$isAppResumed",
-                        )
-                        syncControllerSummaries()
-                    }
-                },
-                onStartDisplayDiscovery = {
-                    requestPermissionsIfNeeded(PermissionScope.NETWORK_ONLY) {
-                        displayDiscoveryActive = true
-                        displayDiscoveredHosts.clear()
-                        try {
-                            nearbyConnectionsManager.startDiscovery(
-                                serviceId = DEFAULT_SERVICE_ID,
-                                strategy = NearbyTransportStrategy.POINT_TO_STAR,
-                            ) { result ->
-                                result.exceptionOrNull()?.let { error ->
-                                    appendEvent("display discovery error: ${error.localizedMessage ?: "unknown"}")
-                                    displayDiscoveryActive = false
-                                }
-                                syncControllerSummaries()
-                            }
-                        } catch (error: Throwable) {
+                    },
+                    onStartHosting = {
+                        if (uiState.value.setupBusy) return@SprintSyncApp
+                        setSetupBusy(true)
+                        requestPermissionsIfNeeded(PermissionScope.NETWORK_ONLY) {
+                            clearDisplayRelayReconnectionState()
                             displayDiscoveryActive = false
-                            appendEvent("display discovery error: ${error.localizedMessage ?: "unknown"}")
-                            syncControllerSummaries()
-                        }
-                    }
-                },
-                onConnectDisplayHost = { endpointId ->
-                    try {
-                        nearbyConnectionsManager.requestConnection(
-                            endpointId = endpointId,
-                            endpointName = localEndpointName(),
-                        ) { result ->
-                            result.exceptionOrNull()?.let { error ->
-                                appendEvent("display connect error: ${error.localizedMessage ?: "unknown"}")
+                            displayConnectedHostEndpointId = null
+                            displayConnectedHostName = null
+                            displayDiscoveredHosts.clear()
+                            raceSessionController.setNetworkRole(SessionNetworkRole.HOST)
+                            nearbyConnectionsManager.configureNativeClockSyncHost(
+                                enabled = true,
+                                requireSensorDomainClock = false,
+                            )
+                            try {
+                                nearbyConnectionsManager.startHosting(
+                                    serviceId = DEFAULT_SERVICE_ID,
+                                    endpointName = localEndpointName(),
+                                    strategy = NearbyTransportStrategy.POINT_TO_POINT,
+                                ) { result ->
+                                    if (result.isSuccess) {
+                                        // Defensive re-apply after startHosting normalization.
+                                        nearbyConnectionsManager.configureNativeClockSyncHost(
+                                            enabled = true,
+                                            requireSensorDomainClock = false,
+                                        )
+                                    }
+                                    result.exceptionOrNull()?.let { error ->
+                                        appendEvent("host error: ${error.localizedMessage ?: "unknown"}")
+                                    }
+                                    setSetupBusy(false)
+                                    syncControllerSummaries()
+                                }
+                            } catch (error: Throwable) {
+                                appendEvent("host error: ${error.localizedMessage ?: "unknown"}")
+                                setSetupBusy(false)
+                                syncControllerSummaries()
                             }
-                            syncControllerSummaries()
                         }
-                    } catch (error: Throwable) {
-                        appendEvent("display connect error: ${error.localizedMessage ?: "unknown"}")
-                        syncControllerSummaries()
-                    }
-                },
-                onSetMonitoringEnabled = { enabled ->
-                    userMonitoringEnabled = enabled
-                    if (!enabled) {
-                        localCaptureStartPending = false
-                        motionDetectionController.stopMonitoring()
-                    }
-                    syncControllerSummaries()
-                },
-                onStopMonitoring = {
-                    logRuntimeDiagnostic("stopMonitoring requested")
-                    when (uiState.value.operatingMode) {
-                        SessionOperatingMode.SINGLE_DEVICE -> {
-                            raceSessionController.stopSingleDeviceMonitoring()
+                    },
+                    onStartDiscovery = {
+                        if (uiState.value.setupBusy) return@SprintSyncApp
+                        setSetupBusy(true)
+                        requestPermissionsIfNeeded(PermissionScope.NETWORK_ONLY) {
+                            clearDisplayRelayReconnectionState()
+                            displayDiscoveryActive = false
+                            displayConnectedHostEndpointId = null
+                            displayConnectedHostName = null
+                            displayDiscoveredHosts.clear()
+                            raceSessionController.setNetworkRole(SessionNetworkRole.CLIENT)
+                            nearbyConnectionsManager.configureNativeClockSyncHost(
+                                enabled = false,
+                                requireSensorDomainClock = false,
+                            )
+                            try {
+                                nearbyConnectionsManager.startDiscovery(
+                                    serviceId = DEFAULT_SERVICE_ID,
+                                    strategy = NearbyTransportStrategy.POINT_TO_POINT,
+                                ) { result ->
+                                    result.exceptionOrNull()?.let { error ->
+                                        appendEvent("discovery error: ${error.localizedMessage ?: "unknown"}")
+                                    }
+                                    setSetupBusy(false)
+                                    syncControllerSummaries()
+                                }
+                            } catch (error: Throwable) {
+                                appendEvent("discovery error: ${error.localizedMessage ?: "unknown"}")
+                                setSetupBusy(false)
+                                syncControllerSummaries()
+                            }
+                        }
+                    },
+                    onStartSingleDevice = {
+                        if (uiState.value.setupBusy) return@SprintSyncApp
+                        setSetupBusy(true)
+                        requestPermissionsIfNeeded(PermissionScope.CAMERA_AND_NETWORK) {
+                            clearDisplayRelayReconnectionState()
                             nearbyConnectionsManager.stopAll()
                             nearbyConnectionsManager.configureNativeClockSyncHost(
                                 enabled = false,
@@ -317,77 +209,194 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                             displayConnectedHostEndpointId = null
                             displayConnectedHostName = null
                             displayDiscoveredHosts.clear()
+                            lastRelayedStopSensorNanos = null
+                            raceSessionController.startSingleDeviceMonitoring()
+                            userMonitoringEnabled = true
+                            setSetupBusy(false)
+                            syncControllerSummaries()
                         }
-                        SessionOperatingMode.DISPLAY_HOST -> {
-                            raceSessionController.stopDisplayHostMode()
-                            nearbyConnectionsManager.stopAll()
+                    },
+                    onStartDisplayHost = {
+                        if (uiState.value.setupBusy) return@SprintSyncApp
+                        setSetupBusy(true)
+                        requestPermissionsIfNeeded(PermissionScope.NETWORK_ONLY) {
+                            clearDisplayRelayReconnectionState()
+                            raceSessionController.startDisplayHostMode()
+                            clearDisplayHostLapState()
+                            displayDiscoveryActive = false
+                            displayConnectedHostEndpointId = null
+                            displayConnectedHostName = null
+                            displayDiscoveredHosts.clear()
                             nearbyConnectionsManager.configureNativeClockSyncHost(
                                 enabled = false,
                                 requireSensorDomainClock = false,
                             )
-                            displayLatestLapByDevice.clear()
+                            try {
+                                nearbyConnectionsManager.startHosting(
+                                    serviceId = DEFAULT_SERVICE_ID,
+                                    endpointName = localEndpointName(),
+                                    strategy = NearbyTransportStrategy.POINT_TO_STAR,
+                                ) { result ->
+                                    result.exceptionOrNull()?.let { error ->
+                                        appendEvent("display host error: ${error.localizedMessage ?: "unknown"}")
+                                    }
+                                    setSetupBusy(false)
+                                    syncControllerSummaries()
+                                }
+                            } catch (error: Throwable) {
+                                appendEvent("display host error: ${error.localizedMessage ?: "unknown"}")
+                                setSetupBusy(false)
+                                syncControllerSummaries()
+                            }
                         }
-                        SessionOperatingMode.NETWORK_RACE -> raceSessionController.stopMonitoring()
-                    }
-                    syncControllerSummaries()
-                },
-                onResetRun = {
-                    raceSessionController.resetRun()
-                    syncControllerSummaries()
-                },
-                onAssignRole = { deviceId, role ->
-                    raceSessionController.assignRole(deviceId, role)
-                    syncControllerSummaries()
-                },
-                onAssignCameraFacing = { deviceId, facing ->
-                    raceSessionController.assignCameraFacing(deviceId, facing)
-                    if (
-                        shouldApplyLiveLocalCameraFacingUpdate(
-                            isLocalMotionMonitoring = motionDetectionController.uiState.value.monitoring,
-                            assignedDeviceId = deviceId,
-                            localDeviceId = localDeviceId(),
-                        )
-                    ) {
-                        applyLocalMonitoringConfigFromSession()
-                    }
-                    syncControllerSummaries()
-                },
-                onUpdateThreshold = { value ->
-                    motionDetectionController.updateThreshold(value)
-                    syncControllerSummaries()
-                },
-                onUpdateRoiCenter = { value ->
-                    motionDetectionController.updateRoiCenter(value)
-                    syncControllerSummaries()
-                },
-                onUpdateRoiWidth = { value ->
-                    motionDetectionController.updateRoiWidth(value)
-                    syncControllerSummaries()
-                },
-                onUpdateCooldown = { value ->
-                    motionDetectionController.updateCooldown(value)
-                    syncControllerSummaries()
-                },
-                onStopHosting = {
-                    if (uiState.value.operatingMode == SessionOperatingMode.DISPLAY_HOST) {
-                        raceSessionController.stopDisplayHostMode()
-                        displayLatestLapByDevice.clear()
-                    } else {
-                        raceSessionController.stopHostingAndReturnToSetup()
-                    }
-                    nearbyConnectionsManager.stopAll()
-                    if (motionDetectionController.uiState.value.monitoring) {
-                        motionDetectionController.stopMonitoring()
-                    }
-                    displayDiscoveryActive = false
-                    displayConnectedHostEndpointId = null
-                    displayConnectedHostName = null
-                    displayDiscoveredHosts.clear()
-                    updateUiState { copy(networkSummary = "Stopped") }
-                    appendEvent("hosting stopped")
-                    syncControllerSummaries()
-                },
-            )
+                    },
+                    onStartMonitoring = {
+                        requestPermissionsIfNeeded(PermissionScope.CAMERA_AND_NETWORK) {
+                            val started = raceSessionController.startMonitoring()
+                            if (started) {
+                                userMonitoringEnabled = true
+                            }
+
+                            logRuntimeDiagnostic(
+                                "startMonitoring requested: started=$started role=${raceSessionController.localDeviceRole().name} " +
+                                    "shouldRunLocal=${shouldRunLocalMonitoring()} resumed=$isAppResumed",
+                            )
+                            syncControllerSummaries()
+                        }
+                    },
+                    onStartDisplayDiscovery = {
+                        requestPermissionsIfNeeded(PermissionScope.NETWORK_ONLY) {
+                            displayDiscoveryActive = true
+                            displayDiscoveredHosts.clear()
+                            try {
+                                nearbyConnectionsManager.startDiscovery(
+                                    serviceId = DEFAULT_SERVICE_ID,
+                                    strategy = NearbyTransportStrategy.POINT_TO_STAR,
+                                ) { result ->
+                                    result.exceptionOrNull()?.let { error ->
+                                        appendEvent("display discovery error: ${error.localizedMessage ?: "unknown"}")
+                                        displayDiscoveryActive = false
+                                    }
+                                    syncControllerSummaries()
+                                }
+                            } catch (error: Throwable) {
+                                displayDiscoveryActive = false
+                                appendEvent("display discovery error: ${error.localizedMessage ?: "unknown"}")
+                                syncControllerSummaries()
+                            }
+                        }
+                    },
+                    onConnectDisplayHost = { endpointId ->
+                        try {
+                            nearbyConnectionsManager.requestConnection(
+                                endpointId = endpointId,
+                                endpointName = localEndpointName(),
+                            ) { result ->
+                                result.exceptionOrNull()?.let { error ->
+                                    appendEvent("display connect error: ${error.localizedMessage ?: "unknown"}")
+                                }
+                                syncControllerSummaries()
+                            }
+                        } catch (error: Throwable) {
+                            appendEvent("display connect error: ${error.localizedMessage ?: "unknown"}")
+                            syncControllerSummaries()
+                        }
+                    },
+                    onSetMonitoringEnabled = { enabled ->
+                        userMonitoringEnabled = enabled
+                        if (!enabled) {
+                            localCaptureStartPending = false
+                            motionDetectionController.stopMonitoring()
+                        }
+                        syncControllerSummaries()
+                    },
+                    onStopMonitoring = {
+                        logRuntimeDiagnostic("stopMonitoring requested")
+                        when (uiState.value.operatingMode) {
+                            SessionOperatingMode.SINGLE_DEVICE -> {
+                                raceSessionController.stopSingleDeviceMonitoring()
+                                nearbyConnectionsManager.stopAll()
+                                nearbyConnectionsManager.configureNativeClockSyncHost(
+                                    enabled = false,
+                                    requireSensorDomainClock = false,
+                                )
+                                clearDisplayRelayReconnectionState()
+                                displayDiscoveryActive = false
+                                displayConnectedHostEndpointId = null
+                                displayConnectedHostName = null
+                                displayDiscoveredHosts.clear()
+                            }
+                            SessionOperatingMode.DISPLAY_HOST -> {
+                                raceSessionController.stopDisplayHostMode()
+                                nearbyConnectionsManager.stopAll()
+                                nearbyConnectionsManager.configureNativeClockSyncHost(
+                                    enabled = false,
+                                    requireSensorDomainClock = false,
+                                )
+                                clearDisplayRelayReconnectionState()
+                                clearDisplayHostLapState()
+                            }
+                            SessionOperatingMode.NETWORK_RACE -> raceSessionController.stopMonitoring()
+                        }
+                        syncControllerSummaries()
+                    },
+                    onResetRun = {
+                        raceSessionController.resetRun()
+                        syncControllerSummaries()
+                    },
+                    onAssignRole = { deviceId, role ->
+                        raceSessionController.assignRole(deviceId, role)
+                        syncControllerSummaries()
+                    },
+                    onAssignCameraFacing = { deviceId, facing ->
+                        raceSessionController.assignCameraFacing(deviceId, facing)
+                        if (
+                            shouldApplyLiveLocalCameraFacingUpdate(
+                                isLocalMotionMonitoring = motionDetectionController.uiState.value.monitoring,
+                                assignedDeviceId = deviceId,
+                                localDeviceId = localDeviceId(),
+                            )
+                        ) {
+                            applyLocalMonitoringConfigFromSession()
+                        }
+                        syncControllerSummaries()
+                    },
+                    onUpdateThreshold = { value ->
+                        motionDetectionController.updateThreshold(value)
+                        syncControllerSummaries()
+                    },
+                    onUpdateRoiCenter = { value ->
+                        motionDetectionController.updateRoiCenter(value)
+                        syncControllerSummaries()
+                    },
+                    onUpdateRoiWidth = { value ->
+                        motionDetectionController.updateRoiWidth(value)
+                        syncControllerSummaries()
+                    },
+                    onUpdateCooldown = { value ->
+                        motionDetectionController.updateCooldown(value)
+                        syncControllerSummaries()
+                    },
+                    onStopHosting = {
+                        if (uiState.value.operatingMode == SessionOperatingMode.DISPLAY_HOST) {
+                            raceSessionController.stopDisplayHostMode()
+                            clearDisplayHostLapState()
+                        } else {
+                            raceSessionController.stopHostingAndReturnToSetup()
+                        }
+                        nearbyConnectionsManager.stopAll()
+                        if (motionDetectionController.uiState.value.monitoring) {
+                            motionDetectionController.stopMonitoring()
+                        }
+                        displayDiscoveryActive = false
+                        displayConnectedHostEndpointId = null
+                        displayConnectedHostName = null
+                        displayDiscoveredHosts.clear()
+                        updateUiState { copy(networkSummary = "Stopped") }
+                        appendEvent("hosting stopped")
+                        syncControllerSummaries()
+                    },
+                )
             }
         }
     }
@@ -425,10 +434,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         super.onDestroy()
     }
 
-    private fun requestPermissionsIfNeeded(
-        scope: PermissionScope,
-        onGranted: () -> Unit,
-    ) {
+    private fun requestPermissionsIfNeeded(scope: PermissionScope, onGranted: () -> Unit) {
         val denied = deniedPermissions(scope)
         if (denied.isEmpty()) {
             updateUiState { copy(permissionGranted = true, deniedPermissions = emptyList()) }
@@ -440,11 +446,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         ActivityCompat.requestPermissions(this, denied.toTypedArray(), PERMISSIONS_REQUEST_CODE)
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<String>,
-        grantResults: IntArray,
-    ) {
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode != PERMISSIONS_REQUEST_CODE) {
             return
@@ -502,14 +504,17 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 when (event) {
                     is NearbyEvent.EndpointFound -> {
                         displayDiscoveredHosts[event.endpointId] = event.endpointName
-                        if (displayConnectedHostEndpointId == null) {
+                        // Auto-connect if not connected or if reconnection is pending
+                        if (displayConnectedHostEndpointId == null || displayReconnectionPending) {
                             try {
                                 nearbyConnectionsManager.requestConnection(
                                     endpointId = event.endpointId,
                                     endpointName = localEndpointName(),
                                 ) { result ->
                                     result.exceptionOrNull()?.let { error ->
-                                        appendEvent("auto-display-connect error: ${error.localizedMessage ?: "unknown"}")
+                                        appendEvent(
+                                            "auto-display-connect error: ${error.localizedMessage ?: "unknown"}",
+                                        )
                                     }
                                 }
                             } catch (error: Throwable) {
@@ -525,6 +530,11 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                             displayConnectedHostEndpointId = event.endpointId
                             displayConnectedHostName = event.endpointName ?: displayDiscoveredHosts[event.endpointId]
                             displayDiscoveryActive = false
+                            // Clear reconnection flag and flush any pending laps
+                            if (displayReconnectionPending) {
+                                displayReconnectionPending = false
+                                flushPendingLapResults()
+                            }
                         } else if (displayConnectedHostEndpointId == event.endpointId) {
                             displayConnectedHostEndpointId = null
                             displayConnectedHostName = null
@@ -534,6 +544,30 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                         if (displayConnectedHostEndpointId == event.endpointId) {
                             displayConnectedHostEndpointId = null
                             displayConnectedHostName = null
+                            displayReconnectionPending = true
+                            // Keep discovery active to find the host again or a new one
+                            if (!displayDiscoveryActive) {
+                                displayDiscoveryActive = true
+                                displayDiscoveredHosts.clear()
+                                try {
+                                    nearbyConnectionsManager.startDiscovery(
+                                        serviceId = DEFAULT_SERVICE_ID,
+                                        strategy = NearbyTransportStrategy.POINT_TO_STAR,
+                                    ) { result ->
+                                        result.exceptionOrNull()?.let { error ->
+                                            appendEvent(
+                                                "reconnect discovery error: ${error.localizedMessage ?: "unknown"}",
+                                            )
+                                            displayDiscoveryActive = false
+                                        }
+                                        syncControllerSummaries()
+                                    }
+                                } catch (error: Throwable) {
+                                    displayDiscoveryActive = false
+                                    appendEvent("reconnect discovery error: ${error.localizedMessage ?: "unknown"}")
+                                    syncControllerSummaries()
+                                }
+                            }
                         }
                     }
                     is NearbyEvent.PayloadReceived, is NearbyEvent.ClockSyncSampleReceived, is NearbyEvent.Error -> Unit
@@ -541,18 +575,43 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             }
             SessionOperatingMode.DISPLAY_HOST -> {
                 when (event) {
+                    is NearbyEvent.EndpointFound -> {
+                        if (event.endpointName.isNotBlank()) {
+                            displayHostDeviceNamesByEndpointId[event.endpointId] = event.endpointName
+                        }
+                    }
+                    is NearbyEvent.EndpointLost -> {
+                        displayHostDeviceNamesByEndpointId.remove(event.endpointId)
+                        displayLatestLapByEndpointId.remove(event.endpointId)
+                    }
+                    is NearbyEvent.ConnectionResult -> {
+                        if (event.connected) {
+                            val endpointName = event.endpointName?.trim().orEmpty()
+                            if (endpointName.isNotEmpty()) {
+                                displayHostDeviceNamesByEndpointId[event.endpointId] = endpointName
+                            }
+                        } else {
+                            displayHostDeviceNamesByEndpointId.remove(event.endpointId)
+                            displayLatestLapByEndpointId.remove(event.endpointId)
+                        }
+                    }
+                    is NearbyEvent.EndpointDisconnected -> {
+                        displayHostDeviceNamesByEndpointId.remove(event.endpointId)
+                        displayLatestLapByEndpointId.remove(event.endpointId)
+                    }
                     is NearbyEvent.PayloadReceived -> {
                         SessionLapResultMessage.tryParse(event.message)?.let { result ->
                             val elapsedNanos = result.stoppedSensorNanos - result.startedSensorNanos
-                            displayLatestLapByDevice[result.senderDeviceName] = elapsedNanos
+                            val senderDeviceName = result.senderDeviceName.trim()
+                            if (senderDeviceName.isNotEmpty()) {
+                                displayHostDeviceNamesByEndpointId[event.endpointId] = senderDeviceName
+                            }
+                            displayLatestLapByEndpointId[event.endpointId] = elapsedNanos
                         }
                     }
-                    is NearbyEvent.EndpointFound,
-                    is NearbyEvent.EndpointLost,
-                    is NearbyEvent.ConnectionResult,
-                    is NearbyEvent.EndpointDisconnected,
                     is NearbyEvent.ClockSyncSampleReceived,
-                    is NearbyEvent.Error -> Unit
+                    is NearbyEvent.Error,
+                    -> Unit
                 }
             }
         }
@@ -742,22 +801,33 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             val startNanos = completed?.hostStartSensorNanos
             val hostEndpoint = displayConnectedHostEndpointId
             if (
-                hostEndpoint != null &&
                 startNanos != null &&
                 stopNanos != null &&
                 stopNanos != lastRelayedStopSensorNanos
             ) {
-                val payload = SessionLapResultMessage(
+                val lapMessage = SessionLapResultMessage(
                     senderDeviceName = localEndpointName(),
                     startedSensorNanos = startNanos,
                     stoppedSensorNanos = stopNanos,
-                ).toJsonString()
-                nearbyConnectionsManager.sendMessage(hostEndpoint, payload) { result ->
-                    result.exceptionOrNull()?.let { error ->
-                        appendEvent("lap relay error: ${error.localizedMessage ?: "unknown"}")
+                )
+
+                if (hostEndpoint != null) {
+                    // Connected - send immediately
+                    nearbyConnectionsManager.sendMessage(hostEndpoint, lapMessage.toJsonString()) { result ->
+                        result.exceptionOrNull()?.let { error ->
+                            appendEvent("lap relay error: ${error.localizedMessage ?: "unknown"}")
+                        }
                     }
+                    lastRelayedStopSensorNanos = stopNanos
+                } else if (displayReconnectionPending) {
+                    // Disconnected but trying to reconnect - cache for later
+                    if (pendingLapResults.size >= MAX_PENDING_LAPS) {
+                        pendingLapResults.removeFirst() // Drop oldest to make room
+                    }
+                    pendingLapResults.addLast(lapMessage)
+                    lastRelayedStopSensorNanos = stopNanos
                 }
-                lastRelayedStopSensorNanos = stopNanos
+                // If disconnected and NOT trying to reconnect, don't cache (original behavior)
             }
         }
 
@@ -825,12 +895,11 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
 
             else -> "Unlocked"
         }
-        val displayLapRows = displayLatestLapByDevice.entries.map { entry ->
-            DisplayLapRow(
-                deviceName = entry.key,
-                lapTimeLabel = formatElapsedDuration(entry.value),
-            )
-        }
+        val displayLapRows = buildDisplayLapRowsForConnectedDevices(
+            connectedEndpointIds = nearbyConnectionsManager.connectedEndpoints(),
+            deviceNamesByEndpointId = displayHostDeviceNamesByEndpointId,
+            elapsedByEndpointId = displayLatestLapByEndpointId,
+        )
         updateUiState {
             copy(
                 stage = raceState.stage,
@@ -1032,6 +1101,30 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         }
     }
 
+    private fun flushPendingLapResults() {
+        val hostEndpoint = displayConnectedHostEndpointId ?: return
+
+        while (pendingLapResults.isNotEmpty()) {
+            val lapMessage = pendingLapResults.removeFirst()
+            nearbyConnectionsManager.sendMessage(hostEndpoint, lapMessage.toJsonString()) { result ->
+                if (result.isFailure) {
+                    // Re-queue at front if send fails, will retry on next flush
+                    pendingLapResults.addFirst(lapMessage)
+                }
+            }
+        }
+    }
+
+    private fun clearDisplayRelayReconnectionState() {
+        displayReconnectionPending = false
+        pendingLapResults.clear()
+    }
+
+    private fun clearDisplayHostLapState() {
+        displayHostDeviceNamesByEndpointId.clear()
+        displayLatestLapByEndpointId.clear()
+    }
+
     private fun logRuntimeDiagnostic(message: String) {
         Log.d(TAG, "diag: $message")
     }
@@ -1076,8 +1169,7 @@ internal fun shouldKeepTimerRefreshActive(
     return monitoringActive && isAppResumed && !hasStopSensor
 }
 
-internal fun shouldUseLandscapeForMode(mode: SessionOperatingMode): Boolean =
-    mode == SessionOperatingMode.DISPLAY_HOST
+internal fun shouldUseLandscapeForMode(mode: SessionOperatingMode): Boolean = mode == SessionOperatingMode.DISPLAY_HOST
 
 internal fun shouldUseImmersiveModeForMode(mode: SessionOperatingMode): Boolean =
     mode == SessionOperatingMode.DISPLAY_HOST
@@ -1088,6 +1180,24 @@ internal fun shouldApplyLiveLocalCameraFacingUpdate(
     localDeviceId: String,
 ): Boolean {
     return isLocalMotionMonitoring && assignedDeviceId == localDeviceId
+}
+
+internal fun buildDisplayLapRowsForConnectedDevices(
+    connectedEndpointIds: Set<String>,
+    deviceNamesByEndpointId: Map<String, String>,
+    elapsedByEndpointId: Map<String, Long>,
+): List<DisplayLapRow> {
+    return connectedEndpointIds.map { endpointId ->
+        val deviceName = deviceNamesByEndpointId[endpointId]?.takeIf { it.isNotBlank() } ?: endpointId
+        val lapTimeLabel = elapsedByEndpointId[endpointId]?.let { elapsedNanos ->
+            val totalMillis = (elapsedNanos / 1_000_000L).coerceAtLeast(0L)
+            formatElapsedTimerDisplay(totalMillis)
+        } ?: "READY"
+        DisplayLapRow(
+            deviceName = deviceName,
+            lapTimeLabel = lapTimeLabel,
+        )
+    }
 }
 
 internal fun formatElapsedTimerDisplay(totalMillis: Long): String {
@@ -1103,9 +1213,8 @@ internal fun formatElapsedTimerDisplay(totalMillis: Long): String {
     }
 }
 
-internal fun requestedOrientationForMode(mode: SessionOperatingMode): Int =
-    if (shouldUseLandscapeForMode(mode)) {
-        ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-    } else {
-        ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-    }
+internal fun requestedOrientationForMode(mode: SessionOperatingMode): Int = if (shouldUseLandscapeForMode(mode)) {
+    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+} else {
+    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+}

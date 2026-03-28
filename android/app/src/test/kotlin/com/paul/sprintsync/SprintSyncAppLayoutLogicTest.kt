@@ -1,11 +1,11 @@
 package com.paul.sprintsync
 
-import com.paul.sprintsync.features.race_session.SessionOperatingMode
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.paul.sprintsync.features.race_session.SessionOperatingMode
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SprintSyncAppLayoutLogicTest {

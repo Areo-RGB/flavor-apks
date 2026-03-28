@@ -162,10 +162,7 @@ class RoiFrameDiffer {
     }
 
     @Synchronized
-    fun scorePrecroppedLuma(
-        luma: ByteArray,
-        sampleCount: Int,
-    ): Double {
+    fun scorePrecroppedLuma(luma: ByteArray, sampleCount: Int): Double {
         if (sampleCount <= 0) {
             previousRoiLuma = null
             return 0.0
@@ -206,9 +203,7 @@ class SensorNativeFpsMonitor(
     }
 
     @Synchronized
-    fun update(
-        frameSensorNanos: Long,
-    ): NativeFpsObservation {
+    fun update(frameSensorNanos: Long): NativeFpsObservation {
         val previousTimestamp = lastTimestampNanos
         lastTimestampNanos = frameSensorNanos
         if (previousTimestamp == null) {
