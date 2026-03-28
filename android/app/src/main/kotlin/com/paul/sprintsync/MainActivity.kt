@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.mutableStateOf
@@ -77,6 +78,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         sensorNativeController = SensorNativeController(this)
         val localRepository = LocalRepository(this)
         val nativeClockSyncElapsedNanos: (Boolean) -> Long? = { requireSensorDomain ->
@@ -426,6 +428,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     }
 
     override fun onDestroy() {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         stopTimerRefreshLoop()
         nearbyConnectionsManager.stopAll()
         nearbyConnectionsManager.setEventListener(null)

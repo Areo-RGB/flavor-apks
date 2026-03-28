@@ -90,12 +90,14 @@ class SprintSyncAppLayoutLogicTest {
     }
 
     @Test
-    fun `single-device mode always shows preview and hides preview switch`() {
-        assertTrue(shouldShowMonitoringPreview(SessionOperatingMode.SINGLE_DEVICE, effectiveShowPreview = false))
-        assertFalse(shouldShowMonitoringPreviewToggle(SessionOperatingMode.SINGLE_DEVICE))
+    fun `single-device mode can hide preview and shows preview switch`() {
+        assertTrue(shouldShowMonitoringPreview(SessionOperatingMode.SINGLE_DEVICE, effectiveShowPreview = true))
+        assertFalse(shouldShowMonitoringPreview(SessionOperatingMode.SINGLE_DEVICE, effectiveShowPreview = false))
+        assertTrue(shouldShowMonitoringPreviewToggle(SessionOperatingMode.SINGLE_DEVICE))
         assertTrue(shouldShowMonitoringPreview(SessionOperatingMode.NETWORK_RACE, effectiveShowPreview = true))
         assertFalse(shouldShowMonitoringPreview(SessionOperatingMode.NETWORK_RACE, effectiveShowPreview = false))
         assertTrue(shouldShowMonitoringPreviewToggle(SessionOperatingMode.NETWORK_RACE))
+        assertFalse(shouldShowMonitoringPreviewToggle(SessionOperatingMode.DISPLAY_HOST))
     }
 
     @Test

@@ -1247,10 +1247,10 @@ internal fun shouldShowSingleDeviceCameraFacingToggle(mode: SessionOperatingMode
 internal fun shouldShowMonitoringConnectionDebugInfo(showDebugInfo: Boolean): Boolean = showDebugInfo
 
 internal fun shouldShowMonitoringPreview(mode: SessionOperatingMode, effectiveShowPreview: Boolean): Boolean =
-    mode == SessionOperatingMode.SINGLE_DEVICE || effectiveShowPreview
+    effectiveShowPreview
 
 internal fun shouldShowMonitoringPreviewToggle(mode: SessionOperatingMode): Boolean =
-    mode != SessionOperatingMode.SINGLE_DEVICE
+    mode != SessionOperatingMode.DISPLAY_HOST
 
 internal fun shouldShowRunDetailMetrics(mode: SessionOperatingMode): Boolean =
     mode != SessionOperatingMode.SINGLE_DEVICE
