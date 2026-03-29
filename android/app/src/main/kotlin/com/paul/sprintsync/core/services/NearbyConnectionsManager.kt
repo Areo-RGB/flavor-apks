@@ -453,7 +453,7 @@ class NearbyConnectionsManager(
             return true
         }
         val hostReceiveElapsedNanos = nowNativeClockSyncElapsedNanos(nativeClockSyncRequireSensorDomain) ?: return true
-        val hostSendElapsedNanos = nowNativeClockSyncElapsedNanos(nativeClockSyncRequireSensorDomain) ?: return true
+        val hostSendElapsedNanos = hostReceiveElapsedNanos
         val response = SessionClockSyncBinaryResponse(
             clientSendElapsedNanos = request.clientSendElapsedNanos,
             hostReceiveElapsedNanos = hostReceiveElapsedNanos,
@@ -496,3 +496,4 @@ class NearbyConnectionsManager(
         mainHandler.post { listener(event) }
     }
 }
+

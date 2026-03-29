@@ -3,6 +3,7 @@ package com.paul.sprintsync
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.paul.sprintsync.features.race_session.SessionDeviceRole
 import com.paul.sprintsync.features.race_session.SessionOperatingMode
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -31,6 +32,15 @@ class SprintSyncAppLayoutLogicTest {
                 deniedPermissions = emptyList(),
             ),
         )
+    }
+
+    @Test
+    fun `network race setup exposes explicit strategy buttons`() {
+        val labels = networkRaceStrategyButtonLabels()
+        assertTrue(labels.contains("Host (POINT_TO_POINT)"))
+        assertTrue(labels.contains("Host (P2P_STAR)"))
+        assertTrue(labels.contains("Join (POINT_TO_POINT)"))
+        assertTrue(labels.contains("Join (P2P_STAR)"))
     }
 
     @Test
@@ -98,6 +108,46 @@ class SprintSyncAppLayoutLogicTest {
         assertFalse(shouldShowMonitoringPreview(SessionOperatingMode.NETWORK_RACE, effectiveShowPreview = false))
         assertTrue(shouldShowMonitoringPreviewToggle(SessionOperatingMode.NETWORK_RACE))
         assertFalse(shouldShowMonitoringPreviewToggle(SessionOperatingMode.DISPLAY_HOST))
+    }
+
+    @Test
+    fun `inline monitoring reset button shows for compact and wide monitoring modes`() {
+        assertTrue(shouldShowInlineMonitoringResetButton(SessionOperatingMode.NETWORK_RACE))
+        assertTrue(shouldShowInlineMonitoringResetButton(SessionOperatingMode.DISPLAY_HOST))
+        assertFalse(shouldShowInlineMonitoringResetButton(SessionOperatingMode.SINGLE_DEVICE))
+    }
+
+    @Test
+    fun `device role options include split and display roles`() {
+        val options = deviceRoleOptions()
+        assertTrue(options.contains(SessionDeviceRole.SPLIT))
+        assertTrue(options.contains(SessionDeviceRole.DISPLAY))
+    }
+
+    @Test
+    fun `passive display client view only shows for monitoring network race client display role`() {
+        assertTrue(
+            shouldShowPassiveDisplayClientView(
+                stage = com.paul.sprintsync.features.race_session.SessionStage.MONITORING,
+                operatingMode = SessionOperatingMode.NETWORK_RACE,
+                networkRole = com.paul.sprintsync.features.race_session.SessionNetworkRole.CLIENT,
+                localRole = SessionDeviceRole.DISPLAY,
+            ),
+        )
+        assertFalse(
+            shouldShowPassiveDisplayClientView(
+                stage = com.paul.sprintsync.features.race_session.SessionStage.LOBBY,
+                operatingMode = SessionOperatingMode.NETWORK_RACE,
+                networkRole = com.paul.sprintsync.features.race_session.SessionNetworkRole.CLIENT,
+                localRole = SessionDeviceRole.DISPLAY,
+            ),
+        )
+    }
+
+    @Test
+    fun `passive display completed results only show when stop timestamp exists`() {
+        assertFalse(shouldShowPassiveDisplayCompletedResults(stoppedSensorNanos = null))
+        assertTrue(shouldShowPassiveDisplayCompletedResults(stoppedSensorNanos = 42L))
     }
 
     @Test

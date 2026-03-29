@@ -3,6 +3,7 @@ package com.paul.sprintsync.features.race_session
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -24,6 +25,7 @@ class RaceSessionModelsTest {
             ),
             hostStartSensorNanos = 1_000L,
             hostStopSensorNanos = 2_000L,
+            hostSplitSensorNanos = listOf(1_300L, 1_600L),
             runId = "run-1",
             hostSensorMinusElapsedNanos = 120L,
             hostGpsUtcOffsetNanos = 8_000L,
@@ -36,6 +38,7 @@ class RaceSessionModelsTest {
         assertNotNull(parsed)
         assertEquals(8_000L, parsed?.hostGpsUtcOffsetNanos)
         assertEquals(600_000_000L, parsed?.hostGpsFixAgeNanos)
+        assertEquals(listOf(1_300L, 1_600L), parsed?.hostSplitSensorNanos)
     }
 
     @Test
@@ -43,6 +46,7 @@ class RaceSessionModelsTest {
         val original = SessionTimelineSnapshotMessage(
             hostStartSensorNanos = 1_000L,
             hostStopSensorNanos = 2_500L,
+            hostSplitSensorNanos = listOf(1_250L, 1_850L),
             sentElapsedNanos = 90_000L,
         )
 
@@ -51,7 +55,20 @@ class RaceSessionModelsTest {
         assertNotNull(parsed)
         assertEquals(1_000L, parsed?.hostStartSensorNanos)
         assertEquals(2_500L, parsed?.hostStopSensorNanos)
+        assertEquals(listOf(1_250L, 1_850L), parsed?.hostSplitSensorNanos)
         assertEquals(90_000L, parsed?.sentElapsedNanos)
+    }
+
+    @Test
+    fun `timeline snapshot parser defaults split array for legacy payload`() {
+        val legacy = """
+            {"type":"timeline_snapshot","hostStartSensorNanos":1000,"hostStopSensorNanos":2500,"sentElapsedNanos":90000}
+        """.trimIndent()
+
+        val parsed = SessionTimelineSnapshotMessage.tryParse(legacy)
+
+        assertNotNull(parsed)
+        assertTrue(parsed?.hostSplitSensorNanos?.isEmpty() == true)
     }
 
     @Test
@@ -152,5 +169,13 @@ class RaceSessionModelsTest {
         assertNotNull(parsed)
         assertEquals("stable-device-2", parsed?.stableDeviceId)
         assertEquals("Legacy Phone", parsed?.deviceName)
+    }
+
+    @Test
+    fun `device role parsing and labels include split and display`() {
+        assertEquals(SessionDeviceRole.SPLIT, sessionDeviceRoleFromName("split"))
+        assertEquals("Split", sessionDeviceRoleLabel(SessionDeviceRole.SPLIT))
+        assertEquals(SessionDeviceRole.DISPLAY, sessionDeviceRoleFromName("display"))
+        assertEquals("Display", sessionDeviceRoleLabel(SessionDeviceRole.DISPLAY))
     }
 }

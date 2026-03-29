@@ -543,4 +543,375 @@ class RaceSessionControllerTest {
         assertFalse(controller.uiState.value.clockSyncInProgress)
         assertEquals(3, sentClockSyncRequests.get())
     }
+
+    @Test
+    fun `split trigger is accepted only after start and before stop`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.ingestLocalTrigger("split", splitIndex = 0, triggerSensorNanos = 900L, broadcast = false)
+        assertTrue(controller.uiState.value.timeline.hostSplitSensorNanos.isEmpty())
+
+        controller.ingestLocalTrigger("start", splitIndex = 0, triggerSensorNanos = 1_000L, broadcast = false)
+        controller.ingestLocalTrigger("split", splitIndex = 0, triggerSensorNanos = 1_400L, broadcast = false)
+        controller.ingestLocalTrigger("stop", splitIndex = 0, triggerSensorNanos = 2_000L, broadcast = false)
+        controller.ingestLocalTrigger("split", splitIndex = 0, triggerSensorNanos = 2_200L, broadcast = false)
+
+        assertEquals(listOf(1_400L), controller.uiState.value.timeline.hostSplitSensorNanos)
+    }
+
+    @Test
+    fun `multiple splits append in order and do not finish run`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.ingestLocalTrigger("start", splitIndex = 0, triggerSensorNanos = 1_000L, broadcast = false)
+        controller.ingestLocalTrigger("split", splitIndex = 0, triggerSensorNanos = 1_200L, broadcast = false)
+        controller.ingestLocalTrigger("split", splitIndex = 0, triggerSensorNanos = 1_700L, broadcast = false)
+
+        val timeline = controller.uiState.value.timeline
+        assertEquals(listOf(1_200L, 1_700L), timeline.hostSplitSensorNanos)
+        assertNull(timeline.hostStopSensorNanos)
+    }
+
+    @Test
+    fun `timeline snapshot maps split timestamps in client mode`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.CLIENT)
+        controller.updateClockState(
+            hostMinusClientElapsedNanos = 100L,
+            hostSensorMinusElapsedNanos = 500L,
+            localSensorMinusElapsedNanos = 200L,
+        )
+
+        val snapshot = SessionTimelineSnapshotMessage(
+            hostStartSensorNanos = 1_000L,
+            hostStopSensorNanos = 2_000L,
+            hostSplitSensorNanos = listOf(1_300L, 1_600L),
+            sentElapsedNanos = 10L,
+        )
+
+        controller.onNearbyEvent(
+            NearbyEvent.PayloadReceived(
+                endpointId = "ep-1",
+                message = snapshot.toJsonString(),
+            ),
+        )
+
+        assertEquals(listOf(900L, 1_200L), controller.uiState.value.timeline.hostSplitSensorNanos)
+    }
+
+    @Test
+    fun `start monitoring gate remains start plus stop without split role`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-1",
+                endpointName = "peer",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.assignRole("local-device", SessionDeviceRole.START)
+        controller.assignRole("ep-1", SessionDeviceRole.STOP)
+
+        assertTrue(controller.canStartMonitoring())
+    }
+
+    @Test
+    fun `split role assignment is non-exclusive across devices`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-1",
+                endpointName = "peer",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.assignRole("local-device", SessionDeviceRole.SPLIT)
+        controller.assignRole("ep-1", SessionDeviceRole.SPLIT)
+
+        val rolesById = controller.uiState.value.devices.associate { it.id to it.role }
+        assertEquals(SessionDeviceRole.SPLIT, rolesById["local-device"])
+        assertEquals(SessionDeviceRole.SPLIT, rolesById["ep-1"])
+    }
+
+    @Test
+    fun `display role assignment is exclusive across devices`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-1",
+                endpointName = "peer",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.assignRole("local-device", SessionDeviceRole.DISPLAY)
+        controller.assignRole("ep-1", SessionDeviceRole.DISPLAY)
+
+        val rolesById = controller.uiState.value.devices.associate { it.id to it.role }
+        assertEquals(SessionDeviceRole.UNASSIGNED, rolesById["local-device"])
+        assertEquals(SessionDeviceRole.DISPLAY, rolesById["ep-1"])
+    }
+
+    @Test
+    fun `local motion trigger is ignored when local role is display`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-1",
+                endpointName = "peer",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.assignRole("local-device", SessionDeviceRole.START)
+        controller.assignRole("ep-1", SessionDeviceRole.STOP)
+        assertTrue(controller.startMonitoring())
+        controller.assignRole("local-device", SessionDeviceRole.DISPLAY)
+
+        controller.onLocalMotionTrigger("motion", splitIndex = 0, triggerSensorNanos = 1_000L)
+
+        assertNull(controller.uiState.value.timeline.hostStartSensorNanos)
+        assertNull(controller.uiState.value.timeline.hostStopSensorNanos)
+        assertTrue(controller.uiState.value.timeline.hostSplitSensorNanos.isEmpty())
+    }
+
+    @Test
+    fun `display client applies snapshot timeline without sync mapping`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.CLIENT)
+        controller.onNearbyEvent(
+            NearbyEvent.PayloadReceived(
+                endpointId = "ep-1",
+                message = SessionSnapshotMessage(
+                    stage = SessionStage.MONITORING,
+                    monitoringActive = true,
+                    devices = listOf(
+                        SessionDevice(
+                            id = "local-device",
+                            name = "Local",
+                            role = SessionDeviceRole.DISPLAY,
+                            isLocal = true,
+                        ),
+                    ),
+                    hostStartSensorNanos = 5_000L,
+                    hostStopSensorNanos = 9_000L,
+                    hostSplitSensorNanos = listOf(6_000L, 8_000L),
+                    runId = "run-1",
+                    hostSensorMinusElapsedNanos = null,
+                    hostGpsUtcOffsetNanos = null,
+                    hostGpsFixAgeNanos = null,
+                    selfDeviceId = "local-device",
+                ).toJsonString(),
+            ),
+        )
+
+        assertEquals(5_000L, controller.uiState.value.timeline.hostStartSensorNanos)
+        assertEquals(9_000L, controller.uiState.value.timeline.hostStopSensorNanos)
+        assertEquals(listOf(6_000L, 8_000L), controller.uiState.value.timeline.hostSplitSensorNanos)
+        assertEquals("snapshot_applied", controller.uiState.value.lastEvent)
+    }
+
+    @Test
+    fun `display client accepts timeline snapshot without sync mapping`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.CLIENT)
+        controller.onNearbyEvent(
+            NearbyEvent.PayloadReceived(
+                endpointId = "ep-1",
+                message = SessionSnapshotMessage(
+                    stage = SessionStage.MONITORING,
+                    monitoringActive = true,
+                    devices = listOf(
+                        SessionDevice(
+                            id = "local-device",
+                            name = "Local",
+                            role = SessionDeviceRole.DISPLAY,
+                            isLocal = true,
+                        ),
+                    ),
+                    hostStartSensorNanos = null,
+                    hostStopSensorNanos = null,
+                    hostSplitSensorNanos = emptyList(),
+                    runId = "run-1",
+                    hostSensorMinusElapsedNanos = null,
+                    hostGpsUtcOffsetNanos = null,
+                    hostGpsFixAgeNanos = null,
+                    selfDeviceId = "local-device",
+                ).toJsonString(),
+            ),
+        )
+        controller.updateClockState(
+            hostMinusClientElapsedNanos = null,
+            hostSensorMinusElapsedNanos = null,
+            localSensorMinusElapsedNanos = null,
+            hostGpsUtcOffsetNanos = null,
+            localGpsUtcOffsetNanos = null,
+        )
+
+        controller.onNearbyEvent(
+            NearbyEvent.PayloadReceived(
+                endpointId = "ep-1",
+                message = SessionTimelineSnapshotMessage(
+                    hostStartSensorNanos = 11_000L,
+                    hostStopSensorNanos = 17_000L,
+                    hostSplitSensorNanos = listOf(13_000L, 15_000L),
+                    sentElapsedNanos = 42L,
+                ).toJsonString(),
+            ),
+        )
+
+        assertEquals(11_000L, controller.uiState.value.timeline.hostStartSensorNanos)
+        assertEquals(17_000L, controller.uiState.value.timeline.hostStopSensorNanos)
+        assertEquals(listOf(13_000L, 15_000L), controller.uiState.value.timeline.hostSplitSensorNanos)
+        assertEquals("timeline_snapshot", controller.uiState.value.lastEvent)
+    }
+
+    @Test
+    fun `host connection results accumulate multiple connected endpoints`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-1",
+                endpointName = "Runner 1",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-2",
+                endpointName = "Runner 2",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+
+        assertEquals(setOf("ep-1", "ep-2"), controller.uiState.value.connectedEndpoints)
+    }
+
+    @Test
+    fun `host auto assigns split to extra remote devices after start and stop`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-1",
+                endpointName = "Runner 1",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-2",
+                endpointName = "Runner 2",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-3",
+                endpointName = "Runner 3",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+
+        val rolesById = controller.uiState.value.devices.associate { it.id to it.role }
+        assertEquals(SessionDeviceRole.START, rolesById["ep-1"])
+        assertEquals(SessionDeviceRole.STOP, rolesById["ep-2"])
+        assertEquals(SessionDeviceRole.SPLIT, rolesById["ep-3"])
+    }
 }

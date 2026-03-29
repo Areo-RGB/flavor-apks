@@ -25,7 +25,7 @@ data class NativeMonitoringConfig(
             return NativeMonitoringConfig(
                 threshold = 0.006,
                 roiCenterX = 0.5,
-                roiWidth = 0.12,
+                roiWidth = 0.06,
                 cooldownMs = 900,
                 processEveryNFrames = 1,
                 cameraFacing = NativeCameraFacing.REAR,

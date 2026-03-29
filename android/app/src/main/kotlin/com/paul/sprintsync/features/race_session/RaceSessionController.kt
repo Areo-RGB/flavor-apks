@@ -36,6 +36,7 @@ private data class AcceptedClockSyncSample(
 data class SessionRaceTimeline(
     val hostStartSensorNanos: Long? = null,
     val hostStopSensorNanos: Long? = null,
+    val hostSplitSensorNanos: List<Long> = emptyList(),
 )
 
 data class RaceSessionClockState(
@@ -412,7 +413,11 @@ class RaceSessionController(
 
     fun assignRole(deviceId: String, role: SessionDeviceRole) {
         var nextDevices = _uiState.value.devices
-        if (role != SessionDeviceRole.UNASSIGNED) {
+        if (
+            role == SessionDeviceRole.START ||
+            role == SessionDeviceRole.STOP ||
+            role == SessionDeviceRole.DISPLAY
+        ) {
             nextDevices = nextDevices.map { existing ->
                 if (existing.id != deviceId && existing.role == role) {
                     existing.copy(role = SessionDeviceRole.UNASSIGNED)
@@ -527,6 +532,9 @@ class RaceSessionController(
         if (role == SessionDeviceRole.UNASSIGNED) {
             return
         }
+        if (role == SessionDeviceRole.DISPLAY) {
+            return
+        }
 
         if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
             val mappedType = roleToTriggerType(role)
@@ -558,7 +566,14 @@ class RaceSessionController(
     }
 
     fun canShowSplitControls(): Boolean {
-        return false
+        val timeline = _uiState.value.timeline
+        if (!_uiState.value.monitoringActive) {
+            return false
+        }
+        if (timeline.hostStartSensorNanos == null || timeline.hostStopSensorNanos != null) {
+            return false
+        }
+        return localDeviceRole() == SessionDeviceRole.SPLIT || _uiState.value.devices.any { it.role == SessionDeviceRole.SPLIT }
     }
 
     fun canStartMonitoring(): Boolean {
@@ -837,7 +852,7 @@ class RaceSessionController(
 
     private fun handleConnectionResult(event: NearbyEvent.ConnectionResult) {
         val nextConnected = if (event.connected) {
-            setOf(event.endpointId)
+            _uiState.value.connectedEndpoints + event.endpointId
         } else {
             _uiState.value.connectedEndpoints - event.endpointId
         }
@@ -952,15 +967,38 @@ class RaceSessionController(
             device.copy(isLocal = device.id == resolvedSelfId)
         }
 
-        val mappedStart = snapshot.hostStartSensorNanos?.let { mapHostSensorToLocalSensor(it) }
-        val mappedStop = snapshot.hostStopSensorNanos?.let { mapHostSensorToLocalSensor(it) }
-        val mappingAvailable =
+        val localRoleFromSnapshot =
+            mappedDevices.firstOrNull { it.id == resolvedSelfId }?.role ?: SessionDeviceRole.UNASSIGNED
+        val shouldUseHostTimelineDirectly = localRoleFromSnapshot == SessionDeviceRole.DISPLAY
+        val mappedStart = if (shouldUseHostTimelineDirectly) {
+            snapshot.hostStartSensorNanos
+        } else {
+            snapshot.hostStartSensorNanos?.let { mapHostSensorToLocalSensor(it) }
+        }
+        val mappedStop = if (shouldUseHostTimelineDirectly) {
+            snapshot.hostStopSensorNanos
+        } else {
+            snapshot.hostStopSensorNanos?.let { mapHostSensorToLocalSensor(it) }
+        }
+        val mappedSplits = if (shouldUseHostTimelineDirectly) {
+            snapshot.hostSplitSensorNanos
+        } else {
+            snapshot.hostSplitSensorNanos.mapNotNull { hostSplit ->
+                mapHostSensorToLocalSensor(hostSplit)
+            }
+        }
+        val mappingAvailable = if (shouldUseHostTimelineDirectly) {
+            true
+        } else {
             (snapshot.hostStartSensorNanos == null || mappedStart != null) &&
-                (snapshot.hostStopSensorNanos == null || mappedStop != null)
+                (snapshot.hostStopSensorNanos == null || mappedStop != null) &&
+                (snapshot.hostSplitSensorNanos.size == mappedSplits.size)
+        }
         val timeline = if (mappingAvailable) {
             SessionRaceTimeline(
                 hostStartSensorNanos = mappedStart,
                 hostStopSensorNanos = mappedStop,
+                hostSplitSensorNanos = mappedSplits,
             )
         } else {
             _uiState.value.timeline
@@ -985,7 +1023,7 @@ class RaceSessionController(
                 ),
                 mappedDevices,
             ),
-            deviceRole = mappedDevices.firstOrNull { it.id == resolvedSelfId }?.role ?: SessionDeviceRole.UNASSIGNED,
+            deviceRole = localRoleFromSnapshot,
             timeline = timeline,
             lastEvent = snapshotEvent,
             lastError = null,
@@ -1045,6 +1083,13 @@ class RaceSessionController(
 
     private fun ingestTimelineSnapshot(snapshot: SessionTimelineSnapshotMessage) {
         val localTimeline = if (_uiState.value.networkRole == SessionNetworkRole.CLIENT) {
+            if (localDeviceRole() == SessionDeviceRole.DISPLAY) {
+                SessionRaceTimeline(
+                    hostStartSensorNanos = snapshot.hostStartSensorNanos,
+                    hostStopSensorNanos = snapshot.hostStopSensorNanos,
+                    hostSplitSensorNanos = snapshot.hostSplitSensorNanos,
+                )
+            } else {
             val localStart = snapshot.hostStartSensorNanos?.let { hostStart ->
                 mapHostSensorToLocalSensor(hostStart)
             }
@@ -1059,14 +1104,26 @@ class RaceSessionController(
                 _uiState.value = _uiState.value.copy(lastEvent = "timeline_snapshot_dropped_unsynced")
                 return
             }
+            val localSplits = mutableListOf<Long>()
+            for (hostSplit in snapshot.hostSplitSensorNanos) {
+                val mapped = mapHostSensorToLocalSensor(hostSplit)
+                if (mapped == null) {
+                    _uiState.value = _uiState.value.copy(lastEvent = "timeline_snapshot_dropped_unsynced")
+                    return
+                }
+                localSplits += mapped
+            }
             SessionRaceTimeline(
                 hostStartSensorNanos = localStart,
                 hostStopSensorNanos = localStop,
+                hostSplitSensorNanos = localSplits,
             )
+            }
         } else {
             SessionRaceTimeline(
                 hostStartSensorNanos = snapshot.hostStartSensorNanos,
                 hostStopSensorNanos = snapshot.hostStopSensorNanos,
+                hostSplitSensorNanos = snapshot.hostSplitSensorNanos,
             )
         }
         _uiState.value = _uiState.value.copy(timeline = localTimeline, lastEvent = "timeline_snapshot")
@@ -1093,6 +1150,19 @@ class RaceSessionController(
                     null
                 } else {
                     timeline.copy(hostStopSensorNanos = triggerSensorNanos)
+                }
+            }
+
+            "split" -> {
+                if (timeline.hostStartSensorNanos == null || timeline.hostStopSensorNanos != null) {
+                    null
+                } else {
+                    val lastMarker = timeline.hostSplitSensorNanos.lastOrNull() ?: timeline.hostStartSensorNanos
+                    if (triggerSensorNanos <= lastMarker) {
+                        null
+                    } else {
+                        timeline.copy(hostSplitSensorNanos = timeline.hostSplitSensorNanos + triggerSensorNanos)
+                    }
                 }
             }
 
@@ -1145,6 +1215,7 @@ class RaceSessionController(
         val payload = SessionTimelineSnapshotMessage(
             hostStartSensorNanos = timeline.hostStartSensorNanos,
             hostStopSensorNanos = timeline.hostStopSensorNanos,
+            hostSplitSensorNanos = timeline.hostSplitSensorNanos,
             sentElapsedNanos = nowElapsedNanos(),
         ).toJsonString()
         broadcastToConnected(payload)
@@ -1176,6 +1247,7 @@ class RaceSessionController(
                 devices = devicesForSnapshot,
                 hostStartSensorNanos = _uiState.value.timeline.hostStartSensorNanos,
                 hostStopSensorNanos = _uiState.value.timeline.hostStopSensorNanos,
+                hostSplitSensorNanos = _uiState.value.timeline.hostSplitSensorNanos,
                 runId = _uiState.value.runId,
                 hostSensorMinusElapsedNanos = _clockState.value.hostSensorMinusElapsedNanos,
                 hostGpsUtcOffsetNanos = _clockState.value.hostGpsUtcOffsetNanos,
@@ -1308,39 +1380,62 @@ class RaceSessionController(
     }
 
     private fun applyJoinOrderAutoRoleDefaults(devices: List<SessionDevice>): List<SessionDevice> {
-        val local = devices.firstOrNull { it.isLocal } ?: return devices
-        val remote = devices.firstOrNull { !it.isLocal } ?: return devices
-        if (devices.count { !it.isLocal } != 1) {
+        var nextDevices = devices
+        val local = nextDevices.firstOrNull { it.isLocal } ?: return devices
+        val remotes = nextDevices.filterNot { it.isLocal }
+        if (remotes.isEmpty()) {
             return devices
         }
 
-        var nextDevices = devices
         if (nextDevices.none { it.role == SessionDeviceRole.START }) {
-            nextDevices = nextDevices.map { existing ->
-                when {
-                    existing.id == local.id && existing.role == SessionDeviceRole.UNASSIGNED -> existing.copy(role = SessionDeviceRole.START)
-                    existing.id == remote.id && existing.role == SessionDeviceRole.UNASSIGNED -> existing.copy(role = SessionDeviceRole.START)
-                    else -> existing
+            val preferredStartId = remotes.firstOrNull { it.role == SessionDeviceRole.UNASSIGNED }?.id
+                ?: if (local.role == SessionDeviceRole.UNASSIGNED) local.id else null
+            if (preferredStartId != null) {
+                nextDevices = nextDevices.map { existing ->
+                    if (existing.id == preferredStartId && existing.role == SessionDeviceRole.UNASSIGNED) {
+                        existing.copy(role = SessionDeviceRole.START)
+                    } else {
+                        existing
+                    }
                 }
             }
         }
+
         if (nextDevices.none { it.role == SessionDeviceRole.STOP }) {
-            nextDevices = nextDevices.map { existing ->
-                when {
-                    existing.id == remote.id && existing.role == SessionDeviceRole.UNASSIGNED -> existing.copy(role = SessionDeviceRole.STOP)
-                    existing.id == local.id && existing.role == SessionDeviceRole.UNASSIGNED -> existing.copy(role = SessionDeviceRole.STOP)
-                    else -> existing
+            val preferredStopId = nextDevices
+                .filterNot { it.isLocal }
+                .firstOrNull { it.role == SessionDeviceRole.UNASSIGNED }
+                ?.id
+                ?: if (nextDevices.any { it.id == local.id && it.role == SessionDeviceRole.UNASSIGNED }) local.id else null
+            if (preferredStopId != null) {
+                nextDevices = nextDevices.map { existing ->
+                    if (existing.id == preferredStopId && existing.role == SessionDeviceRole.UNASSIGNED) {
+                        existing.copy(role = SessionDeviceRole.STOP)
+                    } else {
+                        existing
+                    }
                 }
             }
         }
+
+        nextDevices = nextDevices.map { existing ->
+            if (!existing.isLocal && existing.role == SessionDeviceRole.UNASSIGNED) {
+                existing.copy(role = SessionDeviceRole.SPLIT)
+            } else {
+                existing
+            }
+        }
+
         return nextDevices
     }
 
     private fun roleToTriggerType(role: SessionDeviceRole): String? {
         return when (role) {
             SessionDeviceRole.START -> "start"
+            SessionDeviceRole.SPLIT -> "split"
             SessionDeviceRole.STOP -> "stop"
             SessionDeviceRole.UNASSIGNED -> null
+            SessionDeviceRole.DISPLAY -> null
         }
     }
 

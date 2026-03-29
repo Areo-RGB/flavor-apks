@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -95,9 +96,9 @@ data class SprintSyncUiState(
     val elapsedDisplay: String = "00.00",
     val threshold: Double = 0.006,
     val roiCenterX: Double = 0.5,
-    val roiWidth: Double = 0.12,
+    val roiWidth: Double = 0.06,
     val cooldownMs: Int = 900,
-    val processEveryNFrames: Int = 2,
+    val processEveryNFrames: Int = 1,
     val observedFps: Double? = null,
     val cameraFpsModeLabel: String = "INIT",
     val targetFpsUpper: Int? = null,
@@ -108,6 +109,7 @@ data class SprintSyncUiState(
     val streamFrameCount: Long = 0,
     val processedFrameCount: Long = 0,
     val triggerHistory: List<String> = emptyList(),
+    val splitHistory: List<String> = emptyList(),
     val lastNearbyEvent: String? = null,
     val lastSensorEvent: String? = null,
     val recentEvents: List<String> = emptyList(),
@@ -127,8 +129,10 @@ fun SprintSyncApp(
     uiState: SprintSyncUiState,
     previewViewFactory: SensorNativePreviewViewFactory,
     onRequestPermissions: () -> Unit,
-    onStartHosting: () -> Unit,
-    onStartDiscovery: () -> Unit,
+    onStartHostingPointToPoint: () -> Unit,
+    onStartHostingP2pStar: () -> Unit,
+    onStartDiscoveryPointToPoint: () -> Unit,
+    onStartDiscoveryP2pStar: () -> Unit,
     onStartSingleDevice: () -> Unit,
     onStartDisplayHost: () -> Unit,
     onStartMonitoring: () -> Unit,
@@ -152,6 +156,12 @@ fun SprintSyncApp(
     val isDisplayHostMode =
         uiState.stage == SessionStage.MONITORING &&
             uiState.operatingMode == SessionOperatingMode.DISPLAY_HOST
+    val isPassiveDisplayClientMode = shouldShowPassiveDisplayClientView(
+        stage = uiState.stage,
+        operatingMode = uiState.operatingMode,
+        networkRole = uiState.networkRole,
+        localRole = uiState.localRole,
+    )
 
     Scaffold(
         topBar = {},
@@ -228,8 +238,10 @@ fun SprintSyncApp(
                             permissionGranted = uiState.permissionGranted,
                             setupBusy = uiState.setupBusy,
                             onRequestPermissions = onRequestPermissions,
-                            onStartHosting = onStartHosting,
-                            onStartDiscovery = onStartDiscovery,
+                            onStartHostingPointToPoint = onStartHostingPointToPoint,
+                            onStartHostingP2pStar = onStartHostingP2pStar,
+                            onStartDiscoveryPointToPoint = onStartDiscoveryPointToPoint,
+                            onStartDiscoveryP2pStar = onStartDiscoveryP2pStar,
                             onStartSingleDevice = onStartSingleDevice,
                             onStartDisplayHost = onStartDisplayHost,
                         )
@@ -277,6 +289,17 @@ fun SprintSyncApp(
                         item {
                             DisplayResultsCard(
                                 rows = uiState.displayLapRows,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .fillParentMaxHeight(),
+                            )
+                        }
+                    } else if (isPassiveDisplayClientMode) {
+                        item {
+                            DisplayClientFinalResultsCard(
+                                elapsedDisplay = uiState.elapsedDisplay,
+                                splitHistory = uiState.splitHistory,
+                                hasCompletedResult = shouldShowPassiveDisplayCompletedResults(uiState.stoppedSensorNanos),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .fillParentMaxHeight(),
@@ -421,12 +444,15 @@ private fun SetupActionsCard(
     permissionGranted: Boolean,
     setupBusy: Boolean,
     onRequestPermissions: () -> Unit,
-    onStartHosting: () -> Unit,
-    onStartDiscovery: () -> Unit,
+    onStartHostingPointToPoint: () -> Unit,
+    onStartHostingP2pStar: () -> Unit,
+    onStartDiscoveryPointToPoint: () -> Unit,
+    onStartDiscoveryP2pStar: () -> Unit,
     onStartSingleDevice: () -> Unit,
     onStartDisplayHost: () -> Unit,
 ) {
     val setupActionsEnabled = !setupBusy
+    val strategyLabels = networkRaceStrategyButtonLabels()
 
     SprintSyncCard {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -440,14 +466,26 @@ private fun SetupActionsCard(
                 )
             }
             PrimaryButton(
-                text = "Host",
-                onClick = onStartHosting,
+                text = strategyLabels[0],
+                onClick = onStartHostingPointToPoint,
                 enabled = setupActionsEnabled,
                 modifier = Modifier.fillMaxWidth(),
             )
             PrimaryButton(
-                text = "Join",
-                onClick = onStartDiscovery,
+                text = strategyLabels[1],
+                onClick = onStartHostingP2pStar,
+                enabled = setupActionsEnabled,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            PrimaryButton(
+                text = strategyLabels[2],
+                onClick = onStartDiscoveryPointToPoint,
+                enabled = setupActionsEnabled,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            PrimaryButton(
+                text = strategyLabels[3],
+                onClick = onStartDiscoveryP2pStar,
                 enabled = setupActionsEnabled,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -596,11 +634,7 @@ private fun DeviceAssignmentRow(
                 Text(device.id, style = MaterialTheme.typography.bodySmall)
             }
             if (editable) {
-                val roleOptions = buildList {
-                    add(SessionDeviceRole.UNASSIGNED)
-                    add(SessionDeviceRole.START)
-                    add(SessionDeviceRole.STOP)
-                }
+                val roleOptions = deviceRoleOptions()
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -769,36 +803,41 @@ private fun MonitoringSummaryCard(
                     }
                 }
             } else if (useTwoColumns) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.Top,
-                ) {
-                    PreviewSurface(
-                        previewViewFactory = previewViewFactory,
-                        roiCenterX = roiCenterX,
-                    )
-                    MonitoringPreviewInfoPanel(
-                        isHost = isHost,
-                        localRole = localRole,
-                        localCameraFacing = localCameraFacing,
-                        showDebugInfo = showDebugInfo,
-                        connectionTypeLabel = connectionTypeLabel,
-                        syncModeLabel = syncModeLabel,
-                        latencyLabel = latencyLabel,
-                        userMonitoringEnabled = userMonitoringEnabled,
-                        onSetMonitoringEnabled = onSetMonitoringEnabled,
-                        onAssignLocalCameraFacing = onAssignLocalCameraFacing,
-                        effectiveShowPreview = effectiveShowPreview,
-                        onShowPreviewChanged = onShowPreviewChanged,
-                        operatingMode = operatingMode,
-                        discoveredDisplayHosts = discoveredDisplayHosts,
-                        displayConnectedHostName = displayConnectedHostName,
-                        displayDiscoveryActive = displayDiscoveryActive,
-                        onStartDisplayDiscovery = onStartDisplayDiscovery,
-                        onConnectDisplayHost = onConnectDisplayHost,
-                        modifier = Modifier.weight(1f),
-                    )
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        PreviewSurface(
+                            previewViewFactory = previewViewFactory,
+                            roiCenterX = roiCenterX,
+                        )
+                        MonitoringPreviewInfoPanel(
+                            isHost = isHost,
+                            localRole = localRole,
+                            localCameraFacing = localCameraFacing,
+                            showDebugInfo = showDebugInfo,
+                            connectionTypeLabel = connectionTypeLabel,
+                            syncModeLabel = syncModeLabel,
+                            latencyLabel = latencyLabel,
+                            userMonitoringEnabled = userMonitoringEnabled,
+                            onSetMonitoringEnabled = onSetMonitoringEnabled,
+                            onAssignLocalCameraFacing = onAssignLocalCameraFacing,
+                            effectiveShowPreview = effectiveShowPreview,
+                            onShowPreviewChanged = onShowPreviewChanged,
+                            operatingMode = operatingMode,
+                            discoveredDisplayHosts = discoveredDisplayHosts,
+                            displayConnectedHostName = displayConnectedHostName,
+                            displayDiscoveryActive = displayDiscoveryActive,
+                            onStartDisplayDiscovery = onStartDisplayDiscovery,
+                            onConnectDisplayHost = onConnectDisplayHost,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    if (shouldShowInlineMonitoringResetButton(operatingMode)) {
+                        MonitoringInlineResetButton(onResetRun = onResetRun)
+                    }
                 }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -833,10 +872,24 @@ private fun MonitoringSummaryCard(
                             )
                         }
                     }
+                    if (shouldShowInlineMonitoringResetButton(operatingMode)) {
+                        MonitoringInlineResetButton(onResetRun = onResetRun)
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun MonitoringInlineResetButton(onResetRun: () -> Unit) {
+    PrimaryButton(
+        text = "Reset Run",
+        onClick = onResetRun,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp),
+    )
 }
 
 @Composable
@@ -893,8 +946,6 @@ private fun MonitoringPreviewInfoPanel(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Preview", style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.width(8.dp))
                 Switch(
                     checked = effectiveShowPreview,
                     enabled = true,
@@ -1057,6 +1108,16 @@ private fun AdvancedDetectionCard(
                 }
 
                 Spacer(Modifier.height(4.dp))
+                SectionHeader("Split History")
+                if (uiState.splitHistory.isEmpty()) {
+                    Text("No split marks yet.")
+                } else {
+                    uiState.splitHistory.forEach { split ->
+                        Text(split, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
+                Spacer(Modifier.height(4.dp))
                 SectionHeader("Recent Triggers")
                 if (uiState.triggerHistory.isEmpty()) {
                     Text("No trigger events yet.")
@@ -1187,6 +1248,76 @@ private fun DisplayResultsCard(rows: List<DisplayLapRow>, modifier: Modifier = M
 }
 
 @Composable
+private fun DisplayClientFinalResultsCard(
+    elapsedDisplay: String,
+    splitHistory: List<String>,
+    hasCompletedResult: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(Color(0xFFFFCC00))
+            .padding(horizontal = 24.dp, vertical = 20.dp),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.Top),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            if (!hasCompletedResult) {
+                Text(
+                    text = "WAITING FOR FINISH",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = Color.Black,
+                    textAlign = TextAlign.Center,
+                )
+            } else {
+                Text(
+                    text = "FINAL",
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 1.sp,
+                    ),
+                    color = Color.Black,
+                )
+                Text(
+                    text = elapsedDisplay,
+                    style = MaterialTheme.typography.displayLarge.merge(
+                        InterExtraBoldTabularTypography,
+                    ),
+                    color = Color.Black,
+                    textAlign = TextAlign.Center,
+                )
+                if (splitHistory.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(Color(0x1A000000))
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text = "SPLITS",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                            color = Color.Black,
+                        )
+                        splitHistory.forEach { split ->
+                            Text(
+                                text = split,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = Color.Black,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ConnectedCard(connectedEndpoints: Set<String>) {
     SprintSyncCard {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1229,6 +1360,13 @@ private fun EventsCard(recentEvents: List<String>) {
 internal fun shouldShowSetupPermissionWarning(permissionGranted: Boolean, deniedPermissions: List<String>): Boolean =
     !permissionGranted && deniedPermissions.isNotEmpty()
 
+internal fun networkRaceStrategyButtonLabels(): List<String> = listOf(
+    "Host (POINT_TO_POINT)",
+    "Host (P2P_STAR)",
+    "Join (POINT_TO_POINT)",
+    "Join (P2P_STAR)",
+)
+
 internal fun shouldShowMonitoringResetAction(
     isHost: Boolean,
     startedSensorNanos: Long?,
@@ -1252,10 +1390,28 @@ internal fun shouldShowMonitoringPreview(mode: SessionOperatingMode, effectiveSh
 internal fun shouldShowMonitoringPreviewToggle(mode: SessionOperatingMode): Boolean =
     mode != SessionOperatingMode.DISPLAY_HOST
 
+internal fun shouldShowInlineMonitoringResetButton(mode: SessionOperatingMode): Boolean =
+    mode != SessionOperatingMode.SINGLE_DEVICE
+
 internal fun shouldShowRunDetailMetrics(mode: SessionOperatingMode): Boolean =
     mode != SessionOperatingMode.SINGLE_DEVICE
 
 internal fun shouldShowCameraFpsInfo(showDebugInfo: Boolean): Boolean = showDebugInfo
+
+internal fun shouldShowPassiveDisplayClientView(
+    stage: SessionStage,
+    operatingMode: SessionOperatingMode,
+    networkRole: SessionNetworkRole,
+    localRole: SessionDeviceRole,
+): Boolean {
+    return stage == SessionStage.MONITORING &&
+        operatingMode == SessionOperatingMode.NETWORK_RACE &&
+        networkRole == SessionNetworkRole.CLIENT &&
+        localRole == SessionDeviceRole.DISPLAY
+}
+
+internal fun shouldShowPassiveDisplayCompletedResults(stoppedSensorNanos: Long?): Boolean =
+    stoppedSensorNanos != null
 
 internal data class DisplayLayoutSpec(
     val rowHeight: Dp,
@@ -1332,6 +1488,16 @@ internal fun clampDisplayLabelFont(base: TextUnit, rowHeight: Dp, density: andro
     val minReadable = 12.sp
     val clamped = minOf(base.value, maxByHeight.value).sp
     return maxOf(clamped.value, minReadable.value).sp
+}
+
+internal fun deviceRoleOptions(): List<SessionDeviceRole> {
+    return listOf(
+        SessionDeviceRole.UNASSIGNED,
+        SessionDeviceRole.START,
+        SessionDeviceRole.SPLIT,
+        SessionDeviceRole.STOP,
+        SessionDeviceRole.DISPLAY,
+    )
 }
 
 private fun formatDurationNanos(nanos: Long): String {

@@ -25,7 +25,9 @@ enum class SessionNetworkRole {
 enum class SessionDeviceRole {
     UNASSIGNED,
     START,
+    SPLIT,
     STOP,
+    DISPLAY,
 }
 
 enum class SessionCameraFacing {
@@ -76,6 +78,7 @@ data class SessionSnapshotMessage(
     val devices: List<SessionDevice>,
     val hostStartSensorNanos: Long?,
     val hostStopSensorNanos: Long?,
+    val hostSplitSensorNanos: List<Long> = emptyList(),
     val runId: String?,
     val hostSensorMinusElapsedNanos: Long?,
     val hostGpsUtcOffsetNanos: Long?,
@@ -88,6 +91,7 @@ data class SessionSnapshotMessage(
         val timeline = JSONObject()
             .put("hostStartSensorNanos", hostStartSensorNanos ?: JSONObject.NULL)
             .put("hostStopSensorNanos", hostStopSensorNanos ?: JSONObject.NULL)
+            .put("hostSplitSensorNanos", hostSplitSensorNanos.toJsonArray())
         return JSONObject()
             .put("type", TYPE)
             .put("stage", stage.name.lowercase())
@@ -132,6 +136,7 @@ data class SessionSnapshotMessage(
                 devices = parsedDevices,
                 hostStartSensorNanos = timeline.readOptionalLong("hostStartSensorNanos"),
                 hostStopSensorNanos = timeline.readOptionalLong("hostStopSensorNanos"),
+                hostSplitSensorNanos = timeline.readOptionalLongArray("hostSplitSensorNanos"),
                 runId = decoded.optString("runId", "").ifBlank { null },
                 hostSensorMinusElapsedNanos = decoded.readOptionalLong("hostSensorMinusElapsedNanos"),
                 hostGpsUtcOffsetNanos = decoded.readOptionalLong("hostGpsUtcOffsetNanos"),
@@ -230,6 +235,7 @@ data class SessionTriggerRefinementMessage(
 data class SessionTimelineSnapshotMessage(
     val hostStartSensorNanos: Long?,
     val hostStopSensorNanos: Long?,
+    val hostSplitSensorNanos: List<Long> = emptyList(),
     val sentElapsedNanos: Long,
 ) {
     fun toJsonString(): String {
@@ -237,6 +243,7 @@ data class SessionTimelineSnapshotMessage(
             .put("type", TYPE)
             .put("hostStartSensorNanos", hostStartSensorNanos ?: JSONObject.NULL)
             .put("hostStopSensorNanos", hostStopSensorNanos ?: JSONObject.NULL)
+            .put("hostSplitSensorNanos", hostSplitSensorNanos.toJsonArray())
             .put("sentElapsedNanos", sentElapsedNanos)
             .toString()
     }
@@ -259,9 +266,11 @@ data class SessionTimelineSnapshotMessage(
             }
             val hostStartSensorNanos = decoded.readOptionalLong("hostStartSensorNanos")
             val hostStopSensorNanos = decoded.readOptionalLong("hostStopSensorNanos")
+            val hostSplitSensorNanos = decoded.readOptionalLongArray("hostSplitSensorNanos")
             return SessionTimelineSnapshotMessage(
                 hostStartSensorNanos = hostStartSensorNanos,
                 hostStopSensorNanos = hostStopSensorNanos,
+                hostSplitSensorNanos = hostSplitSensorNanos,
                 sentElapsedNanos = sentElapsedNanos,
             )
         }
@@ -413,7 +422,9 @@ fun sessionDeviceRoleLabel(role: SessionDeviceRole): String {
     return when (role) {
         SessionDeviceRole.UNASSIGNED -> "Unassigned"
         SessionDeviceRole.START -> "Start"
+        SessionDeviceRole.SPLIT -> "Split"
         SessionDeviceRole.STOP -> "Stop"
+        SessionDeviceRole.DISPLAY -> "Display"
     }
 }
 
@@ -437,4 +448,22 @@ private fun JSONObject.readOptionalString(key: String): String? {
         return null
     }
     return optString(key, "").ifBlank { null }
+}
+
+private fun JSONObject.readOptionalLongArray(key: String): List<Long> {
+    val raw = optJSONArray(key) ?: return emptyList()
+    val values = mutableListOf<Long>()
+    for (index in 0 until raw.length()) {
+        val value = raw.optLong(index, Long.MIN_VALUE)
+        if (value != Long.MIN_VALUE) {
+            values += value
+        }
+    }
+    return values
+}
+
+private fun List<Long>.toJsonArray(): JSONArray {
+    val result = JSONArray()
+    forEach { value -> result.put(value) }
+    return result
 }

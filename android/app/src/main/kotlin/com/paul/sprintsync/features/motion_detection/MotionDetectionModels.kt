@@ -42,9 +42,9 @@ data class MotionDetectionConfig(
             return MotionDetectionConfig(
                 threshold = 0.006,
                 roiCenterX = 0.5,
-                roiWidth = 0.12,
+                roiWidth = 0.06,
                 cooldownMs = 900,
-                processEveryNFrames = 2,
+                processEveryNFrames = 1,
                 cameraFacing = MotionCameraFacing.REAR,
             )
         }

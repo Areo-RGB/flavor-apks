@@ -1,12 +1,23 @@
 package com.paul.sprintsync
 
 import com.paul.sprintsync.features.race_session.SessionOperatingMode
+import com.paul.sprintsync.features.race_session.SessionDeviceRole
+import com.paul.sprintsync.features.race_session.SessionNetworkRole
+import com.paul.sprintsync.core.services.NearbyTransportStrategy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MainActivityMonitoringLogicTest {
+    @Test
+    fun `network race setup maps host and join actions to matching strategies`() {
+        assertEquals(NearbyTransportStrategy.POINT_TO_POINT, networkRaceHostStrategy(useStar = false))
+        assertEquals(NearbyTransportStrategy.POINT_TO_STAR, networkRaceHostStrategy(useStar = true))
+        assertEquals(NearbyTransportStrategy.POINT_TO_POINT, networkRaceJoinStrategy(useStar = false))
+        assertEquals(NearbyTransportStrategy.POINT_TO_STAR, networkRaceJoinStrategy(useStar = true))
+    }
+
     @Test
     fun `starts local capture when monitoring active resumed assigned and local capture is idle`() {
         val action = resolveLocalCaptureAction(
@@ -164,6 +175,16 @@ class MainActivityMonitoringLogicTest {
     }
 
     @Test
+    fun `split history renders ordered split labels with elapsed time`() {
+        val history = buildSplitHistoryForTimeline(
+            startedSensorNanos = 1_000_000_000L,
+            splitSensorNanos = listOf(11_000_000_000L, 21_000_000_000L),
+        )
+
+        assertEquals(listOf("Split 1: 10.00", "Split 2: 20.00"), history)
+    }
+
+    @Test
     fun `applies live local camera facing update when local monitoring active`() {
         assertTrue(
             shouldApplyLiveLocalCameraFacingUpdate(
@@ -251,5 +272,34 @@ class MainActivityMonitoringLogicTest {
         assertEquals(1, rows.size)
         assertEquals("CPH2399", rows[0].deviceName)
         assertEquals(formatElapsedTimerDisplay(1_770L), rows[0].lapTimeLabel)
+    }
+
+    @Test
+    fun `display role never runs local monitoring capture`() {
+        assertFalse(
+            shouldRunLocalMonitoring(
+                mode = SessionOperatingMode.NETWORK_RACE,
+                userMonitoringEnabled = true,
+                localRole = SessionDeviceRole.DISPLAY,
+            ),
+        )
+    }
+
+    @Test
+    fun `passive display client mode only matches network race client display role`() {
+        assertTrue(
+            shouldUsePassiveDisplayClientMode(
+                mode = SessionOperatingMode.NETWORK_RACE,
+                networkRole = SessionNetworkRole.CLIENT,
+                localRole = SessionDeviceRole.DISPLAY,
+            ),
+        )
+        assertFalse(
+            shouldUsePassiveDisplayClientMode(
+                mode = SessionOperatingMode.NETWORK_RACE,
+                networkRole = SessionNetworkRole.HOST,
+                localRole = SessionDeviceRole.DISPLAY,
+            ),
+        )
     }
 }
