@@ -66,6 +66,7 @@ import com.paul.sprintsync.sensor_native.SensorNativePreviewViewFactory
 import com.paul.sprintsync.ui.components.*
 import com.paul.sprintsync.ui.theme.*
 import com.paul.sprintsync.ui.theme.InterExtraBoldTabularTypography
+import kotlin.math.roundToInt
 
 data class SprintSyncUiState(
     val permissionGranted: Boolean = false,
@@ -117,6 +118,7 @@ data class SprintSyncUiState(
     val displayConnectedHostName: String? = null,
     val displayDiscoveryActive: Boolean = false,
     val isControllerOnlyHost: Boolean = false,
+    val connectedDeviceMonitoringCards: List<ConnectedDeviceMonitoringCardUiState> = emptyList(),
     val anchorDeviceName: String? = null,
     val anchorState: SessionAnchorState = SessionAnchorState.READY,
     val clockLockReasonLabel: String = "-",
@@ -125,6 +127,16 @@ data class SprintSyncUiState(
 data class DisplayLapRow(
     val deviceName: String,
     val lapTimeLabel: String,
+)
+
+data class ConnectedDeviceMonitoringCardUiState(
+    val stableDeviceId: String?,
+    val endpointId: String,
+    val deviceName: String,
+    val role: SessionDeviceRole,
+    val latencyMs: Int?,
+    val sensitivity: Int,
+    val connected: Boolean,
 )
 
 @Composable
@@ -146,6 +158,7 @@ fun SprintSyncApp(
     onAssignRole: (String, SessionDeviceRole) -> Unit,
     onAssignCameraFacing: (String, SessionCameraFacing) -> Unit,
     onUpdateThreshold: (Double) -> Unit,
+    onUpdateRemoteSensitivity: (String, Int) -> Unit,
     onUpdateRoiCenter: (Double) -> Unit,
     onUpdateRoiWidth: (Double) -> Unit,
     onUpdateCooldown: (Int) -> Unit,
@@ -342,6 +355,10 @@ fun SprintSyncApp(
                                 },
                                 effectiveShowPreview = effectiveShowPreview,
                                 onShowPreviewChanged = { showPreview = it },
+                                sensitivity = thresholdToSensitivity(uiState.threshold),
+                                onUpdateSensitivity = { nextSensitivity ->
+                                    onUpdateThreshold(sensitivityToThreshold(nextSensitivity.toInt()))
+                                },
                                 previewViewFactory = previewViewFactory,
                                 roiCenterX = uiState.roiCenterX,
                                 operatingMode = uiState.operatingMode,
@@ -355,6 +372,21 @@ fun SprintSyncApp(
                                 onConnectDisplayHost = onConnectDisplayHost,
                                 onResetRun = onResetRun,
                             )
+                        }
+                        if (
+                            shouldShowHostConnectedDeviceCards(
+                                stage = uiState.stage,
+                                operatingMode = uiState.operatingMode,
+                                isHost = uiState.isHost,
+                                deviceProfile = BuildConfig.DEVICE_PROFILE,
+                            ) && uiState.connectedDeviceMonitoringCards.isNotEmpty()
+                        ) {
+                            item {
+                                HostConnectedDeviceCards(
+                                    cards = uiState.connectedDeviceMonitoringCards,
+                                    onUpdateRemoteSensitivity = onUpdateRemoteSensitivity,
+                                )
+                            }
                         }
                         if (showDebugInfo && !uiState.isControllerOnlyHost) {
                             item {
@@ -645,6 +677,7 @@ private fun DeviceAssignmentRow(
                 val roleOptions = buildList {
                     add(SessionDeviceRole.UNASSIGNED)
                     add(SessionDeviceRole.START)
+                    add(SessionDeviceRole.SPLIT)
                     add(SessionDeviceRole.STOP)
                 }
 
@@ -712,6 +745,8 @@ private fun MonitoringSummaryCard(
     onAssignLocalCameraFacing: (SessionCameraFacing) -> Unit,
     effectiveShowPreview: Boolean,
     onShowPreviewChanged: (Boolean) -> Unit,
+    sensitivity: Float,
+    onUpdateSensitivity: (Float) -> Unit,
     previewViewFactory: SensorNativePreviewViewFactory,
     roiCenterX: Double,
     operatingMode: SessionOperatingMode,
@@ -792,6 +827,19 @@ private fun MonitoringSummaryCard(
                             "Clock Lock: $clockLockReasonLabel",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.Gray,
+                        )
+                    }
+                    if (shouldShowMonitoringSensitivityControl(controllerOnlyHost, operatingMode)) {
+                        Text(
+                            "Sensitivity ${String.format("%.0f", sensitivity)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Slider(
+                            value = sensitivity,
+                            onValueChange = onUpdateSensitivity,
+                            valueRange = SENSITIVITY_MIN.toFloat()..SENSITIVITY_MAX.toFloat(),
+                            steps = SENSITIVITY_MAX - SENSITIVITY_MIN - 1,
                         )
                     }
                     if (shouldShowSingleDeviceCameraFacingToggle(operatingMode)) {
@@ -887,6 +935,8 @@ private fun MonitoringSummaryCard(
                         onAssignLocalCameraFacing = onAssignLocalCameraFacing,
                         effectiveShowPreview = effectiveShowPreview,
                         onShowPreviewChanged = onShowPreviewChanged,
+                        sensitivity = sensitivity,
+                        onUpdateSensitivity = onUpdateSensitivity,
                         operatingMode = operatingMode,
                         discoveredDisplayHosts = discoveredDisplayHosts,
                         displayConnectedHostName = displayConnectedHostName,
@@ -912,6 +962,8 @@ private fun MonitoringSummaryCard(
                         onAssignLocalCameraFacing = onAssignLocalCameraFacing,
                         effectiveShowPreview = effectiveShowPreview,
                         onShowPreviewChanged = onShowPreviewChanged,
+                        sensitivity = sensitivity,
+                        onUpdateSensitivity = onUpdateSensitivity,
                         operatingMode = operatingMode,
                         discoveredDisplayHosts = discoveredDisplayHosts,
                         displayConnectedHostName = displayConnectedHostName,
@@ -937,6 +989,47 @@ private fun MonitoringSummaryCard(
 }
 
 @Composable
+private fun HostConnectedDeviceCards(
+    cards: List<ConnectedDeviceMonitoringCardUiState>,
+    onUpdateRemoteSensitivity: (String, Int) -> Unit,
+) {
+    SprintSyncCard {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            SectionHeader("Connected Device Cards")
+            cards.forEach { card ->
+                Card {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(card.deviceName, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Role: ${sessionDeviceRoleLabel(card.role)} · Latency: ${card.latencyMs?.let { "$it ms" } ?: "-"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
+                        )
+                        Text("Sensitivity ${card.sensitivity}", style = MaterialTheme.typography.bodySmall)
+                        Slider(
+                            value = card.sensitivity.toFloat(),
+                            onValueChange = { updated ->
+                                card.stableDeviceId?.let { stableDeviceId ->
+                                    onUpdateRemoteSensitivity(stableDeviceId, updated.roundToInt())
+                                }
+                            },
+                            valueRange = SENSITIVITY_MIN.toFloat()..SENSITIVITY_MAX.toFloat(),
+                            steps = SENSITIVITY_MAX - SENSITIVITY_MIN - 1,
+                            enabled = card.connected && card.stableDeviceId != null,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun MonitoringPreviewInfoPanel(
     isHost: Boolean,
     controllerOnlyHost: Boolean,
@@ -951,6 +1044,8 @@ private fun MonitoringPreviewInfoPanel(
     onAssignLocalCameraFacing: (SessionCameraFacing) -> Unit,
     effectiveShowPreview: Boolean,
     onShowPreviewChanged: (Boolean) -> Unit,
+    sensitivity: Float,
+    onUpdateSensitivity: (Float) -> Unit,
     operatingMode: SessionOperatingMode,
     discoveredDisplayHosts: Map<String, String>,
     displayConnectedHostName: String?,
@@ -984,6 +1079,20 @@ private fun MonitoringPreviewInfoPanel(
                 "Sync: $syncModeLabel · Latency: $latencyLabel",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.Gray,
+            )
+        }
+        if (shouldShowMonitoringSensitivityControl(controllerOnlyHost, operatingMode)) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Sensitivity ${String.format("%.0f", sensitivity)}",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+            )
+            Slider(
+                value = sensitivity,
+                onValueChange = onUpdateSensitivity,
+                valueRange = SENSITIVITY_MIN.toFloat()..SENSITIVITY_MAX.toFloat(),
+                steps = SENSITIVITY_MAX - SENSITIVITY_MIN - 1,
             )
         }
         if (!controllerOnlyHost && shouldShowMonitoringPreviewToggle(operatingMode)) {
@@ -1345,6 +1454,18 @@ internal fun shouldShowMonitoringTopResetRunButton(
     return canStopMonitoring && deviceProfile == "host_xiaomi"
 }
 
+internal fun shouldShowHostConnectedDeviceCards(
+    stage: SessionStage,
+    operatingMode: SessionOperatingMode,
+    isHost: Boolean,
+    deviceProfile: String,
+): Boolean {
+    return stage == SessionStage.MONITORING &&
+        operatingMode == SessionOperatingMode.NETWORK_RACE &&
+        isHost &&
+        deviceProfile == "host_xiaomi"
+}
+
 internal fun shouldShowDisplayRelayControls(mode: SessionOperatingMode): Boolean =
     mode == SessionOperatingMode.SINGLE_DEVICE
 
@@ -1355,6 +1476,28 @@ internal fun shouldShowSingleDeviceCameraFacingToggle(mode: SessionOperatingMode
     mode == SessionOperatingMode.SINGLE_DEVICE
 
 internal fun shouldShowMonitoringConnectionDebugInfo(showDebugInfo: Boolean): Boolean = showDebugInfo
+
+internal fun shouldShowMonitoringSensitivityControl(
+    controllerOnlyHost: Boolean,
+    mode: SessionOperatingMode,
+): Boolean = !controllerOnlyHost && mode != SessionOperatingMode.DISPLAY_HOST
+
+private const val SENSITIVITY_MIN = 1
+private const val SENSITIVITY_MAX = 100
+private const val THRESHOLD_MIN = 0.001
+private const val THRESHOLD_MAX = 0.08
+
+internal fun sensitivityToThreshold(sensitivity: Int): Double {
+    val clamped = sensitivity.coerceIn(SENSITIVITY_MIN, SENSITIVITY_MAX)
+    val normalized = (clamped - SENSITIVITY_MIN).toDouble() / (SENSITIVITY_MAX - SENSITIVITY_MIN).toDouble()
+    return THRESHOLD_MAX - normalized * (THRESHOLD_MAX - THRESHOLD_MIN)
+}
+
+internal fun thresholdToSensitivity(threshold: Double): Float {
+    val clamped = threshold.coerceIn(THRESHOLD_MIN, THRESHOLD_MAX)
+    val normalized = (clamped - THRESHOLD_MIN) / (THRESHOLD_MAX - THRESHOLD_MIN)
+    return (SENSITIVITY_MAX - normalized * (SENSITIVITY_MAX - SENSITIVITY_MIN)).toFloat()
+}
 
 internal fun shouldShowMonitoringPreview(mode: SessionOperatingMode, effectiveShowPreview: Boolean): Boolean =
     effectiveShowPreview

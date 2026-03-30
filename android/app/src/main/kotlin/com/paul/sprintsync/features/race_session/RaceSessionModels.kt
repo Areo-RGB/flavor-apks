@@ -25,7 +25,9 @@ enum class SessionNetworkRole {
 enum class SessionDeviceRole {
     UNASSIGNED,
     START,
+    SPLIT,
     STOP,
+    DISPLAY,
 }
 
 enum class SessionCameraFacing {
@@ -89,6 +91,7 @@ data class SessionSnapshotMessage(
     val devices: List<SessionDevice>,
     val hostStartSensorNanos: Long?,
     val hostStopSensorNanos: Long?,
+    val hostSplitSensorNanos: List<Long> = emptyList(),
     val runId: String?,
     val hostSensorMinusElapsedNanos: Long?,
     val hostGpsUtcOffsetNanos: Long?,
@@ -103,6 +106,7 @@ data class SessionSnapshotMessage(
         val timeline = JSONObject()
             .put("hostStartSensorNanos", hostStartSensorNanos ?: JSONObject.NULL)
             .put("hostStopSensorNanos", hostStopSensorNanos ?: JSONObject.NULL)
+            .put("hostSplitSensorNanos", hostSplitSensorNanos.toJsonArray())
         return JSONObject()
             .put("type", TYPE)
             .put("stage", stage.name.lowercase())
@@ -149,6 +153,7 @@ data class SessionSnapshotMessage(
                 devices = parsedDevices,
                 hostStartSensorNanos = timeline.readOptionalLong("hostStartSensorNanos"),
                 hostStopSensorNanos = timeline.readOptionalLong("hostStopSensorNanos"),
+                hostSplitSensorNanos = timeline.readOptionalLongArray("hostSplitSensorNanos"),
                 runId = decoded.optString("runId", "").ifBlank { null },
                 hostSensorMinusElapsedNanos = decoded.readOptionalLong("hostSensorMinusElapsedNanos"),
                 hostGpsUtcOffsetNanos = decoded.readOptionalLong("hostGpsUtcOffsetNanos"),
@@ -263,6 +268,7 @@ data class SessionTriggerRefinementMessage(
 data class SessionTimelineSnapshotMessage(
     val hostStartSensorNanos: Long?,
     val hostStopSensorNanos: Long?,
+    val hostSplitSensorNanos: List<Long> = emptyList(),
     val sentElapsedNanos: Long,
 ) {
     fun toJsonString(): String {
@@ -270,6 +276,7 @@ data class SessionTimelineSnapshotMessage(
             .put("type", TYPE)
             .put("hostStartSensorNanos", hostStartSensorNanos ?: JSONObject.NULL)
             .put("hostStopSensorNanos", hostStopSensorNanos ?: JSONObject.NULL)
+            .put("hostSplitSensorNanos", hostSplitSensorNanos.toJsonArray())
             .put("sentElapsedNanos", sentElapsedNanos)
             .toString()
     }
@@ -292,9 +299,11 @@ data class SessionTimelineSnapshotMessage(
             }
             val hostStartSensorNanos = decoded.readOptionalLong("hostStartSensorNanos")
             val hostStopSensorNanos = decoded.readOptionalLong("hostStopSensorNanos")
+            val hostSplitSensorNanos = decoded.readOptionalLongArray("hostSplitSensorNanos")
             return SessionTimelineSnapshotMessage(
                 hostStartSensorNanos = hostStartSensorNanos,
                 hostStopSensorNanos = hostStopSensorNanos,
+                hostSplitSensorNanos = hostSplitSensorNanos,
                 sentElapsedNanos = sentElapsedNanos,
             )
         }
@@ -375,6 +384,98 @@ data class SessionDeviceIdentityMessage(
     }
 }
 
+data class SessionDeviceTelemetryMessage(
+    val stableDeviceId: String,
+    val role: SessionDeviceRole,
+    val sensitivity: Int,
+    val latencyMs: Int?,
+    val timestampMillis: Long,
+) {
+    fun toJsonString(): String {
+        return JSONObject()
+            .put("type", TYPE)
+            .put("stableDeviceId", stableDeviceId)
+            .put("role", role.name.lowercase())
+            .put("sensitivity", sensitivity)
+            .put("latencyMs", latencyMs ?: JSONObject.NULL)
+            .put("timestampMillis", timestampMillis)
+            .toString()
+    }
+
+    companion object {
+        const val TYPE = "device_telemetry"
+
+        fun tryParse(raw: String): SessionDeviceTelemetryMessage? {
+            val decoded = try {
+                JSONObject(raw)
+            } catch (_: JSONException) {
+                return null
+            }
+            if (decoded.optString("type") != TYPE) {
+                return null
+            }
+            val stableDeviceId = decoded.optString("stableDeviceId", "").trim()
+            val role = sessionDeviceRoleFromName(decoded.readOptionalString("role")) ?: return null
+            val sensitivity = decoded.optInt("sensitivity", Int.MIN_VALUE)
+            val timestampMillis = decoded.optLong("timestampMillis", Long.MIN_VALUE)
+            val latencyMs = if (!decoded.has("latencyMs") || decoded.isNull("latencyMs")) null else decoded.optInt("latencyMs", -1)
+            if (stableDeviceId.isEmpty() || sensitivity == Int.MIN_VALUE || timestampMillis == Long.MIN_VALUE) {
+                return null
+            }
+            if (sensitivity !in 1..100) {
+                return null
+            }
+            if (latencyMs != null && latencyMs < 0) {
+                return null
+            }
+            return SessionDeviceTelemetryMessage(
+                stableDeviceId = stableDeviceId,
+                role = role,
+                sensitivity = sensitivity,
+                latencyMs = latencyMs,
+                timestampMillis = timestampMillis,
+            )
+        }
+    }
+}
+
+data class SessionDeviceConfigUpdateMessage(
+    val targetStableDeviceId: String,
+    val sensitivity: Int,
+) {
+    fun toJsonString(): String {
+        return JSONObject()
+            .put("type", TYPE)
+            .put("targetStableDeviceId", targetStableDeviceId)
+            .put("sensitivity", sensitivity)
+            .toString()
+    }
+
+    companion object {
+        const val TYPE = "device_config_update"
+
+        fun tryParse(raw: String): SessionDeviceConfigUpdateMessage? {
+            val decoded = try {
+                JSONObject(raw)
+            } catch (_: JSONException) {
+                return null
+            }
+            if (decoded.optString("type") != TYPE) {
+                return null
+            }
+            val targetStableDeviceId = decoded.optString("targetStableDeviceId", "").trim()
+            val sensitivity = decoded.optInt("sensitivity", Int.MIN_VALUE)
+            if (targetStableDeviceId.isEmpty() || sensitivity !in 1..100) {
+                return null
+            }
+            return SessionDeviceConfigUpdateMessage(
+                targetStableDeviceId = targetStableDeviceId,
+                sensitivity = sensitivity,
+            )
+        }
+    }
+}
+
 data class SessionLapResultMessage(
     val senderDeviceName: String,
     val startedSensorNanos: Long,
@@ -446,7 +547,9 @@ fun sessionDeviceRoleLabel(role: SessionDeviceRole): String {
     return when (role) {
         SessionDeviceRole.UNASSIGNED -> "Unassigned"
         SessionDeviceRole.START -> "Start"
+        SessionDeviceRole.SPLIT -> "Split"
         SessionDeviceRole.STOP -> "Stop"
+        SessionDeviceRole.DISPLAY -> "Display"
     }
 }
 
@@ -477,4 +580,22 @@ private fun JSONObject.readOptionalString(key: String): String? {
         return null
     }
     return optString(key, "").ifBlank { null }
+}
+
+private fun JSONObject.readOptionalLongArray(key: String): List<Long> {
+    val raw = optJSONArray(key) ?: return emptyList()
+    val values = mutableListOf<Long>()
+    for (index in 0 until raw.length()) {
+        val value = raw.optLong(index, Long.MIN_VALUE)
+        if (value != Long.MIN_VALUE) {
+            values += value
+        }
+    }
+    return values
+}
+
+private fun List<Long>.toJsonArray(): JSONArray {
+    val result = JSONArray()
+    forEach { value -> result.put(value) }
+    return result
 }

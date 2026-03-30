@@ -7,9 +7,52 @@ import com.paul.sprintsync.features.race_session.SessionOperatingMode
 import com.paul.sprintsync.features.race_session.SessionStage
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class SprintSyncAppLayoutLogicTest {
+    @Test
+    fun `sensitivity mapping honors bounds and direction`() {
+        assertEquals(0.08, sensitivityToThreshold(1), 0.000001)
+        assertEquals(0.001, sensitivityToThreshold(100), 0.000001)
+        assertTrue(sensitivityToThreshold(25) > sensitivityToThreshold(75))
+    }
+
+    @Test
+    fun `threshold to sensitivity maps persisted threshold back to percent scale`() {
+        assertEquals(100f, thresholdToSensitivity(0.001), 0.0001f)
+        assertEquals(1f, thresholdToSensitivity(0.08), 0.0001f)
+        assertTrue(thresholdToSensitivity(0.02) > thresholdToSensitivity(0.04))
+    }
+
+    @Test
+    fun `sensitivity control is hidden for controller host and display host mode`() {
+        assertTrue(
+            shouldShowMonitoringSensitivityControl(
+                controllerOnlyHost = false,
+                mode = SessionOperatingMode.NETWORK_RACE,
+            ),
+        )
+        assertTrue(
+            shouldShowMonitoringSensitivityControl(
+                controllerOnlyHost = false,
+                mode = SessionOperatingMode.SINGLE_DEVICE,
+            ),
+        )
+        assertFalse(
+            shouldShowMonitoringSensitivityControl(
+                controllerOnlyHost = true,
+                mode = SessionOperatingMode.NETWORK_RACE,
+            ),
+        )
+        assertFalse(
+            shouldShowMonitoringSensitivityControl(
+                controllerOnlyHost = false,
+                mode = SessionOperatingMode.DISPLAY_HOST,
+            ),
+        )
+    }
+
     @Test
     fun `setup permission warning only shows when permissions missing and denied list is not empty`() {
         assertTrue(
@@ -141,6 +184,42 @@ class SprintSyncAppLayoutLogicTest {
                 isHost = true,
                 operatingMode = SessionOperatingMode.NETWORK_RACE,
                 deviceProfile = "host_xiaomi",
+            ),
+        )
+    }
+
+    @Test
+    fun `connected device cards show only for host xiaomi monitoring mode`() {
+        assertTrue(
+            shouldShowHostConnectedDeviceCards(
+                stage = SessionStage.MONITORING,
+                operatingMode = SessionOperatingMode.NETWORK_RACE,
+                isHost = true,
+                deviceProfile = "host_xiaomi",
+            ),
+        )
+        assertFalse(
+            shouldShowHostConnectedDeviceCards(
+                stage = SessionStage.LOBBY,
+                operatingMode = SessionOperatingMode.NETWORK_RACE,
+                isHost = true,
+                deviceProfile = "host_xiaomi",
+            ),
+        )
+        assertFalse(
+            shouldShowHostConnectedDeviceCards(
+                stage = SessionStage.MONITORING,
+                operatingMode = SessionOperatingMode.DISPLAY_HOST,
+                isHost = true,
+                deviceProfile = "host_xiaomi",
+            ),
+        )
+        assertFalse(
+            shouldShowHostConnectedDeviceCards(
+                stage = SessionStage.MONITORING,
+                operatingMode = SessionOperatingMode.NETWORK_RACE,
+                isHost = true,
+                deviceProfile = "client_huawei",
             ),
         )
     }

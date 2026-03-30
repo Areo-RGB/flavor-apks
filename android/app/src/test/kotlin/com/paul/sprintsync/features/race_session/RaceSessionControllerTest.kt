@@ -17,37 +17,41 @@ import java.util.concurrent.atomic.AtomicInteger
 @RunWith(RobolectricTestRunner::class)
 class RaceSessionControllerTest {
     @Test
-    fun `host xiaomi pins oneplus start and pixel stop`() {
+    fun `host xiaomi pins oneplus start huawei split and pixel stop`() {
         val devices = listOf(
             SessionDevice(id = "local", name = "Host Xiaomi", role = SessionDeviceRole.START, isLocal = true),
             SessionDevice(id = "ep1", name = "OnePlus 12", role = SessionDeviceRole.UNASSIGNED, isLocal = false),
-            SessionDevice(id = "ep2", name = "Pixel 8", role = SessionDeviceRole.START, isLocal = false),
+            SessionDevice(id = "ep2", name = "Huawei P30", role = SessionDeviceRole.UNASSIGNED, isLocal = false),
+            SessionDevice(id = "ep3", name = "Pixel 8", role = SessionDeviceRole.START, isLocal = false),
         )
 
         val mapped = applyPinnedHostRolesForDeviceProfile(devices, deviceProfile = "host_xiaomi")
 
         assertEquals(SessionDeviceRole.UNASSIGNED, mapped.first { it.id == "local" }.role)
         assertEquals(SessionDeviceRole.START, mapped.first { it.id == "ep1" }.role)
-        assertEquals(SessionDeviceRole.STOP, mapped.first { it.id == "ep2" }.role)
+        assertEquals(SessionDeviceRole.SPLIT, mapped.first { it.id == "ep2" }.role)
+        assertEquals(SessionDeviceRole.STOP, mapped.first { it.id == "ep3" }.role)
     }
 
     @Test
-    fun `host xiaomi pins cph oneplus alias to start and pixel to stop`() {
+    fun `host xiaomi pins cph oneplus alias and honor alias`() {
         val devices = listOf(
             SessionDevice(id = "local", name = "Host Xiaomi", role = SessionDeviceRole.UNASSIGNED, isLocal = true),
             SessionDevice(id = "ep1", name = "CPH2399", role = SessionDeviceRole.UNASSIGNED, isLocal = false),
-            SessionDevice(id = "ep2", name = "Pixel 7", role = SessionDeviceRole.UNASSIGNED, isLocal = false),
+            SessionDevice(id = "ep2", name = "HONOR 70", role = SessionDeviceRole.UNASSIGNED, isLocal = false),
+            SessionDevice(id = "ep3", name = "Pixel 7", role = SessionDeviceRole.UNASSIGNED, isLocal = false),
         )
 
         val mapped = applyPinnedHostRolesForDeviceProfile(devices, deviceProfile = "host_xiaomi")
 
         assertEquals(SessionDeviceRole.START, mapped.first { it.id == "ep1" }.role)
-        assertEquals(SessionDeviceRole.STOP, mapped.first { it.id == "ep2" }.role)
+        assertEquals(SessionDeviceRole.SPLIT, mapped.first { it.id == "ep2" }.role)
+        assertEquals(SessionDeviceRole.STOP, mapped.first { it.id == "ep3" }.role)
         assertEquals(SessionDeviceRole.UNASSIGNED, mapped.first { it.id == "local" }.role)
     }
 
     @Test
-    fun `host xiaomi pins oneplus start and remaining remote stop when pixel label is missing`() {
+    fun `host xiaomi pins known devices even when full trio is not present`() {
         val devices = listOf(
             SessionDevice(id = "local", name = "Host Xiaomi", role = SessionDeviceRole.UNASSIGNED, isLocal = true),
             SessionDevice(id = "ep1", name = "CPH2399", role = SessionDeviceRole.UNASSIGNED, isLocal = false),
@@ -56,9 +60,23 @@ class RaceSessionControllerTest {
 
         val mapped = applyPinnedHostRolesForDeviceProfile(devices, deviceProfile = "host_xiaomi")
 
-        assertEquals(SessionDeviceRole.START, mapped.first { it.id == "ep1" }.role)
-        assertEquals(SessionDeviceRole.STOP, mapped.first { it.id == "ep2" }.role)
         assertEquals(SessionDeviceRole.UNASSIGNED, mapped.first { it.id == "local" }.role)
+        assertEquals(SessionDeviceRole.START, mapped.first { it.id == "ep1" }.role)
+        assertEquals(SessionDeviceRole.UNASSIGNED, mapped.first { it.id == "ep2" }.role)
+    }
+
+    @Test
+    fun `host xiaomi pins huawei split and clears duplicate split roles`() {
+        val devices = listOf(
+            SessionDevice(id = "local", name = "Host Xiaomi", role = SessionDeviceRole.UNASSIGNED, isLocal = true),
+            SessionDevice(id = "ep1", name = "HUAWEI EML-L29", role = SessionDeviceRole.UNASSIGNED, isLocal = false),
+            SessionDevice(id = "ep2", name = "Unknown Device", role = SessionDeviceRole.SPLIT, isLocal = false),
+        )
+
+        val mapped = applyPinnedHostRolesForDeviceProfile(devices, deviceProfile = "host_xiaomi")
+
+        assertEquals(SessionDeviceRole.SPLIT, mapped.first { it.id == "ep1" }.role)
+        assertEquals(SessionDeviceRole.UNASSIGNED, mapped.first { it.id == "ep2" }.role)
     }
 
     @Test
@@ -709,6 +727,191 @@ class RaceSessionControllerTest {
 
         assertEquals("trigger_request_rejected_unsynced", controller.uiState.value.lastEvent)
         assertNull(controller.uiState.value.timeline.hostStopSensorNanos)
+    }
+
+    @Test
+    fun `host ingests telemetry and sends remote sensitivity update to mapped endpoint`() {
+        val sentMessages = mutableListOf<Pair<String, String>>()
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { endpointId, payload, onComplete ->
+                sentMessages += endpointId to payload
+                onComplete(Result.success(Unit))
+            },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-1",
+                endpointName = "Huawei",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.onNearbyEvent(
+            NearbyEvent.PayloadReceived(
+                endpointId = "ep-1",
+                message = SessionDeviceIdentityMessage(
+                    stableDeviceId = "stable-huawei",
+                    deviceName = "Huawei P30",
+                ).toJsonString(),
+            ),
+        )
+        controller.onNearbyEvent(
+            NearbyEvent.PayloadReceived(
+                endpointId = "ep-1",
+                message = SessionDeviceTelemetryMessage(
+                    stableDeviceId = "stable-huawei",
+                    role = SessionDeviceRole.SPLIT,
+                    sensitivity = 63,
+                    latencyMs = 21,
+                    timestampMillis = 10L,
+                ).toJsonString(),
+            ),
+        )
+
+        val telemetry = controller.uiState.value.remoteDeviceTelemetry["stable-huawei"]
+        assertNotNull(telemetry)
+        assertEquals(SessionDeviceRole.SPLIT, telemetry?.role)
+        assertEquals(63, telemetry?.sensitivity)
+        assertEquals(21, telemetry?.latencyMs)
+        assertEquals("stable-huawei", controller.stableDeviceIdForEndpoint("ep-1"))
+
+        assertTrue(controller.sendRemoteSensitivityUpdate("stable-huawei", 44))
+        val sentConfig = sentMessages
+            .asReversed()
+            .mapNotNull { (_, payload) -> SessionDeviceConfigUpdateMessage.tryParse(payload) }
+            .firstOrNull()
+        assertNotNull(sentConfig)
+        assertEquals("stable-huawei", sentConfig?.targetStableDeviceId)
+        assertEquals(44, sentConfig?.sensitivity)
+        assertEquals("ep-1", sentMessages.last().first)
+        assertEquals(44, controller.uiState.value.remoteDeviceTelemetry["stable-huawei"]?.sensitivity)
+    }
+
+    @Test
+    fun `client applies targeted device config update and exposes pending sensitivity once`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+        controller.setNetworkRole(SessionNetworkRole.CLIENT)
+        controller.setLocalDeviceIdentity(deviceId = "stable-local", deviceName = "Pixel")
+
+        controller.onNearbyEvent(
+            NearbyEvent.PayloadReceived(
+                endpointId = "host-ep",
+                message = SessionDeviceConfigUpdateMessage(
+                    targetStableDeviceId = "stable-local",
+                    sensitivity = 37,
+                ).toJsonString(),
+            ),
+        )
+
+        assertEquals(37, controller.consumePendingSensitivityUpdateFromHost())
+        assertNull(controller.consumePendingSensitivityUpdateFromHost())
+
+        controller.onNearbyEvent(
+            NearbyEvent.PayloadReceived(
+                endpointId = "host-ep",
+                message = SessionDeviceConfigUpdateMessage(
+                    targetStableDeviceId = "someone-else",
+                    sensitivity = 90,
+                ).toJsonString(),
+            ),
+        )
+        assertNull(controller.consumePendingSensitivityUpdateFromHost())
+    }
+
+    @Test
+    fun `host telemetry mapping remains stable across disconnect and reconnect`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-old",
+                endpointName = "Huawei",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.onNearbyEvent(
+            NearbyEvent.PayloadReceived(
+                endpointId = "ep-old",
+                message = SessionDeviceIdentityMessage(
+                    stableDeviceId = "stable-huawei",
+                    deviceName = "Huawei P30",
+                ).toJsonString(),
+            ),
+        )
+        controller.onNearbyEvent(
+            NearbyEvent.PayloadReceived(
+                endpointId = "ep-old",
+                message = SessionDeviceTelemetryMessage(
+                    stableDeviceId = "stable-huawei",
+                    role = SessionDeviceRole.SPLIT,
+                    sensitivity = 20,
+                    latencyMs = 30,
+                    timestampMillis = 10L,
+                ).toJsonString(),
+            ),
+        )
+        assertNotNull(controller.uiState.value.remoteDeviceTelemetry["stable-huawei"])
+
+        controller.onNearbyEvent(NearbyEvent.EndpointDisconnected(endpointId = "ep-old"))
+        assertNull(controller.uiState.value.remoteDeviceTelemetry["stable-huawei"])
+        assertNull(controller.stableDeviceIdForEndpoint("ep-old"))
+
+        controller.onNearbyEvent(
+            NearbyEvent.ConnectionResult(
+                endpointId = "ep-new",
+                endpointName = "Huawei",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+        controller.onNearbyEvent(
+            NearbyEvent.PayloadReceived(
+                endpointId = "ep-new",
+                message = SessionDeviceIdentityMessage(
+                    stableDeviceId = "stable-huawei",
+                    deviceName = "Huawei P30",
+                ).toJsonString(),
+            ),
+        )
+        controller.onNearbyEvent(
+            NearbyEvent.PayloadReceived(
+                endpointId = "ep-new",
+                message = SessionDeviceTelemetryMessage(
+                    stableDeviceId = "stable-huawei",
+                    role = SessionDeviceRole.SPLIT,
+                    sensitivity = 33,
+                    latencyMs = 12,
+                    timestampMillis = 11L,
+                ).toJsonString(),
+            ),
+        )
+
+        assertEquals("stable-huawei", controller.stableDeviceIdForEndpoint("ep-new"))
+        assertEquals(33, controller.uiState.value.remoteDeviceTelemetry["stable-huawei"]?.sensitivity)
+        assertEquals(12, controller.uiState.value.remoteDeviceTelemetry["stable-huawei"]?.latencyMs)
     }
 
     @Test

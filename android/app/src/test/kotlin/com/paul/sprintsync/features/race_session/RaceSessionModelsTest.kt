@@ -24,6 +24,7 @@ class RaceSessionModelsTest {
             ),
             hostStartSensorNanos = 1_000L,
             hostStopSensorNanos = 2_000L,
+            hostSplitSensorNanos = listOf(1_500L),
             runId = "run-1",
             hostSensorMinusElapsedNanos = 120L,
             hostGpsUtcOffsetNanos = 8_000L,
@@ -38,6 +39,7 @@ class RaceSessionModelsTest {
         assertNotNull(parsed)
         assertEquals(8_000L, parsed?.hostGpsUtcOffsetNanos)
         assertEquals(600_000_000L, parsed?.hostGpsFixAgeNanos)
+        assertEquals(listOf(1_500L), parsed?.hostSplitSensorNanos)
     }
 
     @Test
@@ -45,6 +47,7 @@ class RaceSessionModelsTest {
         val original = SessionTimelineSnapshotMessage(
             hostStartSensorNanos = 1_000L,
             hostStopSensorNanos = 2_500L,
+            hostSplitSensorNanos = listOf(1_400L, 2_000L),
             sentElapsedNanos = 90_000L,
         )
 
@@ -53,6 +56,7 @@ class RaceSessionModelsTest {
         assertNotNull(parsed)
         assertEquals(1_000L, parsed?.hostStartSensorNanos)
         assertEquals(2_500L, parsed?.hostStopSensorNanos)
+        assertEquals(listOf(1_400L, 2_000L), parsed?.hostSplitSensorNanos)
         assertEquals(90_000L, parsed?.sentElapsedNanos)
     }
 
@@ -154,5 +158,69 @@ class RaceSessionModelsTest {
         assertNotNull(parsed)
         assertEquals("stable-device-2", parsed?.stableDeviceId)
         assertEquals("Legacy Phone", parsed?.deviceName)
+    }
+
+    @Test
+    fun `device telemetry message round-trips`() {
+        val original = SessionDeviceTelemetryMessage(
+            stableDeviceId = "stable-device-3",
+            role = SessionDeviceRole.SPLIT,
+            sensitivity = 72,
+            latencyMs = 18,
+            timestampMillis = 123456789L,
+        )
+
+        val parsed = SessionDeviceTelemetryMessage.tryParse(original.toJsonString())
+
+        assertNotNull(parsed)
+        assertEquals("stable-device-3", parsed?.stableDeviceId)
+        assertEquals(SessionDeviceRole.SPLIT, parsed?.role)
+        assertEquals(72, parsed?.sensitivity)
+        assertEquals(18, parsed?.latencyMs)
+        assertEquals(123456789L, parsed?.timestampMillis)
+    }
+
+    @Test
+    fun `device config update message round-trips`() {
+        val original = SessionDeviceConfigUpdateMessage(
+            targetStableDeviceId = "stable-device-4",
+            sensitivity = 41,
+        )
+
+        val parsed = SessionDeviceConfigUpdateMessage.tryParse(original.toJsonString())
+
+        assertNotNull(parsed)
+        assertEquals("stable-device-4", parsed?.targetStableDeviceId)
+        assertEquals(41, parsed?.sensitivity)
+    }
+
+    @Test
+    fun `device telemetry parser rejects invalid fields`() {
+        val missingId = """
+            {"type":"device_telemetry","stableDeviceId":"","role":"start","sensitivity":50,"latencyMs":10,"timestampMillis":1}
+        """.trimIndent()
+        val invalidRole = """
+            {"type":"device_telemetry","stableDeviceId":"abc","role":"bad","sensitivity":50,"latencyMs":10,"timestampMillis":1}
+        """.trimIndent()
+        val invalidSensitivity = """
+            {"type":"device_telemetry","stableDeviceId":"abc","role":"stop","sensitivity":101,"latencyMs":10,"timestampMillis":1}
+        """.trimIndent()
+        val invalidLatency = """
+            {"type":"device_telemetry","stableDeviceId":"abc","role":"stop","sensitivity":50,"latencyMs":-1,"timestampMillis":1}
+        """.trimIndent()
+
+        assertNull(SessionDeviceTelemetryMessage.tryParse(missingId))
+        assertNull(SessionDeviceTelemetryMessage.tryParse(invalidRole))
+        assertNull(SessionDeviceTelemetryMessage.tryParse(invalidSensitivity))
+        assertNull(SessionDeviceTelemetryMessage.tryParse(invalidLatency))
+    }
+
+    @Test
+    fun `device config update parser rejects invalid fields`() {
+        val missingTarget = """{"type":"device_config_update","targetStableDeviceId":"","sensitivity":55}"""
+        val invalidSensitivity = """{"type":"device_config_update","targetStableDeviceId":"abc","sensitivity":0}"""
+
+        assertNull(SessionDeviceConfigUpdateMessage.tryParse(missingTarget))
+        assertNull(SessionDeviceConfigUpdateMessage.tryParse(invalidSensitivity))
     }
 }

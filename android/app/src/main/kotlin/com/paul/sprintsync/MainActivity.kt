@@ -410,6 +410,16 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                         motionDetectionController.updateThreshold(value)
                         syncControllerSummaries()
                     },
+                    onUpdateRemoteSensitivity = { stableDeviceId, sensitivity ->
+                        if (!isControllerOnlyHost && uiState.value.networkRole != SessionNetworkRole.HOST) {
+                            return@SprintSyncApp
+                        }
+                        raceSessionController.sendRemoteSensitivityUpdate(
+                            targetStableDeviceId = stableDeviceId,
+                            sensitivity = sensitivity,
+                        )
+                        syncControllerSummaries()
+                    },
                     onUpdateRoiCenter = { value ->
                         if (isControllerOnlyHost) return@SprintSyncApp
                         motionDetectionController.updateRoiCenter(value)
@@ -748,6 +758,11 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         }
         syncControllerSummaries()
         appendEvent("nearby:$type")
+        connectionFailureGuidanceMessage(
+            event = event,
+            isTcpOnly = BuildConfig.TCP_ONLY,
+            sessionNetworkRole = raceSessionController.uiState.value.networkRole,
+        )?.let(::appendEvent)
     }
 
     private fun onSensorEvent(event: SensorNativeEvent) {
@@ -929,6 +944,13 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         }
 
         val motionState = motionDetectionController.uiState.value
+        val localSensitivity = thresholdToSensitivity(motionState.config.threshold).roundToInt().coerceIn(1, 100)
+        raceSessionController.onLocalSensitivityChanged(localSensitivity)
+        raceSessionController.consumePendingSensitivityUpdateFromHost()?.let { pendingSensitivity ->
+            if (!isControllerOnlyHost) {
+                motionDetectionController.updateThreshold(sensitivityToThreshold(pendingSensitivity))
+            }
+        }
 
         val monitoringSummary = if (isControllerOnlyHost) {
             "Controller"
@@ -1040,7 +1062,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             raceState.monitoringActive -> "Running"
             else -> "Armed"
         }
-        val marksCount = if (timelineForUi.hostStopSensorNanos != null) 1 else 0
+        val marksCount = timelineForUi.hostSplitSensorNanos.size + if (timelineForUi.hostStopSensorNanos != null) 1 else 0
 
         val elapsedDisplay = formatElapsedDisplay(
             startedSensorNanos = timelineForUi.hostStartSensorNanos,
@@ -1052,6 +1074,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         val triggerHistory = motionState.triggerHistory.map { trigger ->
             val roleLabel = when (trigger.triggerType.lowercase()) {
                 "start" -> "START"
+                "split" -> "SPLIT"
                 "stop" -> "STOP"
                 else -> trigger.triggerType.uppercase()
             }
@@ -1074,6 +1097,21 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             deviceNamesByEndpointId = displayHostDeviceNamesByEndpointId,
             elapsedByEndpointId = displayLatestLapByEndpointId,
         )
+        val connectedDeviceMonitoringCards = raceState.devices
+            .filter { device -> !device.isLocal && raceState.connectedEndpoints.contains(device.id) }
+            .map { device ->
+                val stableDeviceId = raceSessionController.stableDeviceIdForEndpoint(device.id)
+                val telemetry = stableDeviceId?.let { raceState.remoteDeviceTelemetry[it] }
+                ConnectedDeviceMonitoringCardUiState(
+                    stableDeviceId = stableDeviceId,
+                    endpointId = device.id,
+                    deviceName = telemetry?.deviceName ?: device.name,
+                    role = telemetry?.role ?: device.role,
+                    latencyMs = telemetry?.latencyMs,
+                    sensitivity = telemetry?.sensitivity ?: 100,
+                    connected = telemetry?.connected ?: true,
+                )
+            }
         updateUiState {
             copy(
                 stage = raceState.stage,
@@ -1083,6 +1121,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 monitoringSummary = monitoringSummary,
                 userMonitoringEnabled = userMonitoringEnabled,
                 isControllerOnlyHost = isControllerOnlyHost,
+                connectedDeviceMonitoringCards = connectedDeviceMonitoringCards,
                 clockSummary = clockSummary,
                 startedSensorNanos = timelineForUi.hostStartSensorNanos,
                 stoppedSensorNanos = timelineForUi.hostStopSensorNanos,
@@ -1425,6 +1464,18 @@ internal fun buildDisplayLapRowsForConnectedDevices(
             lapTimeLabel = lapTimeLabel,
         )
     }
+}
+
+internal fun connectionFailureGuidanceMessage(
+    event: NearbyEvent,
+    isTcpOnly: Boolean,
+    sessionNetworkRole: SessionNetworkRole,
+): String? {
+    val connectionResult = event as? NearbyEvent.ConnectionResult ?: return null
+    if (!isTcpOnly || sessionNetworkRole != SessionNetworkRole.CLIENT || connectionResult.connected) {
+        return null
+    }
+    return "Connection failed. Turn off mobile data / use Wi-Fi only."
 }
 
 internal fun formatElapsedTimerDisplay(totalMillis: Long): String {

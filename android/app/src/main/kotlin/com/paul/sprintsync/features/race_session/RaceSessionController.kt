@@ -18,6 +18,7 @@ import java.nio.charset.StandardCharsets
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 typealias RaceSessionLoadLastRun = suspend () -> LastRunResult?
 typealias RaceSessionSaveLastRun = suspend (LastRunResult) -> Unit
@@ -38,6 +39,7 @@ private data class AcceptedClockSyncSample(
 data class SessionRaceTimeline(
     val hostStartSensorNanos: Long? = null,
     val hostStopSensorNanos: Long? = null,
+    val hostSplitSensorNanos: List<Long> = emptyList(),
 )
 
 data class RaceSessionClockState(
@@ -53,6 +55,16 @@ data class RaceSessionClockState(
     val lockReason: SessionClockLockReason = SessionClockLockReason.NO_ANCHOR,
 )
 
+data class SessionRemoteDeviceTelemetryState(
+    val stableDeviceId: String,
+    val deviceName: String,
+    val role: SessionDeviceRole,
+    val sensitivity: Int,
+    val latencyMs: Int?,
+    val connected: Boolean,
+    val timestampMillis: Long,
+)
+
 data class RaceSessionUiState(
     val stage: SessionStage = SessionStage.SETUP,
     val operatingMode: SessionOperatingMode = SessionOperatingMode.NETWORK_RACE,
@@ -65,7 +77,9 @@ data class RaceSessionUiState(
     val devices: List<SessionDevice> = emptyList(),
     val discoveredEndpoints: Map<String, String> = emptyMap(),
     val connectedEndpoints: Set<String> = emptySet(),
+    val remoteDeviceTelemetry: Map<String, SessionRemoteDeviceTelemetryState> = emptyMap(),
     val clockSyncInProgress: Boolean = false,
+    val pendingSensitivityUpdateFromHost: Int? = null,
     val anchorDeviceId: String? = null,
     val anchorState: SessionAnchorState = SessionAnchorState.READY,
     val lastError: String? = null,
@@ -153,6 +167,8 @@ class RaceSessionController(
     private val acceptedClockSyncSamples = mutableListOf<AcceptedClockSyncSample>()
     private val endpointIdByStableDeviceId = mutableMapOf<String, String>()
     private val stableDeviceIdByEndpointId = mutableMapOf<String, String>()
+    private var localSensitivity = 100
+    private var lastPublishedTelemetryFingerprint: String? = null
     private var clockSyncBurstDispatchCompleted = false
     private var acceptedClockSampleCounter = 0
 
@@ -210,7 +226,54 @@ class RaceSessionController(
         )
         if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
             broadcastSnapshotIfHost()
+        } else {
+            publishDeviceTelemetryIfClient(force = true)
         }
+    }
+
+    fun onLocalSensitivityChanged(sensitivity: Int) {
+        val clamped = sensitivity.coerceIn(1, 100)
+        if (localSensitivity == clamped) {
+            return
+        }
+        localSensitivity = clamped
+        publishDeviceTelemetryIfClient(force = true)
+    }
+
+    fun stableDeviceIdForEndpoint(endpointId: String): String? = stableDeviceIdByEndpointId[endpointId]
+
+    fun consumePendingSensitivityUpdateFromHost(): Int? {
+        val pending = _uiState.value.pendingSensitivityUpdateFromHost ?: return null
+        _uiState.value = _uiState.value.copy(pendingSensitivityUpdateFromHost = null)
+        return pending
+    }
+
+    fun sendRemoteSensitivityUpdate(targetStableDeviceId: String, sensitivity: Int): Boolean {
+        if (_uiState.value.networkRole != SessionNetworkRole.HOST) {
+            return false
+        }
+        val endpointId = endpointIdByStableDeviceId[targetStableDeviceId] ?: return false
+        val payload = SessionDeviceConfigUpdateMessage(
+            targetStableDeviceId = targetStableDeviceId,
+            sensitivity = sensitivity.coerceIn(1, 100),
+        ).toJsonString()
+        sendMessage(endpointId, payload) { result ->
+            result.exceptionOrNull()?.let { error ->
+                _uiState.value = _uiState.value.copy(
+                    lastError = "remote sensitivity send failed: ${error.localizedMessage ?: "unknown"}",
+                )
+            }
+        }
+        _uiState.value.remoteDeviceTelemetry[targetStableDeviceId]?.let { existing ->
+            val updated = existing.copy(
+                sensitivity = sensitivity.coerceIn(1, 100),
+                timestampMillis = System.currentTimeMillis(),
+            )
+            _uiState.value = _uiState.value.copy(
+                remoteDeviceTelemetry = _uiState.value.remoteDeviceTelemetry + (targetStableDeviceId to updated),
+            )
+        }
+        return true
     }
 
     fun setSessionStage(stage: SessionStage) {
@@ -223,6 +286,7 @@ class RaceSessionController(
     fun setNetworkRole(role: SessionNetworkRole) {
         endpointIdByStableDeviceId.clear()
         stableDeviceIdByEndpointId.clear()
+        lastPublishedTelemetryFingerprint = null
         val local = ensureLocalDevice(
             SessionDevice(
                 id = localDeviceId,
@@ -243,7 +307,9 @@ class RaceSessionController(
             latestCompletedTimeline = null,
             devices = local,
             connectedEndpoints = emptySet(),
+            remoteDeviceTelemetry = emptyMap(),
             deviceRole = localDeviceRole(),
+            pendingSensitivityUpdateFromHost = null,
             anchorDeviceId = null,
             anchorState = SessionAnchorState.READY,
             lastError = null,
@@ -254,6 +320,7 @@ class RaceSessionController(
     fun startSingleDeviceMonitoring() {
         endpointIdByStableDeviceId.clear()
         stableDeviceIdByEndpointId.clear()
+        lastPublishedTelemetryFingerprint = null
         val local = SessionDevice(
             id = localDeviceId,
             name = localDeviceName(),
@@ -270,7 +337,9 @@ class RaceSessionController(
             devices = ensureLocalDevice(local, _uiState.value.devices),
             discoveredEndpoints = emptyMap(),
             connectedEndpoints = emptySet(),
+            remoteDeviceTelemetry = emptyMap(),
             deviceRole = SessionDeviceRole.START,
+            pendingSensitivityUpdateFromHost = null,
             anchorDeviceId = null,
             anchorState = SessionAnchorState.READY,
             lastError = null,
@@ -298,7 +367,9 @@ class RaceSessionController(
             devices = local,
             discoveredEndpoints = emptyMap(),
             connectedEndpoints = emptySet(),
+            remoteDeviceTelemetry = emptyMap(),
             deviceRole = SessionDeviceRole.UNASSIGNED,
+            pendingSensitivityUpdateFromHost = null,
             anchorDeviceId = null,
             anchorState = SessionAnchorState.READY,
             lastError = null,
@@ -309,6 +380,7 @@ class RaceSessionController(
     fun startDisplayHostMode() {
         endpointIdByStableDeviceId.clear()
         stableDeviceIdByEndpointId.clear()
+        lastPublishedTelemetryFingerprint = null
         val local = ensureLocalDevice(
             SessionDevice(
                 id = localDeviceId,
@@ -328,7 +400,9 @@ class RaceSessionController(
             devices = local,
             discoveredEndpoints = emptyMap(),
             connectedEndpoints = emptySet(),
+            remoteDeviceTelemetry = emptyMap(),
             deviceRole = SessionDeviceRole.UNASSIGNED,
+            pendingSensitivityUpdateFromHost = null,
             anchorDeviceId = null,
             anchorState = SessionAnchorState.READY,
             lastError = null,
@@ -342,6 +416,8 @@ class RaceSessionController(
             monitoringActive = false,
             discoveredEndpoints = emptyMap(),
             connectedEndpoints = emptySet(),
+            remoteDeviceTelemetry = emptyMap(),
+            pendingSensitivityUpdateFromHost = null,
             anchorDeviceId = null,
             anchorState = SessionAnchorState.READY,
             lastError = null,
@@ -374,6 +450,7 @@ class RaceSessionController(
             }
 
             is NearbyEvent.EndpointDisconnected -> {
+                val stableId = stableDeviceIdByEndpointId[event.endpointId]
                 clearIdentityMappingForEndpoint(event.endpointId)
                 val nextConnected = _uiState.value.connectedEndpoints - event.endpointId
                 val nextDevices = ensureLocalDevice(
@@ -406,6 +483,11 @@ class RaceSessionController(
                 _uiState.value = _uiState.value.copy(
                     connectedEndpoints = nextConnected,
                     devices = nextDevices,
+                    remoteDeviceTelemetry = if (stableId == null) {
+                        _uiState.value.remoteDeviceTelemetry
+                    } else {
+                        _uiState.value.remoteDeviceTelemetry - stableId
+                    },
                     stage = nextStage,
                     networkRole = nextRole,
                     deviceRole = localDeviceRole(),
@@ -416,6 +498,8 @@ class RaceSessionController(
                 refreshLockReasonFromState()
                 if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
                     broadcastSnapshotIfHost()
+                } else {
+                    lastPublishedTelemetryFingerprint = null
                 }
             }
 
@@ -442,7 +526,11 @@ class RaceSessionController(
 
     fun assignRole(deviceId: String, role: SessionDeviceRole) {
         var nextDevices = _uiState.value.devices
-        if (role != SessionDeviceRole.UNASSIGNED) {
+        if (
+            role == SessionDeviceRole.START ||
+            role == SessionDeviceRole.STOP ||
+            role == SessionDeviceRole.DISPLAY
+        ) {
             nextDevices = nextDevices.map { existing ->
                 if (existing.id != deviceId && existing.role == role) {
                     existing.copy(role = SessionDeviceRole.UNASSIGNED)
@@ -478,6 +566,7 @@ class RaceSessionController(
             if (!_uiState.value.clockSyncInProgress) {
                 startClockSyncBurst(endpointId)
             }
+            publishDeviceTelemetryIfClient(force = true)
         }
         if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
             broadcastSnapshotIfHost()
@@ -534,6 +623,7 @@ class RaceSessionController(
             if (endpointId != null && !_uiState.value.clockSyncInProgress) {
                 startClockSyncBurst(endpointId)
             }
+            publishDeviceTelemetryIfClient(force = true)
         }
         return true
     }
@@ -629,7 +719,7 @@ class RaceSessionController(
     }
 
     fun canShowSplitControls(): Boolean {
-        return false
+        return localDeviceRole() == SessionDeviceRole.SPLIT || _uiState.value.devices.any { it.role == SessionDeviceRole.SPLIT }
     }
 
     fun canStartMonitoring(): Boolean {
@@ -774,6 +864,7 @@ class RaceSessionController(
             }
         }
         refreshLockReasonFromState()
+        publishDeviceTelemetryIfClient()
     }
 
     private fun refreshLockReasonFromState() {
@@ -879,6 +970,16 @@ class RaceSessionController(
     }
 
     private fun handleIncomingPayload(endpointId: String, rawMessage: String) {
+        SessionDeviceConfigUpdateMessage.tryParse(rawMessage)?.let { configUpdate ->
+            handleRemoteConfigUpdate(configUpdate)
+            return
+        }
+
+        SessionDeviceTelemetryMessage.tryParse(rawMessage)?.let { telemetry ->
+            handleDeviceTelemetry(endpointId, telemetry)
+            return
+        }
+
         SessionDeviceIdentityMessage.tryParse(rawMessage)?.let { identity ->
             handleDeviceIdentity(endpointId, identity)
             return
@@ -921,6 +1022,7 @@ class RaceSessionController(
     }
 
     private fun handleConnectionResult(event: NearbyEvent.ConnectionResult) {
+        val stableIdForEndpoint = stableDeviceIdByEndpointId[event.endpointId]
         val nextConnected = if (event.connected) {
             if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
                 _uiState.value.connectedEndpoints + event.endpointId
@@ -932,6 +1034,7 @@ class RaceSessionController(
         }
         if (!event.connected) {
             clearIdentityMappingForEndpoint(event.endpointId)
+            lastPublishedTelemetryFingerprint = null
         }
         val nextDevices = if (event.connected) {
             val endpointName = event.endpointName
@@ -990,6 +1093,11 @@ class RaceSessionController(
         _uiState.value = _uiState.value.copy(
             connectedEndpoints = nextConnected,
             devices = devicesWithDefaults,
+            remoteDeviceTelemetry = if (!event.connected && stableIdForEndpoint != null) {
+                _uiState.value.remoteDeviceTelemetry - stableIdForEndpoint
+            } else {
+                _uiState.value.remoteDeviceTelemetry
+            },
             deviceRole = localDeviceRole(),
             anchorDeviceId = devicesWithDefaults.firstOrNull { it.role == SessionDeviceRole.START }?.id,
             anchorState = when {
@@ -1005,6 +1113,7 @@ class RaceSessionController(
             sendIdentityHandshake(event.endpointId)
             if (_uiState.value.networkRole == SessionNetworkRole.CLIENT && !_uiState.value.clockSyncInProgress) {
                 startClockSyncBurst(event.endpointId)
+                publishDeviceTelemetryIfClient(force = true)
             }
             if (_uiState.value.anchorDeviceId != null) {
                 _clockState.value = _clockState.value.copy(lockReason = SessionClockLockReason.LOCK_STALE)
@@ -1016,6 +1125,8 @@ class RaceSessionController(
         refreshLockReasonFromState()
         if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
             broadcastSnapshotIfHost()
+        } else {
+            publishDeviceTelemetryIfClient()
         }
     }
 
@@ -1042,6 +1153,10 @@ class RaceSessionController(
         }
         if (senderRole == SessionDeviceRole.START && _uiState.value.anchorDeviceId != endpointId) {
             _uiState.value = _uiState.value.copy(lastEvent = "trigger_request_rejected_anchor_mismatch")
+            return
+        }
+        if (senderRole != SessionDeviceRole.START && !hasFreshAnyClockLock()) {
+            _uiState.value = _uiState.value.copy(lastEvent = "trigger_request_rejected_unsynced")
             return
         }
         if (request.mappedHostSensorNanos == null) {
@@ -1084,13 +1199,16 @@ class RaceSessionController(
 
         val mappedStart = snapshot.hostStartSensorNanos?.let { mapHostSensorToLocalSensor(it) }
         val mappedStop = snapshot.hostStopSensorNanos?.let { mapHostSensorToLocalSensor(it) }
+        val mappedSplits = snapshot.hostSplitSensorNanos.mapNotNull { mapHostSensorToLocalSensor(it) }
         val mappingAvailable =
             (snapshot.hostStartSensorNanos == null || mappedStart != null) &&
-                (snapshot.hostStopSensorNanos == null || mappedStop != null)
+                (snapshot.hostStopSensorNanos == null || mappedStop != null) &&
+                (snapshot.hostSplitSensorNanos.size == mappedSplits.size)
         val timeline = if (mappingAvailable) {
             SessionRaceTimeline(
                 hostStartSensorNanos = mappedStart,
                 hostStopSensorNanos = mappedStop,
+                hostSplitSensorNanos = mappedSplits,
             )
         } else {
             _uiState.value.timeline
@@ -1125,6 +1243,7 @@ class RaceSessionController(
         refreshLockReasonFromState()
 
         maybePersistCompletedRun(timeline)
+        publishDeviceTelemetryIfClient(force = true)
     }
 
     private fun handleClockSyncResponseSample(response: SessionClockSyncBinaryResponse) {
@@ -1198,11 +1317,13 @@ class RaceSessionController(
             SessionRaceTimeline(
                 hostStartSensorNanos = localStart,
                 hostStopSensorNanos = localStop,
+                hostSplitSensorNanos = snapshot.hostSplitSensorNanos.mapNotNull { mapHostSensorToLocalSensor(it) },
             )
         } else {
             SessionRaceTimeline(
                 hostStartSensorNanos = snapshot.hostStartSensorNanos,
                 hostStopSensorNanos = snapshot.hostStopSensorNanos,
+                hostSplitSensorNanos = snapshot.hostSplitSensorNanos,
             )
         }
         _uiState.value = _uiState.value.copy(timeline = localTimeline, lastEvent = "timeline_snapshot")
@@ -1229,6 +1350,19 @@ class RaceSessionController(
                     null
                 } else {
                     timeline.copy(hostStopSensorNanos = triggerSensorNanos)
+                }
+            }
+
+            "split" -> {
+                if (timeline.hostStartSensorNanos == null || timeline.hostStopSensorNanos != null) {
+                    null
+                } else {
+                    val lastMarker = timeline.hostSplitSensorNanos.lastOrNull() ?: timeline.hostStartSensorNanos
+                    if (triggerSensorNanos <= lastMarker) {
+                        null
+                    } else {
+                        timeline.copy(hostSplitSensorNanos = timeline.hostSplitSensorNanos + triggerSensorNanos)
+                    }
                 }
             }
 
@@ -1281,6 +1415,7 @@ class RaceSessionController(
         val payload = SessionTimelineSnapshotMessage(
             hostStartSensorNanos = timeline.hostStartSensorNanos,
             hostStopSensorNanos = timeline.hostStopSensorNanos,
+            hostSplitSensorNanos = timeline.hostSplitSensorNanos,
             sentElapsedNanos = nowElapsedNanos(),
         ).toJsonString()
         broadcastToConnected(payload)
@@ -1312,6 +1447,7 @@ class RaceSessionController(
                 devices = devicesForSnapshot,
                 hostStartSensorNanos = _uiState.value.timeline.hostStartSensorNanos,
                 hostStopSensorNanos = _uiState.value.timeline.hostStopSensorNanos,
+                hostSplitSensorNanos = _uiState.value.timeline.hostSplitSensorNanos,
                 runId = _uiState.value.runId,
                 hostSensorMinusElapsedNanos = _clockState.value.hostSensorMinusElapsedNanos,
                 hostGpsUtcOffsetNanos = _clockState.value.hostGpsUtcOffsetNanos,
@@ -1412,11 +1548,93 @@ class RaceSessionController(
             devices = devicesWithDefaults,
             deviceRole = localDeviceRole(),
             anchorDeviceId = devicesWithDefaults.firstOrNull { it.role == SessionDeviceRole.START }?.id,
+            remoteDeviceTelemetry = if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
+                val existing = current.remoteDeviceTelemetry[identity.stableDeviceId]
+                if (existing == null) {
+                    current.remoteDeviceTelemetry
+                } else {
+                    current.remoteDeviceTelemetry + (
+                        identity.stableDeviceId to existing.copy(
+                            deviceName = identity.deviceName,
+                            role = devicesWithDefaults.firstOrNull { it.id == endpointId }?.role ?: existing.role,
+                            connected = true,
+                        )
+                        )
+                }
+            } else {
+                current.remoteDeviceTelemetry
+            },
             lastEvent = "device_identity",
         )
         if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
             broadcastSnapshotIfHost()
+        } else {
+            publishDeviceTelemetryIfClient(force = true)
         }
+    }
+
+    private fun handleDeviceTelemetry(endpointId: String, telemetry: SessionDeviceTelemetryMessage) {
+        if (_uiState.value.networkRole != SessionNetworkRole.HOST) {
+            return
+        }
+        mapStableIdentityToEndpoint(telemetry.stableDeviceId, endpointId)
+        val deviceName =
+            _uiState.value.devices.firstOrNull { it.id == endpointId }?.name
+                ?: _uiState.value.remoteDeviceTelemetry[telemetry.stableDeviceId]?.deviceName
+                ?: telemetry.stableDeviceId
+        val next = SessionRemoteDeviceTelemetryState(
+            stableDeviceId = telemetry.stableDeviceId,
+            deviceName = deviceName,
+            role = telemetry.role,
+            sensitivity = telemetry.sensitivity.coerceIn(1, 100),
+            latencyMs = telemetry.latencyMs,
+            connected = _uiState.value.connectedEndpoints.contains(endpointId),
+            timestampMillis = telemetry.timestampMillis,
+        )
+        _uiState.value = _uiState.value.copy(
+            remoteDeviceTelemetry = _uiState.value.remoteDeviceTelemetry + (telemetry.stableDeviceId to next),
+            lastEvent = "device_telemetry",
+        )
+    }
+
+    private fun handleRemoteConfigUpdate(configUpdate: SessionDeviceConfigUpdateMessage) {
+        if (_uiState.value.networkRole != SessionNetworkRole.CLIENT) {
+            return
+        }
+        if (configUpdate.targetStableDeviceId != localDeviceId) {
+            return
+        }
+        _uiState.value = _uiState.value.copy(
+            pendingSensitivityUpdateFromHost = configUpdate.sensitivity.coerceIn(1, 100),
+            lastEvent = "device_config_update",
+        )
+    }
+
+    private fun publishDeviceTelemetryIfClient(force: Boolean = false) {
+        if (_uiState.value.networkRole != SessionNetworkRole.CLIENT) {
+            return
+        }
+        val hostEndpointId = _uiState.value.connectedEndpoints.firstOrNull() ?: return
+        val latencyMs = _clockState.value.hostClockRoundTripNanos?.let { (it.toDouble() / 1_000_000.0).roundToInt() }
+        val message = SessionDeviceTelemetryMessage(
+            stableDeviceId = localDeviceId,
+            role = localDeviceRole(),
+            sensitivity = localSensitivity.coerceIn(1, 100),
+            latencyMs = latencyMs,
+            timestampMillis = System.currentTimeMillis(),
+        )
+        val fingerprint = "$hostEndpointId|${message.role.name}|${message.sensitivity}|${message.latencyMs}"
+        if (!force && fingerprint == lastPublishedTelemetryFingerprint) {
+            return
+        }
+        sendMessage(hostEndpointId, message.toJsonString()) { result ->
+            result.exceptionOrNull()?.let { error ->
+                _uiState.value = _uiState.value.copy(
+                    lastError = "telemetry send failed: ${error.localizedMessage ?: "unknown"}",
+                )
+            }
+        }
+        lastPublishedTelemetryFingerprint = fingerprint
     }
 
     private fun mapStableIdentityToEndpoint(stableDeviceId: String, endpointId: String) {
@@ -1435,6 +1653,11 @@ class RaceSessionController(
         if (endpointIdByStableDeviceId[stableDeviceId] == endpointId) {
             endpointIdByStableDeviceId.remove(stableDeviceId)
         }
+        if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
+            _uiState.value = _uiState.value.copy(
+                remoteDeviceTelemetry = _uiState.value.remoteDeviceTelemetry - stableDeviceId,
+            )
+        }
     }
 
     private fun pruneOrphanedNonLocalDevices(
@@ -1447,31 +1670,51 @@ class RaceSessionController(
     }
 
     private fun applyJoinOrderAutoRoleDefaults(devices: List<SessionDevice>): List<SessionDevice> {
-        val local = devices.firstOrNull { it.isLocal } ?: return devices
-        val remote = devices.firstOrNull { !it.isLocal } ?: return devices
-        if (devices.count { !it.isLocal } != 1) {
+        var nextDevices = devices
+        val local = nextDevices.firstOrNull { it.isLocal } ?: return devices
+        val remotes = nextDevices.filterNot { it.isLocal }
+        if (remotes.isEmpty()) {
             return devices
         }
 
-        var nextDevices = devices
         if (nextDevices.none { it.role == SessionDeviceRole.START }) {
-            nextDevices = nextDevices.map { existing ->
-                when {
-                    existing.id == local.id && existing.role == SessionDeviceRole.UNASSIGNED -> existing.copy(role = SessionDeviceRole.START)
-                    existing.id == remote.id && existing.role == SessionDeviceRole.UNASSIGNED -> existing.copy(role = SessionDeviceRole.START)
-                    else -> existing
+            val preferredStartId = remotes.firstOrNull { it.role == SessionDeviceRole.UNASSIGNED }?.id
+                ?: if (local.role == SessionDeviceRole.UNASSIGNED) local.id else null
+            if (preferredStartId != null) {
+                nextDevices = nextDevices.map { existing ->
+                    if (existing.id == preferredStartId && existing.role == SessionDeviceRole.UNASSIGNED) {
+                        existing.copy(role = SessionDeviceRole.START)
+                    } else {
+                        existing
+                    }
                 }
             }
         }
         if (nextDevices.none { it.role == SessionDeviceRole.STOP }) {
-            nextDevices = nextDevices.map { existing ->
-                when {
-                    existing.id == remote.id && existing.role == SessionDeviceRole.UNASSIGNED -> existing.copy(role = SessionDeviceRole.STOP)
-                    existing.id == local.id && existing.role == SessionDeviceRole.UNASSIGNED -> existing.copy(role = SessionDeviceRole.STOP)
-                    else -> existing
+            val preferredStopId = nextDevices
+                .filterNot { it.isLocal }
+                .firstOrNull { it.role == SessionDeviceRole.UNASSIGNED }
+                ?.id
+                ?: if (nextDevices.any { it.id == local.id && it.role == SessionDeviceRole.UNASSIGNED }) local.id else null
+            if (preferredStopId != null) {
+                nextDevices = nextDevices.map { existing ->
+                    if (existing.id == preferredStopId && existing.role == SessionDeviceRole.UNASSIGNED) {
+                        existing.copy(role = SessionDeviceRole.STOP)
+                    } else {
+                        existing
+                    }
                 }
             }
         }
+
+        nextDevices = nextDevices.map { existing ->
+            if (!existing.isLocal && existing.role == SessionDeviceRole.UNASSIGNED) {
+                existing.copy(role = SessionDeviceRole.SPLIT)
+            } else {
+                existing
+            }
+        }
+
         return nextDevices
     }
 
@@ -1488,8 +1731,10 @@ class RaceSessionController(
     private fun roleToTriggerType(role: SessionDeviceRole): String? {
         return when (role) {
             SessionDeviceRole.START -> "start"
+            SessionDeviceRole.SPLIT -> "split"
             SessionDeviceRole.STOP -> "stop"
             SessionDeviceRole.UNASSIGNED -> null
+            SessionDeviceRole.DISPLAY -> null
         }
     }
 
@@ -1523,23 +1768,47 @@ internal fun applyPinnedHostRolesForDeviceProfile(
 
     val remoteDevices = devices.filterNot { it.isLocal }
     val oneplusDevice = remoteDevices.firstOrNull { isOnePlusClientName(it.name) }
+    val huaweiDevice = remoteDevices.firstOrNull { isHuaweiClientName(it.name) }
     val pixelDevice = remoteDevices.firstOrNull { isPixelClientName(it.name) }
-    val resolvedStopDevice = when {
-        pixelDevice != null -> pixelDevice
-        oneplusDevice != null && remoteDevices.size == 2 -> remoteDevices.firstOrNull { it.id != oneplusDevice.id }
-        else -> null
-    }
-    if (oneplusDevice == null || resolvedStopDevice == null || oneplusDevice.id == resolvedStopDevice.id) {
-        return devices
-    }
 
-    return devices.map { device ->
+    var mapped = devices.map { device ->
         when (device.id) {
-            oneplusDevice.id -> device.copy(role = SessionDeviceRole.START)
-            resolvedStopDevice.id -> device.copy(role = SessionDeviceRole.STOP)
-            else -> if (device.role == SessionDeviceRole.UNASSIGNED) device else device.copy(role = SessionDeviceRole.UNASSIGNED)
+            oneplusDevice?.id -> device.copy(role = SessionDeviceRole.START)
+            huaweiDevice?.id -> device.copy(role = SessionDeviceRole.SPLIT)
+            pixelDevice?.id -> device.copy(role = SessionDeviceRole.STOP)
+            else -> device
         }
     }
+
+    oneplusDevice?.let { pinned ->
+        mapped = mapped.map { existing ->
+            if (existing.id != pinned.id && existing.role == SessionDeviceRole.START) {
+                existing.copy(role = SessionDeviceRole.UNASSIGNED)
+            } else {
+                existing
+            }
+        }
+    }
+    huaweiDevice?.let { pinned ->
+        mapped = mapped.map { existing ->
+            if (existing.id != pinned.id && existing.role == SessionDeviceRole.SPLIT) {
+                existing.copy(role = SessionDeviceRole.UNASSIGNED)
+            } else {
+                existing
+            }
+        }
+    }
+    pixelDevice?.let { pinned ->
+        mapped = mapped.map { existing ->
+            if (existing.id != pinned.id && existing.role == SessionDeviceRole.STOP) {
+                existing.copy(role = SessionDeviceRole.UNASSIGNED)
+            } else {
+                existing
+            }
+        }
+    }
+
+    return mapped
 }
 
 internal fun isOnePlusClientName(name: String): Boolean {
@@ -1547,8 +1816,15 @@ internal fun isOnePlusClientName(name: String): Boolean {
     if (trimmed.contains("oneplus", ignoreCase = true)) {
         return true
     }
-    // Common OnePlus retail model prefix (e.g. CPH2399).
-    return Regex("^cph\\d{4,}\$", RegexOption.IGNORE_CASE).containsMatchIn(trimmed)
+    return Regex("^cph\\d{4,}$", RegexOption.IGNORE_CASE).containsMatchIn(trimmed)
+}
+
+internal fun isHuaweiClientName(name: String): Boolean {
+    val trimmed = name.trim()
+    if (trimmed.contains("huawei", ignoreCase = true) || trimmed.contains("honor", ignoreCase = true)) {
+        return true
+    }
+    return Regex("^(ane|els|lya|vtr|evr|noh|yas)-", RegexOption.IGNORE_CASE).containsMatchIn(trimmed)
 }
 
 internal fun isPixelClientName(name: String): Boolean = name.trim().contains("pixel", ignoreCase = true)

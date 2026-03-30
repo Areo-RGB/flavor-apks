@@ -1,12 +1,72 @@
 package com.paul.sprintsync
 
+import com.paul.sprintsync.core.services.NearbyEvent
 import com.paul.sprintsync.features.race_session.SessionOperatingMode
+import com.paul.sprintsync.features.race_session.SessionNetworkRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MainActivityMonitoringLogicTest {
+    @Test
+    fun `shows wifi only guidance when tcp client connection fails`() {
+        val message = connectionFailureGuidanceMessage(
+            event = NearbyEvent.ConnectionResult(
+                endpointId = "host",
+                endpointName = "Pad",
+                connected = false,
+                statusCode = -1,
+                statusMessage = "connect failed",
+            ),
+            isTcpOnly = true,
+            sessionNetworkRole = SessionNetworkRole.CLIENT,
+        )
+
+        assertEquals("Connection failed. Turn off mobile data / use Wi-Fi only.", message)
+    }
+
+    @Test
+    fun `does not show wifi only guidance for non tcp or successful connection`() {
+        val tcpSuccessMessage = connectionFailureGuidanceMessage(
+            event = NearbyEvent.ConnectionResult(
+                endpointId = "host",
+                endpointName = "Pad",
+                connected = true,
+                statusCode = 0,
+                statusMessage = "connected",
+            ),
+            isTcpOnly = true,
+            sessionNetworkRole = SessionNetworkRole.CLIENT,
+        )
+        val nonTcpMessage = connectionFailureGuidanceMessage(
+            event = NearbyEvent.ConnectionResult(
+                endpointId = "host",
+                endpointName = "Pad",
+                connected = false,
+                statusCode = -1,
+                statusMessage = "connect failed",
+            ),
+            isTcpOnly = false,
+            sessionNetworkRole = SessionNetworkRole.CLIENT,
+        )
+        val hostModeMessage = connectionFailureGuidanceMessage(
+            event = NearbyEvent.ConnectionResult(
+                endpointId = "host",
+                endpointName = "Pad",
+                connected = false,
+                statusCode = -1,
+                statusMessage = "connect failed",
+            ),
+            isTcpOnly = true,
+            sessionNetworkRole = SessionNetworkRole.HOST,
+        )
+
+        assertEquals(null, tcpSuccessMessage)
+        assertEquals(null, nonTcpMessage)
+        assertEquals(null, hostModeMessage)
+    }
+
     @Test
     fun `starts local capture when monitoring active resumed assigned and local capture is idle`() {
         val action = resolveLocalCaptureAction(

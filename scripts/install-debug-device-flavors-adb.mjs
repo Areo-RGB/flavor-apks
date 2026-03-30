@@ -70,6 +70,38 @@ const installs = [
       'app-clientOneplus-debug.apk',
     ),
   },
+  {
+    label: 'Huawei client',
+    deviceId: process.env.ADB_DEVICE_HUAWEI ?? 'UBV0218316007905',
+    packageName: 'sync.sprint.client.huawei',
+    apkPath: resolve(
+      process.cwd(),
+      'android',
+      'app',
+      'build',
+      'outputs',
+      'apk',
+      'clientHuawei',
+      'debug',
+      'app-clientHuawei-debug.apk',
+    ),
+  },
+  {
+    label: 'Xiaomi client',
+    deviceId: process.env.ADB_DEVICE_XIAOMI ?? '29fec8f8',
+    packageName: 'sync.sprint.client.xiaomi',
+    apkPath: resolve(
+      process.cwd(),
+      'android',
+      'app',
+      'build',
+      'outputs',
+      'apk',
+      'clientXiaomi',
+      'debug',
+      'app-clientXiaomi-debug.apk',
+    ),
+  },
 ];
 
 const missing = installs.filter((entry) => !existsSync(entry.apkPath));
@@ -94,9 +126,11 @@ const onlineDevices = new Set(
 
 for (const entry of installs) {
   if (!onlineDevices.has(entry.deviceId)) {
-    fail(
-      `Required device not online for ${entry.label}: ${entry.deviceId}.\nCurrent online devices: ${Array.from(onlineDevices).join(', ')}`,
+    console.log(
+      `Skipping ${entry.label}: device not online (${entry.deviceId}). ` +
+      `Online devices: ${Array.from(onlineDevices).join(', ') || '(none)'}`,
     );
+    continue;
   }
 
   console.log(`Installing ${entry.label} on ${entry.deviceId}...`);
@@ -130,4 +164,4 @@ for (const entry of installs) {
   console.log(`Launch success for ${entry.label}.`);
 }
 
-console.log('All device-flavor debug APKs installed and launched successfully.');
+console.log('Install/launch pass finished for all currently online device-flavor targets.');

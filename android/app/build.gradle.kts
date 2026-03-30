@@ -74,6 +74,30 @@ android {
             buildConfigField("boolean", "HOST_CONTROLLER_ONLY", "false")
             resValue("string", "app_name", "Sprint Sync Client (OnePlus)")
         }
+        create("clientHuawei") {
+            dimension = "deviceProfile"
+            applicationIdSuffix = ".client.huawei"
+            versionNameSuffix = "-client-huawei"
+            buildConfigField("boolean", "TCP_ONLY", "true")
+            buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.103\"")
+            buildConfigField("int", "TCP_HOST_PORT", "9000")
+            buildConfigField("String", "AUTO_START_ROLE", "\"client\"")
+            buildConfigField("String", "DEVICE_PROFILE", "\"client_huawei\"")
+            buildConfigField("boolean", "HOST_CONTROLLER_ONLY", "false")
+            resValue("string", "app_name", "Sprint Sync Client (Huawei)")
+        }
+        create("clientXiaomi") {
+            dimension = "deviceProfile"
+            applicationIdSuffix = ".client.xiaomi"
+            versionNameSuffix = "-client-xiaomi"
+            buildConfigField("boolean", "TCP_ONLY", "true")
+            buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.103\"")
+            buildConfigField("int", "TCP_HOST_PORT", "9000")
+            buildConfigField("String", "AUTO_START_ROLE", "\"client\"")
+            buildConfigField("String", "DEVICE_PROFILE", "\"client_xiaomi\"")
+            buildConfigField("boolean", "HOST_CONTROLLER_ONLY", "false")
+            resValue("string", "app_name", "Sprint Sync Client (Xiaomi)")
+        }
     }
 
     buildFeatures {
