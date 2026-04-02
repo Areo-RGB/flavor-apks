@@ -28,7 +28,7 @@ android {
         versionName = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("boolean", "TCP_ONLY", "false")
-        buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.10\"")
+        buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.103\"")
         buildConfigField("int", "TCP_HOST_PORT", "9000")
         buildConfigField("String", "AUTO_START_ROLE", "\"none\"")
         buildConfigField("String", "DEVICE_PROFILE", "\"default\"")
@@ -43,7 +43,7 @@ android {
             applicationIdSuffix = ".host.xiaomi"
             versionNameSuffix = "-host-xiaomi"
             buildConfigField("boolean", "TCP_ONLY", "true")
-            buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.10\"")
+            buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.103\"")
             buildConfigField("int", "TCP_HOST_PORT", "9000")
             buildConfigField("String", "AUTO_START_ROLE", "\"host\"")
             buildConfigField("String", "DEVICE_PROFILE", "\"host_xiaomi\"")

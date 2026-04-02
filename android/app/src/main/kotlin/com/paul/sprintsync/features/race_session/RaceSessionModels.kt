@@ -390,6 +390,8 @@ data class SessionDeviceTelemetryMessage(
     val sensitivity: Int,
     val latencyMs: Int?,
     val clockSynced: Boolean,
+    val analysisWidth: Int?,
+    val analysisHeight: Int?,
     val timestampMillis: Long,
 ) {
     fun toJsonString(): String {
@@ -400,6 +402,8 @@ data class SessionDeviceTelemetryMessage(
             .put("sensitivity", sensitivity)
             .put("latencyMs", latencyMs ?: JSONObject.NULL)
             .put("clockSynced", clockSynced)
+            .put("analysisWidth", analysisWidth ?: JSONObject.NULL)
+            .put("analysisHeight", analysisHeight ?: JSONObject.NULL)
             .put("timestampMillis", timestampMillis)
             .toString()
     }
@@ -422,6 +426,8 @@ data class SessionDeviceTelemetryMessage(
             val clockSynced = if (decoded.has("clockSynced")) decoded.optBoolean("clockSynced", false) else false
             val timestampMillis = decoded.optLong("timestampMillis", Long.MIN_VALUE)
             val latencyMs = if (!decoded.has("latencyMs") || decoded.isNull("latencyMs")) null else decoded.optInt("latencyMs", -1)
+            val analysisWidth = if (!decoded.has("analysisWidth") || decoded.isNull("analysisWidth")) null else decoded.optInt("analysisWidth", -1)
+            val analysisHeight = if (!decoded.has("analysisHeight") || decoded.isNull("analysisHeight")) null else decoded.optInt("analysisHeight", -1)
             if (stableDeviceId.isEmpty() || sensitivity == Int.MIN_VALUE || timestampMillis == Long.MIN_VALUE) {
                 return null
             }
@@ -431,12 +437,20 @@ data class SessionDeviceTelemetryMessage(
             if (latencyMs != null && latencyMs < 0) {
                 return null
             }
+            if ((analysisWidth == null) != (analysisHeight == null)) {
+                return null
+            }
+            if (analysisWidth != null && (analysisWidth <= 0 || analysisHeight!! <= 0)) {
+                return null
+            }
             return SessionDeviceTelemetryMessage(
                 stableDeviceId = stableDeviceId,
                 role = role,
                 sensitivity = sensitivity,
                 latencyMs = latencyMs,
                 clockSynced = clockSynced,
+                analysisWidth = analysisWidth,
+                analysisHeight = analysisHeight,
                 timestampMillis = timestampMillis,
             )
         }
@@ -476,6 +490,37 @@ data class SessionDeviceConfigUpdateMessage(
                 targetStableDeviceId = targetStableDeviceId,
                 sensitivity = sensitivity,
             )
+        }
+    }
+}
+
+data class SessionClockResyncRequestMessage(
+    val sampleCount: Int,
+) {
+    fun toJsonString(): String {
+        return JSONObject()
+            .put("type", TYPE)
+            .put("sampleCount", sampleCount)
+            .toString()
+    }
+
+    companion object {
+        const val TYPE = "clock_resync_request"
+
+        fun tryParse(raw: String): SessionClockResyncRequestMessage? {
+            val decoded = try {
+                JSONObject(raw)
+            } catch (_: JSONException) {
+                return null
+            }
+            if (decoded.optString("type") != TYPE) {
+                return null
+            }
+            val sampleCount = decoded.optInt("sampleCount", Int.MIN_VALUE)
+            if (sampleCount !in 3..24) {
+                return null
+            }
+            return SessionClockResyncRequestMessage(sampleCount = sampleCount)
         }
     }
 }

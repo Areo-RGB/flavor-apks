@@ -4,6 +4,7 @@ import android.hardware.camera2.CaptureRequest
 import android.os.Handler
 import android.os.SystemClock
 import android.util.Range
+import android.util.Size
 import androidx.activity.ComponentActivity
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.CaptureRequestOptions
@@ -66,6 +67,8 @@ internal class SensorNativeCameraSession(
         val imageAnalysis = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+            // Request a low-power analysis size; CameraX may choose a different supported size.
+            .setTargetResolution(Size(640, 480))
             .build()
         imageAnalysis.setAnalyzer(analyzerExecutor, analyzer)
 

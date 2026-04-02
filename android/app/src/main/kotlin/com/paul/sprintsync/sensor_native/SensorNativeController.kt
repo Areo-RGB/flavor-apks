@@ -288,7 +288,12 @@ class SensorNativeController(
                 rawScore = rawScore,
                 frameSensorNanos = frameSensorNanos,
             )
-            emitFrameStats(stats, smoothedOffset)
+            emitFrameStats(
+                stats = stats,
+                sensorMinusElapsedNanos = smoothedOffset,
+                analysisWidth = image.width,
+                analysisHeight = image.height,
+            )
             stats.triggerEvent?.let { emitTrigger(it) }
         } catch (error: Exception) {
             emitError("Native frame analysis failed: ${error.localizedMessage ?: "unknown"}")
@@ -562,10 +567,17 @@ class SensorNativeController(
         gpsUpdatesStarted = false
     }
 
-    private fun emitFrameStats(stats: NativeFrameStats, sensorMinusElapsedNanos: Long?) {
+    private fun emitFrameStats(
+        stats: NativeFrameStats,
+        sensorMinusElapsedNanos: Long?,
+        analysisWidth: Int,
+        analysisHeight: Int,
+    ) {
         emitEvent(
             SensorNativeEvent.FrameStats(
                 stats = stats,
+                analysisWidth = analysisWidth,
+                analysisHeight = analysisHeight,
                 streamFrameCount = streamFrameCount,
                 processedFrameCount = processedFrameCount,
                 observedFps = observedFps,

@@ -21,6 +21,21 @@ function fail(message, detail = '') {
   process.exit(1);
 }
 
+function resolveConnectedDeviceId(expectedDeviceId, onlineDeviceIds) {
+  if (onlineDeviceIds.has(expectedDeviceId)) {
+    return expectedDeviceId;
+  }
+
+  const tlsPrefix = `adb-${expectedDeviceId}-`;
+  for (const deviceId of onlineDeviceIds) {
+    if (deviceId.startsWith(tlsPrefix) && deviceId.includes('._adb-tls-connect._tcp')) {
+      return deviceId;
+    }
+  }
+
+  return null;
+}
+
 const installs = [
   {
     label: 'Pad 7 host',
@@ -125,7 +140,8 @@ const onlineDevices = new Set(
 );
 
 for (const entry of installs) {
-  if (!onlineDevices.has(entry.deviceId)) {
+  const connectedDeviceId = resolveConnectedDeviceId(entry.deviceId, onlineDevices);
+  if (!connectedDeviceId) {
     console.log(
       `Skipping ${entry.label}: device not online (${entry.deviceId}). ` +
       `Online devices: ${Array.from(onlineDevices).join(', ') || '(none)'}`,
@@ -133,19 +149,23 @@ for (const entry of installs) {
     continue;
   }
 
-  console.log(`Installing ${entry.label} on ${entry.deviceId}...`);
-  const installResult = run('adb', ['-s', entry.deviceId, 'install', '-r', entry.apkPath]);
+  if (connectedDeviceId !== entry.deviceId) {
+    console.log(`Resolved ${entry.label} ${entry.deviceId} -> ${connectedDeviceId}`);
+  }
+
+  console.log(`Installing ${entry.label} on ${connectedDeviceId}...`);
+  const installResult = run('adb', ['-s', connectedDeviceId, 'install', '-r', entry.apkPath]);
   const output = `${installResult.stdout}\n${installResult.stderr}`.trim();
   const success = installResult.status === 0 && output.includes('Success');
   if (!success) {
-    fail(`Install failed for ${entry.label} (${entry.deviceId}).`, output);
+    fail(`Install failed for ${entry.label} (${connectedDeviceId}).`, output);
   }
   console.log(`Install success for ${entry.label}.`);
 
   console.log(`Launching ${entry.label} (${entry.packageName})...`);
   const launchResult = run('adb', [
     '-s',
-    entry.deviceId,
+    connectedDeviceId,
     'shell',
     'monkey',
     '-p',
@@ -159,7 +179,7 @@ for (const entry of installs) {
     launchResult.status === 0 &&
     !launchOutput.includes('No activities found to run');
   if (!launchSuccess) {
-    fail(`Launch failed for ${entry.label} (${entry.deviceId}).`, launchOutput);
+    fail(`Launch failed for ${entry.label} (${connectedDeviceId}).`, launchOutput);
   }
   console.log(`Launch success for ${entry.label}.`);
 }

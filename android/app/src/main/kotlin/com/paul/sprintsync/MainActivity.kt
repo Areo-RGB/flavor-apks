@@ -82,6 +82,8 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     private val pendingLapResults = ArrayDeque<SessionLapResultMessage>()
     private var pendingPermissionScope: PermissionScope = PermissionScope.NETWORK_ONLY
     private var lastNativeFrameStatsRealtimeMs: Long = 0L
+    private var lastAnalysisWidth: Int? = null
+    private var lastAnalysisHeight: Int? = null
     private var localCaptureWatchdogRestartRunId: String? = null
     private var lastCaptureDebugKey: String? = null
     private val isControllerOnlyHost: Boolean
@@ -417,6 +419,13 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                             targetStableDeviceId = stableDeviceId,
                             sensitivity = sensitivity,
                         )
+                        syncControllerSummaries()
+                    },
+                    onRequestRemoteResync = { endpointId ->
+                        if (!isControllerOnlyHost && uiState.value.networkRole != SessionNetworkRole.HOST) {
+                            return@SprintSyncApp
+                        }
+                        raceSessionController.requestRemoteClockResync(endpointId)
                         syncControllerSummaries()
                     },
                     onUpdateRoiCenter = { value ->
@@ -855,6 +864,9 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         }
         if (event is SensorNativeEvent.FrameStats) {
             lastNativeFrameStatsRealtimeMs = SystemClock.elapsedRealtime()
+            lastAnalysisWidth = event.analysisWidth
+            lastAnalysisHeight = event.analysisHeight
+            raceSessionController.onLocalAnalysisResolutionChanged(event.analysisWidth, event.analysisHeight)
         }
         motionDetectionController.handleSensorEvent(event)
         val localOffsetNanos = when (event) {
@@ -1178,20 +1190,37 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         )
         val connectedDeviceMonitoringCards = raceState.devices
             .filter { device -> !device.isLocal && raceState.connectedEndpoints.contains(device.id) }
-            .map { device ->
+            .mapNotNull { device ->
                 val stableDeviceId = raceSessionController.stableDeviceIdForEndpoint(device.id)
                 val telemetry = stableDeviceId?.let { raceState.remoteDeviceTelemetry[it] }
+                val effectiveRole = telemetry?.role ?: device.role
+                if (effectiveRole == SessionDeviceRole.UNASSIGNED) {
+                    return@mapNotNull null
+                }
                 ConnectedDeviceMonitoringCardUiState(
                     stableDeviceId = stableDeviceId,
                     endpointId = device.id,
                     deviceName = telemetry?.deviceName ?: device.name,
-                    role = telemetry?.role ?: device.role,
+                    role = effectiveRole,
                     latencyMs = telemetry?.latencyMs,
                     clockSynced = telemetry?.clockSynced == true,
+                    analysisWidth = telemetry?.analysisWidth,
+                    analysisHeight = telemetry?.analysisHeight,
                     sensitivity = telemetry?.sensitivity ?: 100,
                     connected = telemetry?.connected ?: true,
                 )
             }
+            .sortedWith(
+                compareBy<ConnectedDeviceMonitoringCardUiState> { card ->
+                    when (card.role) {
+                        SessionDeviceRole.START -> 0
+                        SessionDeviceRole.SPLIT -> 1
+                        SessionDeviceRole.STOP -> 2
+                        SessionDeviceRole.DISPLAY -> 3
+                        SessionDeviceRole.UNASSIGNED -> 4
+                    }
+                }.thenBy { it.deviceName.lowercase() },
+            )
         updateUiState {
             copy(
                 stage = raceState.stage,
@@ -1216,6 +1245,8 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 },
                 monitoringSyncModeLabel = monitoringSyncMode,
                 monitoringLatencyMs = monitoringLatencyMs,
+                localAnalysisWidth = lastAnalysisWidth,
+                localAnalysisHeight = lastAnalysisHeight,
                 hasConnectedPeers = hasPeers,
                 clockLockWarningText = clockLockWarningText,
                 runStatusLabel = runStatusLabel,

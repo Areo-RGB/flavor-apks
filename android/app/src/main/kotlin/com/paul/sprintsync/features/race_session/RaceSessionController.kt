@@ -72,6 +72,8 @@ data class SessionRemoteDeviceTelemetryState(
     val sensitivity: Int,
     val latencyMs: Int?,
     val clockSynced: Boolean,
+    val analysisWidth: Int?,
+    val analysisHeight: Int?,
     val connected: Boolean,
     val timestampMillis: Long,
 )
@@ -164,6 +166,8 @@ class RaceSessionController(
     private val endpointIdByStableDeviceId = mutableMapOf<String, String>()
     private val stableDeviceIdByEndpointId = mutableMapOf<String, String>()
     private var localSensitivity = 100
+    private var localAnalysisWidth: Int? = null
+    private var localAnalysisHeight: Int? = null
     private var lastPublishedTelemetryFingerprint: String? = null
     private var clockSyncBurstDispatchCompleted = false
     private var acceptedClockSampleCounter = 0
@@ -230,6 +234,18 @@ class RaceSessionController(
         publishDeviceTelemetryIfClient(force = true)
     }
 
+    fun onLocalAnalysisResolutionChanged(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) {
+            return
+        }
+        if (localAnalysisWidth == width && localAnalysisHeight == height) {
+            return
+        }
+        localAnalysisWidth = width
+        localAnalysisHeight = height
+        publishDeviceTelemetryIfClient(force = true)
+    }
+
     fun stableDeviceIdForEndpoint(endpointId: String): String? = stableDeviceIdByEndpointId[endpointId]
 
     fun consumePendingSensitivityUpdateFromHost(): Int? {
@@ -263,6 +279,28 @@ class RaceSessionController(
                 remoteDeviceTelemetry = _uiState.value.remoteDeviceTelemetry + (targetStableDeviceId to updated),
             )
         }
+        return true
+    }
+
+    fun requestRemoteClockResync(targetEndpointId: String, sampleCount: Int = DEFAULT_CLOCK_SYNC_SAMPLE_COUNT): Boolean {
+        if (_uiState.value.networkRole != SessionNetworkRole.HOST) {
+            return false
+        }
+        if (!_uiState.value.connectedEndpoints.contains(targetEndpointId)) {
+            _uiState.value = _uiState.value.copy(lastError = "resync failed: endpoint not connected")
+            return false
+        }
+        val payload = SessionClockResyncRequestMessage(
+            sampleCount = sampleCount.coerceIn(3, 24),
+        ).toJsonString()
+        sendMessage(targetEndpointId, payload) { result ->
+            result.exceptionOrNull()?.let { error ->
+                _uiState.value = _uiState.value.copy(
+                    lastError = "resync request failed: ${error.localizedMessage ?: "unknown"}",
+                )
+            }
+        }
+        _uiState.value = _uiState.value.copy(lastEvent = "clock_resync_requested")
         return true
     }
 
@@ -1070,6 +1108,11 @@ class RaceSessionController(
     }
 
     private fun handleIncomingPayload(endpointId: String, rawMessage: String) {
+        SessionClockResyncRequestMessage.tryParse(rawMessage)?.let { resyncRequest ->
+            handleClockResyncRequest(endpointId, resyncRequest)
+            return
+        }
+
         SessionDeviceConfigUpdateMessage.tryParse(rawMessage)?.let { configUpdate ->
             handleRemoteConfigUpdate(configUpdate)
             return
@@ -1685,6 +1728,8 @@ class RaceSessionController(
             sensitivity = telemetry.sensitivity.coerceIn(1, 100),
             latencyMs = telemetry.latencyMs,
             clockSynced = telemetry.clockSynced,
+            analysisWidth = telemetry.analysisWidth,
+            analysisHeight = telemetry.analysisHeight,
             connected = _uiState.value.connectedEndpoints.contains(endpointId),
             timestampMillis = telemetry.timestampMillis,
         )
@@ -1707,6 +1752,16 @@ class RaceSessionController(
         )
     }
 
+    private fun handleClockResyncRequest(endpointId: String, request: SessionClockResyncRequestMessage) {
+        if (_uiState.value.networkRole != SessionNetworkRole.CLIENT) {
+            return
+        }
+        if (!_uiState.value.connectedEndpoints.contains(endpointId)) {
+            return
+        }
+        startClockSyncBurst(endpointId = endpointId, sampleCount = request.sampleCount.coerceIn(3, 24))
+    }
+
     private fun publishDeviceTelemetryIfClient(force: Boolean = false) {
         if (_uiState.value.networkRole != SessionNetworkRole.CLIENT) {
             return
@@ -1719,9 +1774,11 @@ class RaceSessionController(
             sensitivity = localSensitivity.coerceIn(1, 100),
             latencyMs = latencyMs,
             clockSynced = hasFreshAnyClockLock(),
+            analysisWidth = localAnalysisWidth,
+            analysisHeight = localAnalysisHeight,
             timestampMillis = System.currentTimeMillis(),
         )
-        val fingerprint = "$hostEndpointId|${message.role.name}|${message.sensitivity}|${message.latencyMs}|${message.clockSynced}"
+        val fingerprint = "$hostEndpointId|${message.role.name}|${message.sensitivity}|${message.latencyMs}|${message.clockSynced}|${message.analysisWidth}|${message.analysisHeight}"
         if (!force && fingerprint == lastPublishedTelemetryFingerprint) {
             return
         }
@@ -1775,8 +1832,20 @@ class RaceSessionController(
             return devices
         }
 
+        // Huawei/Honor clients should default to split whenever host auto-role defaults are applied.
+        nextDevices = nextDevices.map { existing ->
+            if (!existing.isLocal && isHuaweiClientName(existing.name) && existing.role != SessionDeviceRole.SPLIT) {
+                existing.copy(role = SessionDeviceRole.SPLIT)
+            } else {
+                existing
+            }
+        }
+
         if (nextDevices.none { it.role == SessionDeviceRole.START }) {
-            val preferredStartId = remotes.firstOrNull { it.role == SessionDeviceRole.UNASSIGNED }?.id
+            val preferredStartId = nextDevices
+                .filterNot { it.isLocal }
+                .firstOrNull { it.role == SessionDeviceRole.UNASSIGNED && !isHuaweiClientName(it.name) }
+                ?.id
                 ?: if (local.role == SessionDeviceRole.UNASSIGNED) local.id else null
             if (preferredStartId != null) {
                 nextDevices = nextDevices.map { existing ->
@@ -1791,7 +1860,7 @@ class RaceSessionController(
         if (nextDevices.none { it.role == SessionDeviceRole.STOP }) {
             val preferredStopId = nextDevices
                 .filterNot { it.isLocal }
-                .firstOrNull { it.role == SessionDeviceRole.UNASSIGNED }
+                .firstOrNull { it.role == SessionDeviceRole.UNASSIGNED && !isHuaweiClientName(it.name) }
                 ?.id
                 ?: if (nextDevices.any { it.id == local.id && it.role == SessionDeviceRole.UNASSIGNED }) local.id else null
             if (preferredStopId != null) {

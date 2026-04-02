@@ -3,6 +3,8 @@ package com.paul.sprintsync.sensor_native
 sealed interface SensorNativeEvent {
     data class FrameStats(
         val stats: NativeFrameStats,
+        val analysisWidth: Int,
+        val analysisHeight: Int,
         val streamFrameCount: Long,
         val processedFrameCount: Long,
         val observedFps: Double?,

@@ -999,6 +999,32 @@ class RaceSessionControllerTest {
     }
 
     @Test
+    fun `host auto assigns connected huawei endpoint to split role`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
+                endpointId = "ep-huawei",
+                endpointName = "Huawei P30",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+
+        val huawei = controller.uiState.value.devices.firstOrNull { it.id == "ep-huawei" }
+        assertNotNull(huawei)
+        assertEquals(SessionDeviceRole.SPLIT, huawei?.role)
+    }
+
+    @Test
     fun `client applies targeted device config update and exposes pending sensitivity once`() {
         val controller = RaceSessionController(
             loadLastRun = { null },

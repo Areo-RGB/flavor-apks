@@ -4,7 +4,7 @@ This branch builds three APKs with fixed roles and TCP transport.
 
 ## Profiles
 
-- `hostXiaomi`: auto-starts TCP host server on launch (`192.168.0.10:9000`)
+- `hostXiaomi`: auto-starts TCP host server on launch (`192.168.0.103:9000`; Xiaomi Pad 7 DHCP reservation)
 - `clientPixel`: auto-starts TCP client and connects to host
 - `clientOneplus`: auto-starts TCP client and connects to host
 - `clientHuawei`: auto-starts TCP client and connects to host
@@ -46,6 +46,6 @@ adb -s <xiaomi-client-serial> install -r android/app/build/outputs/apk/clientXia
 
 ## Router Requirements
 
-- Xiaomi host must be reachable at `192.168.0.10` (DHCP reservation recommended).
+- Xiaomi pad (host) must be reachable at `192.168.0.103` (DHCP reservation recommended).
 - All devices must be on the same LAN subnet.
 - AP/client isolation must be disabled.
