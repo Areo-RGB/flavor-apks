@@ -733,7 +733,10 @@ private fun DeviceAssignmentRow(
                 val roleOptions = buildList {
                     add(SessionDeviceRole.UNASSIGNED)
                     add(SessionDeviceRole.START)
-                    add(SessionDeviceRole.SPLIT)
+                    add(SessionDeviceRole.SPLIT1)
+                    add(SessionDeviceRole.SPLIT2)
+                    add(SessionDeviceRole.SPLIT3)
+                    add(SessionDeviceRole.SPLIT4)
                     add(SessionDeviceRole.STOP)
                 }
 

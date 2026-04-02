@@ -3,6 +3,7 @@ package com.paul.sprintsync
 import com.paul.sprintsync.core.models.SavedRunResult
 import com.paul.sprintsync.core.services.SessionConnectionEvent
 import com.paul.sprintsync.features.race_session.SessionOperatingMode
+import com.paul.sprintsync.features.race_session.SessionSplitMark
 import com.paul.sprintsync.features.race_session.SessionNetworkRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -225,6 +226,19 @@ class MainActivityMonitoringLogicTest {
     }
 
     @Test
+    fun `split history renders explicit split checkpoint labels with elapsed time`() {
+        val history = buildSplitHistoryForTimeline(
+            startedSensorNanos = 1_000_000_000L,
+            splitMarks = listOf(
+                SessionSplitMark(role = com.paul.sprintsync.features.race_session.SessionDeviceRole.SPLIT1, hostSensorNanos = 11_000_000_000L),
+                SessionSplitMark(role = com.paul.sprintsync.features.race_session.SessionDeviceRole.SPLIT2, hostSensorNanos = 21_000_000_000L),
+            ),
+        )
+
+        assertEquals(listOf("Split 1: 10.00", "Split 2: 20.00"), history)
+    }
+
+    @Test
     fun `applies live local camera facing update when local monitoring active`() {
         assertTrue(
             shouldApplyLiveLocalCameraFacingUpdate(
@@ -271,15 +285,15 @@ class MainActivityMonitoringLogicTest {
     }
 
     @Test
-    fun `display rows show formatted lap for connected endpoints with lap`() {
+    fun `display rows show formatted checkpoint time for connected endpoints with lap`() {
         val rows = buildDisplayLapRowsForConnectedDevices(
             connectedEndpointIds = linkedSetOf("ep-1"),
-            deviceNamesByEndpointId = mapOf("ep-1" to "Pixel 7"),
+            deviceNamesByEndpointId = mapOf("ep-1" to "Split 1"),
             elapsedByEndpointId = mapOf("ep-1" to 1_730_000_000L),
         )
 
         assertEquals(1, rows.size)
-        assertEquals("Pixel 7", rows[0].deviceName)
+        assertEquals("Split 1", rows[0].deviceName)
         assertEquals(formatElapsedTimerDisplay(1_730L), rows[0].lapTimeLabel)
     }
 

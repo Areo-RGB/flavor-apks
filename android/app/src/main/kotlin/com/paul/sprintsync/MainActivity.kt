@@ -35,7 +35,11 @@ import com.paul.sprintsync.features.race_session.SessionLapResultMessage
 import com.paul.sprintsync.features.race_session.SessionNetworkRole
 import com.paul.sprintsync.features.race_session.SessionOperatingMode
 import com.paul.sprintsync.features.race_session.SessionAnchorState
+import com.paul.sprintsync.features.race_session.SessionSplitMark
 import com.paul.sprintsync.features.race_session.SessionStage
+import com.paul.sprintsync.features.race_session.isSplitCheckpointRole
+import com.paul.sprintsync.features.race_session.splitIndexForRole
+import com.paul.sprintsync.features.race_session.sessionDeviceRoleLabel
 import com.paul.sprintsync.sensor_native.SensorNativeController
 import com.paul.sprintsync.sensor_native.SensorNativeEvent
 import com.paul.sprintsync.sensor_native.SensorNativePreviewViewFactory
@@ -671,7 +675,8 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     }
 
     private fun onConnectionEvent(event: SessionConnectionEvent) {
-        when (uiState.value.operatingMode) {
+        val operatingMode = raceSessionController.uiState.value.operatingMode
+        when (operatingMode) {
             SessionOperatingMode.NETWORK_RACE -> {
                 raceSessionController.onConnectionEvent(event)
                 val state = raceSessionController.uiState.value
@@ -921,9 +926,10 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             )
         }
         if (event is SensorNativeEvent.Trigger) {
+            val splitIndex = splitIndexForRole(raceSessionController.localDeviceRole()) ?: 0
             raceSessionController.onLocalMotionTrigger(
                 triggerType = event.trigger.triggerType,
-                splitIndex = 0,
+                splitIndex = splitIndex,
                 triggerSensorNanos = event.trigger.triggerSensorNanos,
             )
         }
@@ -1153,7 +1159,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             raceState.monitoringActive -> "Running"
             else -> "Armed"
         }
-        val marksCount = timelineForUi.hostSplitSensorNanos.size + if (timelineForUi.hostStopSensorNanos != null) 1 else 0
+        val marksCount = timelineForUi.hostSplitMarks.size + if (timelineForUi.hostStopSensorNanos != null) 1 else 0
 
         val elapsedDisplay = formatElapsedDisplay(
             startedSensorNanos = timelineForUi.hostStartSensorNanos,
@@ -1214,10 +1220,13 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 compareBy<ConnectedDeviceMonitoringCardUiState> { card ->
                     when (card.role) {
                         SessionDeviceRole.START -> 0
-                        SessionDeviceRole.SPLIT -> 1
-                        SessionDeviceRole.STOP -> 2
-                        SessionDeviceRole.DISPLAY -> 3
-                        SessionDeviceRole.UNASSIGNED -> 4
+                        SessionDeviceRole.SPLIT1 -> 1
+                        SessionDeviceRole.SPLIT2 -> 2
+                        SessionDeviceRole.SPLIT3 -> 3
+                        SessionDeviceRole.SPLIT4 -> 4
+                        SessionDeviceRole.STOP -> 5
+                        SessionDeviceRole.DISPLAY -> 6
+                        SessionDeviceRole.UNASSIGNED -> 7
                     }
                 }.thenBy { it.deviceName.lowercase() },
             )
@@ -1563,6 +1572,21 @@ internal fun buildDisplayLapRowsForConnectedDevices(
             deviceName = deviceName,
             lapTimeLabel = lapTimeLabel,
         )
+    }
+}
+
+internal fun buildSplitHistoryForTimeline(
+    startedSensorNanos: Long?,
+    splitMarks: List<SessionSplitMark>,
+): List<String> {
+    val started = startedSensorNanos ?: return emptyList()
+    return splitMarks.mapNotNull { splitMark ->
+        if (splitMark.hostSensorNanos <= started || !splitMark.role.isSplitCheckpointRole()) {
+            null
+        } else {
+            val elapsedMillis = (splitMark.hostSensorNanos - started) / 1_000_000L
+            "${sessionDeviceRoleLabel(splitMark.role)}: ${formatElapsedTimerDisplay(elapsedMillis)}"
+        }
     }
 }
 

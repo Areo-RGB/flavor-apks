@@ -29,7 +29,7 @@ class RaceSessionControllerTest {
 
         assertEquals(SessionDeviceRole.UNASSIGNED, mapped.first { it.id == "local" }.role)
         assertEquals(SessionDeviceRole.START, mapped.first { it.id == "ep1" }.role)
-        assertEquals(SessionDeviceRole.SPLIT, mapped.first { it.id == "ep2" }.role)
+        assertEquals(SessionDeviceRole.SPLIT2, mapped.first { it.id == "ep2" }.role)
         assertEquals(SessionDeviceRole.STOP, mapped.first { it.id == "ep3" }.role)
     }
 
@@ -45,7 +45,7 @@ class RaceSessionControllerTest {
         val mapped = applyPinnedHostRolesForDeviceProfile(devices, deviceProfile = "host_xiaomi")
 
         assertEquals(SessionDeviceRole.START, mapped.first { it.id == "ep1" }.role)
-        assertEquals(SessionDeviceRole.SPLIT, mapped.first { it.id == "ep2" }.role)
+        assertEquals(SessionDeviceRole.SPLIT2, mapped.first { it.id == "ep2" }.role)
         assertEquals(SessionDeviceRole.STOP, mapped.first { it.id == "ep3" }.role)
         assertEquals(SessionDeviceRole.UNASSIGNED, mapped.first { it.id == "local" }.role)
     }
@@ -66,16 +66,16 @@ class RaceSessionControllerTest {
     }
 
     @Test
-    fun `host xiaomi pins huawei split and clears duplicate split roles`() {
+    fun `host xiaomi pins huawei split2 and clears duplicate split roles`() {
         val devices = listOf(
             SessionDevice(id = "local", name = "Host Xiaomi", role = SessionDeviceRole.UNASSIGNED, isLocal = true),
             SessionDevice(id = "ep1", name = "HUAWEI EML-L29", role = SessionDeviceRole.UNASSIGNED, isLocal = false),
-            SessionDevice(id = "ep2", name = "Unknown Device", role = SessionDeviceRole.SPLIT, isLocal = false),
+            SessionDevice(id = "ep2", name = "Unknown Device", role = SessionDeviceRole.SPLIT2, isLocal = false),
         )
 
         val mapped = applyPinnedHostRolesForDeviceProfile(devices, deviceProfile = "host_xiaomi")
 
-        assertEquals(SessionDeviceRole.SPLIT, mapped.first { it.id == "ep1" }.role)
+        assertEquals(SessionDeviceRole.SPLIT2, mapped.first { it.id == "ep1" }.role)
         assertEquals(SessionDeviceRole.UNASSIGNED, mapped.first { it.id == "ep2" }.role)
     }
 
@@ -969,7 +969,7 @@ class RaceSessionControllerTest {
                 endpointId = "ep-1",
                 message = SessionDeviceTelemetryMessage(
                     stableDeviceId = "stable-huawei",
-                    role = SessionDeviceRole.SPLIT,
+                    role = SessionDeviceRole.SPLIT2,
                     sensitivity = 63,
                     latencyMs = 21,
                     clockSynced = true,
@@ -980,7 +980,7 @@ class RaceSessionControllerTest {
 
         val telemetry = controller.uiState.value.remoteDeviceTelemetry["stable-huawei"]
         assertNotNull(telemetry)
-        assertEquals(SessionDeviceRole.SPLIT, telemetry?.role)
+        assertEquals(SessionDeviceRole.SPLIT2, telemetry?.role)
         assertEquals(63, telemetry?.sensitivity)
         assertEquals(21, telemetry?.latencyMs)
         assertTrue(telemetry?.clockSynced == true)
@@ -999,7 +999,7 @@ class RaceSessionControllerTest {
     }
 
     @Test
-    fun `host auto assigns connected huawei endpoint to split role`() {
+    fun `host auto assigns connected huawei endpoint to split2 role`() {
         val controller = RaceSessionController(
             loadLastRun = { null },
             saveLastRun = { },
@@ -1021,7 +1021,146 @@ class RaceSessionControllerTest {
 
         val huawei = controller.uiState.value.devices.firstOrNull { it.id == "ep-huawei" }
         assertNotNull(huawei)
-        assertEquals(SessionDeviceRole.SPLIT, huawei?.role)
+        assertEquals(SessionDeviceRole.SPLIT2, huawei?.role)
+    }
+
+    @Test
+    fun `client applies unsynced start trigger as local fallback when monitoring active`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 123_000L },
+        )
+        controller.setNetworkRole(SessionNetworkRole.CLIENT)
+        controller.startMonitoring()
+
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
+                endpointId = "host-ep",
+                message = SessionTriggerMessage(
+                    triggerType = "start",
+                    triggerSensorNanos = 5_000L,
+                ).toJsonString(),
+            ),
+        )
+
+        assertNotNull(controller.uiState.value.timeline.hostStartSensorNanos)
+        assertEquals("trigger_start_applied_unsynced", controller.uiState.value.lastEvent)
+    }
+
+    @Test
+    fun `client applies unsynced stop trigger as local fallback when start already exists`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 456_000L },
+        )
+        controller.setNetworkRole(SessionNetworkRole.CLIENT)
+        controller.startMonitoring()
+        controller.ingestLocalTrigger("start", splitIndex = 0, triggerSensorNanos = 100_000L, broadcast = false)
+
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
+                endpointId = "host-ep",
+                message = SessionTriggerMessage(
+                    triggerType = "stop",
+                    triggerSensorNanos = 5_000L,
+                ).toJsonString(),
+            ),
+        )
+
+        assertNotNull(controller.uiState.value.timeline.hostStopSensorNanos)
+        assertEquals("trigger_stop_applied_unsynced", controller.uiState.value.lastEvent)
+    }
+
+    @Test
+    fun `host auto assigns Topaz split1 Huawei split2 and fallback split3`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+
+        listOf(
+            "ep-1" to "Runner 1",
+            "ep-2" to "Runner 2",
+            "ep-3" to "Topaz",
+            "ep-4" to "Huawei P30",
+            "ep-5" to "Runner 5",
+        ).forEach { (endpointId, endpointName) ->
+            controller.onConnectionEvent(
+                SessionConnectionEvent.ConnectionResult(
+                    endpointId = endpointId,
+                    endpointName = endpointName,
+                    connected = true,
+                    statusCode = 0,
+                    statusMessage = null,
+                ),
+            )
+        }
+
+        val rolesById = controller.uiState.value.devices.associate { it.id to it.role }
+        assertEquals(SessionDeviceRole.START, rolesById["ep-1"])
+        assertEquals(SessionDeviceRole.STOP, rolesById["ep-2"])
+        assertEquals(SessionDeviceRole.SPLIT1, rolesById["ep-3"])
+        assertEquals(SessionDeviceRole.SPLIT2, rolesById["ep-4"])
+        assertEquals(SessionDeviceRole.SPLIT3, rolesById["ep-5"])
+    }
+
+    @Test
+    fun `split checkpoint trigger is accepted only after start and before stop`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.ingestLocalTrigger("split", splitIndex = 0, triggerSensorNanos = 900L, broadcast = false)
+        assertTrue(controller.uiState.value.timeline.hostSplitMarks.isEmpty())
+
+        controller.ingestLocalTrigger("start", splitIndex = 0, triggerSensorNanos = 1_000L, broadcast = false)
+        controller.ingestLocalTrigger("split", splitIndex = 0, triggerSensorNanos = 1_400L, broadcast = false)
+        controller.ingestLocalTrigger("stop", splitIndex = 0, triggerSensorNanos = 2_000L, broadcast = false)
+        controller.ingestLocalTrigger("split", splitIndex = 0, triggerSensorNanos = 2_200L, broadcast = false)
+
+        assertEquals(
+            listOf(SessionSplitMark(role = SessionDeviceRole.SPLIT1, hostSensorNanos = 1_400L)),
+            controller.uiState.value.timeline.hostSplitMarks,
+        )
+    }
+
+    @Test
+    fun `multiple split checkpoints record independently and do not finish run`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1L },
+        )
+
+        controller.ingestLocalTrigger("start", splitIndex = 0, triggerSensorNanos = 1_000L, broadcast = false)
+        controller.ingestLocalTrigger("split", splitIndex = 0, triggerSensorNanos = 1_200L, broadcast = false)
+        controller.ingestLocalTrigger("split", splitIndex = 1, triggerSensorNanos = 1_700L, broadcast = false)
+
+        val timeline = controller.uiState.value.timeline
+        assertEquals(
+            listOf(
+                SessionSplitMark(role = SessionDeviceRole.SPLIT1, hostSensorNanos = 1_200L),
+                SessionSplitMark(role = SessionDeviceRole.SPLIT2, hostSensorNanos = 1_700L),
+            ),
+            timeline.hostSplitMarks,
+        )
+        assertNull(timeline.hostStopSensorNanos)
     }
 
     @Test
@@ -1095,7 +1234,7 @@ class RaceSessionControllerTest {
                 endpointId = "ep-old",
                 message = SessionDeviceTelemetryMessage(
                     stableDeviceId = "stable-huawei",
-                    role = SessionDeviceRole.SPLIT,
+                    role = SessionDeviceRole.SPLIT2,
                     sensitivity = 20,
                     latencyMs = 30,
                     clockSynced = false,
@@ -1132,7 +1271,7 @@ class RaceSessionControllerTest {
                 endpointId = "ep-new",
                 message = SessionDeviceTelemetryMessage(
                     stableDeviceId = "stable-huawei",
-                    role = SessionDeviceRole.SPLIT,
+                    role = SessionDeviceRole.SPLIT2,
                     sensitivity = 33,
                     latencyMs = 12,
                     clockSynced = true,

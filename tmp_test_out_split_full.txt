@@ -1,0 +1,58 @@
+> Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preHostXiaomiDebugBuild UP-TO-DATE
+> Task :app:generateHostXiaomiDebugBuildConfig UP-TO-DATE
+> Task :app:checkHostXiaomiDebugAarMetadata UP-TO-DATE
+> Task :app:generateHostXiaomiDebugResValues UP-TO-DATE
+> Task :app:mapHostXiaomiDebugSourceSetPaths UP-TO-DATE
+> Task :app:generateHostXiaomiDebugResources UP-TO-DATE
+> Task :app:mergeHostXiaomiDebugResources UP-TO-DATE
+> Task :app:packageHostXiaomiDebugResources UP-TO-DATE
+> Task :app:parseHostXiaomiDebugLocalResources UP-TO-DATE
+> Task :app:createHostXiaomiDebugCompatibleScreenManifests UP-TO-DATE
+> Task :app:extractDeepLinksHostXiaomiDebug UP-TO-DATE
+> Task :app:processHostXiaomiDebugMainManifest UP-TO-DATE
+> Task :app:processHostXiaomiDebugManifest UP-TO-DATE
+> Task :app:processHostXiaomiDebugManifestForPackage UP-TO-DATE
+> Task :app:processHostXiaomiDebugResources UP-TO-DATE
+> Task :app:compileHostXiaomiDebugKotlin UP-TO-DATE
+> Task :app:javaPreCompileHostXiaomiDebug UP-TO-DATE
+> Task :app:compileHostXiaomiDebugJavaWithJavac UP-TO-DATE
+> Task :app:bundleHostXiaomiDebugClassesToRuntimeJar UP-TO-DATE
+> Task :app:bundleHostXiaomiDebugClassesToCompileJar UP-TO-DATE
+> Task :app:compileHostXiaomiDebugUnitTestKotlin UP-TO-DATE
+> Task :app:preHostXiaomiDebugUnitTestBuild UP-TO-DATE
+> Task :app:javaPreCompileHostXiaomiDebugUnitTest UP-TO-DATE
+> Task :app:compileHostXiaomiDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :app:mergeHostXiaomiDebugShaders UP-TO-DATE
+> Task :app:compileHostXiaomiDebugShaders NO-SOURCE
+> Task :app:generateHostXiaomiDebugAssets UP-TO-DATE
+> Task :app:mergeHostXiaomiDebugAssets UP-TO-DATE
+> Task :app:packageHostXiaomiDebugUnitTestForUnitTest UP-TO-DATE
+> Task :app:generateHostXiaomiDebugUnitTestConfig UP-TO-DATE
+> Task :app:processHostXiaomiDebugJavaRes UP-TO-DATE
+> Task :app:processHostXiaomiDebugUnitTestJavaRes UP-TO-DATE
+
+> Task :app:testHostXiaomiDebugUnitTest
+
+SensorNativeControllerPreviewTimingTest > becomes retry eligible once preview attaches after provider is available FAILED
+    java.lang.AssertionError at SensorNativeControllerPreviewTimingTest.kt:53
+
+SensorNativeControllerPreviewTimingTest > schedules retry only when monitoring and both preview and provider are ready FAILED
+    java.lang.AssertionError at SensorNativeControllerPreviewTimingTest.kt:24
+
+115 tests completed, 2 failed
+
+> Task :app:testHostXiaomiDebugUnitTest FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:testHostXiaomiDebugUnitTest'.
+> There were failing tests. See the report at: file:///C:/Users/paul/projects/photo-finish-tcp-device-apks/android/app/build/reports/tests/testHostXiaomiDebugUnitTest/index.html
+
+* Try:
+> Run with --scan to get full insights.
+
+BUILD FAILED in 18s
+28 actionable tasks: 1 executed, 27 up-to-date

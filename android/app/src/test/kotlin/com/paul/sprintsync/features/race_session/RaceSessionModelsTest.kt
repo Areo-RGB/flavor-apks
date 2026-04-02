@@ -24,7 +24,9 @@ class RaceSessionModelsTest {
             ),
             hostStartSensorNanos = 1_000L,
             hostStopSensorNanos = 2_000L,
-            hostSplitSensorNanos = listOf(1_500L),
+            hostSplitMarks = listOf(
+                SessionSplitMark(role = SessionDeviceRole.SPLIT1, hostSensorNanos = 1_500L),
+            ),
             runId = "run-1",
             hostSensorMinusElapsedNanos = 120L,
             hostGpsUtcOffsetNanos = 8_000L,
@@ -39,7 +41,10 @@ class RaceSessionModelsTest {
         assertNotNull(parsed)
         assertEquals(8_000L, parsed?.hostGpsUtcOffsetNanos)
         assertEquals(600_000_000L, parsed?.hostGpsFixAgeNanos)
-        assertEquals(listOf(1_500L), parsed?.hostSplitSensorNanos)
+        assertEquals(
+            listOf(SessionSplitMark(role = SessionDeviceRole.SPLIT1, hostSensorNanos = 1_500L)),
+            parsed?.hostSplitMarks,
+        )
     }
 
     @Test
@@ -47,7 +52,10 @@ class RaceSessionModelsTest {
         val original = SessionTimelineSnapshotMessage(
             hostStartSensorNanos = 1_000L,
             hostStopSensorNanos = 2_500L,
-            hostSplitSensorNanos = listOf(1_400L, 2_000L),
+            hostSplitMarks = listOf(
+                SessionSplitMark(role = SessionDeviceRole.SPLIT1, hostSensorNanos = 1_400L),
+                SessionSplitMark(role = SessionDeviceRole.SPLIT2, hostSensorNanos = 2_000L),
+            ),
             sentElapsedNanos = 90_000L,
         )
 
@@ -56,8 +64,32 @@ class RaceSessionModelsTest {
         assertNotNull(parsed)
         assertEquals(1_000L, parsed?.hostStartSensorNanos)
         assertEquals(2_500L, parsed?.hostStopSensorNanos)
-        assertEquals(listOf(1_400L, 2_000L), parsed?.hostSplitSensorNanos)
+        assertEquals(
+            listOf(
+                SessionSplitMark(role = SessionDeviceRole.SPLIT1, hostSensorNanos = 1_400L),
+                SessionSplitMark(role = SessionDeviceRole.SPLIT2, hostSensorNanos = 2_000L),
+            ),
+            parsed?.hostSplitMarks,
+        )
         assertEquals(90_000L, parsed?.sentElapsedNanos)
+    }
+
+    @Test
+    fun `timeline snapshot parser maps legacy split array onto explicit checkpoints`() {
+        val legacyPayload = """
+            {"type":"timeline_snapshot","hostStartSensorNanos":1000,"hostStopSensorNanos":2500,"hostSplitSensorNanos":[1400,2000],"sentElapsedNanos":90000}
+        """.trimIndent()
+
+        val parsed = SessionTimelineSnapshotMessage.tryParse(legacyPayload)
+
+        assertNotNull(parsed)
+        assertEquals(
+            listOf(
+                SessionSplitMark(role = SessionDeviceRole.SPLIT1, hostSensorNanos = 1_400L),
+                SessionSplitMark(role = SessionDeviceRole.SPLIT2, hostSensorNanos = 2_000L),
+            ),
+            parsed?.hostSplitMarks,
+        )
     }
 
     @Test
@@ -164,7 +196,7 @@ class RaceSessionModelsTest {
     fun `device telemetry message round-trips`() {
         val original = SessionDeviceTelemetryMessage(
             stableDeviceId = "stable-device-3",
-            role = SessionDeviceRole.SPLIT,
+            role = SessionDeviceRole.SPLIT1,
             sensitivity = 72,
             latencyMs = 18,
             clockSynced = true,
@@ -175,7 +207,7 @@ class RaceSessionModelsTest {
 
         assertNotNull(parsed)
         assertEquals("stable-device-3", parsed?.stableDeviceId)
-        assertEquals(SessionDeviceRole.SPLIT, parsed?.role)
+        assertEquals(SessionDeviceRole.SPLIT1, parsed?.role)
         assertEquals(72, parsed?.sensitivity)
         assertEquals(18, parsed?.latencyMs)
         assertEquals(true, parsed?.clockSynced)
@@ -224,5 +256,19 @@ class RaceSessionModelsTest {
 
         assertNull(SessionDeviceConfigUpdateMessage.tryParse(missingTarget))
         assertNull(SessionDeviceConfigUpdateMessage.tryParse(invalidSensitivity))
+    }
+
+    @Test
+    fun `device role parsing and labels include explicit split checkpoints and display`() {
+        assertEquals(SessionDeviceRole.SPLIT1, sessionDeviceRoleFromName("split1"))
+        assertEquals("Split 1", sessionDeviceRoleLabel(SessionDeviceRole.SPLIT1))
+        assertEquals(SessionDeviceRole.SPLIT2, sessionDeviceRoleFromName("split2"))
+        assertEquals("Split 2", sessionDeviceRoleLabel(SessionDeviceRole.SPLIT2))
+        assertEquals(SessionDeviceRole.SPLIT3, sessionDeviceRoleFromName("split3"))
+        assertEquals("Split 3", sessionDeviceRoleLabel(SessionDeviceRole.SPLIT3))
+        assertEquals(SessionDeviceRole.SPLIT4, sessionDeviceRoleFromName("split4"))
+        assertEquals("Split 4", sessionDeviceRoleLabel(SessionDeviceRole.SPLIT4))
+        assertEquals(SessionDeviceRole.DISPLAY, sessionDeviceRoleFromName("display"))
+        assertEquals("Display", sessionDeviceRoleLabel(SessionDeviceRole.DISPLAY))
     }
 }
