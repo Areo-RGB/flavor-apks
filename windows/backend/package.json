@@ -1,0 +1,15 @@
+{
+  "name": "@sprint-sync/windows-backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.mjs",
+    "start": "node src/server.mjs",
+    "build": "node -e \"console.log('windows-backend: no build step')\""
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}

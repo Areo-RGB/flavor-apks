@@ -1,0 +1,40 @@
+{
+  "type": "windows_results_export",
+  "exportedAtIso": "2026-04-04T20:46:31.651Z",
+  "exportedAtMs": 1775335591651,
+  "runId": null,
+  "session": {
+    "stage": "LOBBY",
+    "monitoringActive": false,
+    "monitoringStartedIso": null,
+    "monitoringElapsedMs": 0,
+    "runId": null,
+    "hostStartSensorNanos": null,
+    "hostStopSensorNanos": null,
+    "hostSplitMarks": [],
+    "roleOptions": [
+      "Unassigned",
+      "Start",
+      "Split 1",
+      "Stop"
+    ],
+    "roleAssignments": {}
+  },
+  "clients": [],
+  "latestLapResults": [],
+  "lapHistory": [],
+  "recentEvents": [
+    {
+      "id": "event-2",
+      "timestampIso": "2026-04-04T20:45:21.776Z",
+      "level": "info",
+      "message": "HTTP server listening on 0.0.0.0:8787"
+    },
+    {
+      "id": "event-1",
+      "timestampIso": "2026-04-04T20:45:21.773Z",
+      "level": "info",
+      "message": "TCP server listening on 0.0.0.0:9000"
+    }
+  ]
+}

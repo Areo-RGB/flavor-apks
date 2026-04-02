@@ -177,6 +177,8 @@ class RaceSessionController(
     private var driftRiseDetectedAtElapsedNanos: Long? = null
     private var nextStaleBurstCheckElapsedNanos: Long = 0L
     private var lastRateLimitedEventElapsedNanos: Long? = null
+    private var activeClockSyncEndpointId: String? = null
+    private var activeClockSyncBurstToken: Long = 0L
 
     private var localDeviceId = DEFAULT_LOCAL_DEVICE_ID
 
@@ -316,6 +318,9 @@ class RaceSessionController(
         stableDeviceIdByEndpointId.clear()
         resetAdaptiveClockSyncPolicyState()
         lastPublishedTelemetryFingerprint = null
+        activeClockSyncEndpointId = null
+        activeClockSyncBurstToken += 1L
+        clearClockSyncBurstQueues()
         val local = ensureLocalDevice(
             SessionDevice(
                 id = localDeviceId,
@@ -479,6 +484,7 @@ class RaceSessionController(
             }
 
             is SessionConnectionEvent.EndpointDisconnected -> {
+                val wasClient = _uiState.value.networkRole == SessionNetworkRole.CLIENT
                 val stableId = stableDeviceIdByEndpointId[event.endpointId]
                 clearIdentityMappingForEndpoint(event.endpointId)
                 val nextConnected = _uiState.value.connectedEndpoints - event.endpointId
@@ -524,6 +530,14 @@ class RaceSessionController(
                     lastError = nextError,
                     lastEvent = "endpoint_disconnected",
                 )
+                if (wasClient) {
+                    val nextClockEndpoint = if (activeClockSyncEndpointId == event.endpointId) {
+                        nextConnected.firstOrNull()
+                    } else {
+                        activeClockSyncEndpointId
+                    }
+                    switchClockSyncEndpoint(nextClockEndpoint)
+                }
                 refreshLockReasonFromState()
                 if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
                     broadcastSnapshotIfHost()
@@ -549,6 +563,13 @@ class RaceSessionController(
     fun onClockSyncSampleReceived(endpointId: String, sample: SessionClockSyncBinaryResponse) {
         if (!_uiState.value.connectedEndpoints.contains(endpointId)) {
             return
+        }
+        val sourceEndpoint = activeClockSyncEndpointId
+        if (sourceEndpoint != null && sourceEndpoint != endpointId) {
+            return
+        }
+        if (sourceEndpoint == null) {
+            activeClockSyncEndpointId = endpointId
         }
         handleClockSyncResponseSample(sample)
     }
@@ -787,6 +808,9 @@ class RaceSessionController(
             _uiState.value = _uiState.value.copy(lastError = "Clock sync ignored: endpoint not connected")
             return
         }
+        switchClockSyncEndpoint(endpointId)
+        activeClockSyncBurstToken += 1L
+        val burstToken = activeClockSyncBurstToken
         val now = nowElapsedNanos()
         lastBurstStartedElapsedNanos = now
         lastBurstReason = reason
@@ -803,18 +827,25 @@ class RaceSessionController(
             },
         )
         _clockState.value = _clockState.value.copy(lockReason = SessionClockLockReason.LOCK_STALE)
-        pendingClockSyncSamplesByClientSendNanos.clear()
-        acceptedClockSyncSamples.clear()
+        clearClockSyncBurstQueues()
         clockSyncBurstDispatchCompleted = false
-        acceptedClockSampleCounter = 0
 
         val totalSamples = sampleCount.coerceAtLeast(3)
         viewModelScope.launch(ioDispatcher) {
             repeat(totalSamples) { sampleIndex ->
+                if (burstToken != activeClockSyncBurstToken) {
+                    return@launch
+                }
                 if (sampleIndex > 0) {
                     clockSyncDelay(CLOCK_SYNC_BURST_STAGGER_MILLIS)
                 }
+                if (burstToken != activeClockSyncBurstToken) {
+                    return@launch
+                }
                 sendClockSyncRequest(endpointId)
+            }
+            if (burstToken != activeClockSyncBurstToken) {
+                return@launch
             }
             clockSyncBurstDispatchCompleted = true
             maybeFinishClockSyncBurst()
@@ -939,7 +970,7 @@ class RaceSessionController(
         if (state.stage != SessionStage.LOBBY && state.stage != SessionStage.MONITORING) {
             return
         }
-        val endpointId = state.connectedEndpoints.firstOrNull() ?: return
+        val endpointId = preferredClockSyncEndpoint(state.connectedEndpoints) ?: return
         if (state.clockSyncInProgress) {
             return
         }
@@ -1028,6 +1059,44 @@ class RaceSessionController(
         driftRiseDetectedAtElapsedNanos = null
         nextStaleBurstCheckElapsedNanos = 0L
         lastRateLimitedEventElapsedNanos = null
+    }
+
+    private fun clearClockSyncBurstQueues() {
+        pendingClockSyncSamplesByClientSendNanos.clear()
+        acceptedClockSyncSamples.clear()
+        acceptedClockSampleCounter = 0
+    }
+
+    private fun preferredClockSyncEndpoint(connectedEndpoints: Set<String>): String? {
+        val active = activeClockSyncEndpointId
+        if (active != null && connectedEndpoints.contains(active)) {
+            return active
+        }
+        return connectedEndpoints.firstOrNull()
+    }
+
+    private fun switchClockSyncEndpoint(endpointId: String?) {
+        val normalizedEndpointId = endpointId?.trim()?.ifBlank { null }
+        if (activeClockSyncEndpointId == normalizedEndpointId) {
+            return
+        }
+
+        activeClockSyncEndpointId = normalizedEndpointId
+        activeClockSyncBurstToken += 1L
+        clearClockSyncBurstQueues()
+        clockSyncBurstDispatchCompleted = false
+        resetAdaptiveClockSyncPolicyState()
+
+        _clockState.value = _clockState.value.copy(
+            hostMinusClientElapsedNanos = null,
+            hostSensorMinusElapsedNanos = null,
+            hostGpsUtcOffsetNanos = null,
+            hostGpsFixAgeNanos = null,
+            lastClockSyncElapsedNanos = null,
+            hostClockRoundTripNanos = null,
+            lockReason = SessionClockLockReason.LOCK_STALE,
+        )
+        _uiState.value = _uiState.value.copy(clockSyncInProgress = false)
     }
 
     private fun millisToNanos(value: Long): Long = value * 1_000_000L
@@ -1286,8 +1355,11 @@ class RaceSessionController(
 
         if (event.connected) {
             sendIdentityHandshake(event.endpointId)
-            if (_uiState.value.networkRole == SessionNetworkRole.CLIENT && !_uiState.value.clockSyncInProgress) {
-                startClockSyncBurstInternal(event.endpointId, DEFAULT_CLOCK_SYNC_SAMPLE_COUNT, ClockSyncBurstReason.STALE)
+            if (_uiState.value.networkRole == SessionNetworkRole.CLIENT) {
+                switchClockSyncEndpoint(event.endpointId)
+                if (!_uiState.value.clockSyncInProgress) {
+                    startClockSyncBurstInternal(event.endpointId, DEFAULT_CLOCK_SYNC_SAMPLE_COUNT, ClockSyncBurstReason.STALE)
+                }
                 publishDeviceTelemetryIfClient(force = true)
             }
             if (_uiState.value.anchorDeviceId != null) {
@@ -1296,6 +1368,8 @@ class RaceSessionController(
                     _uiState.value = _uiState.value.copy(anchorState = SessionAnchorState.ACTIVE, lastError = null)
                 }
             }
+        } else if (_uiState.value.networkRole == SessionNetworkRole.CLIENT && activeClockSyncEndpointId == event.endpointId) {
+            switchClockSyncEndpoint(nextConnected.firstOrNull())
         }
         refreshLockReasonFromState()
         if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
@@ -1805,10 +1879,12 @@ class RaceSessionController(
         if (_uiState.value.networkRole != SessionNetworkRole.CLIENT) {
             return
         }
-        if (!_uiState.value.connectedEndpoints.contains(endpointId)) {
+        val clockEndpoint = preferredClockSyncEndpoint(_uiState.value.connectedEndpoints) ?: return
+        if (endpointId != clockEndpoint) {
             return
         }
-        startClockSyncBurst(endpointId = endpointId, sampleCount = request.sampleCount.coerceIn(3, 24))
+        switchClockSyncEndpoint(clockEndpoint)
+        startClockSyncBurst(endpointId = clockEndpoint, sampleCount = request.sampleCount.coerceIn(3, 24))
     }
 
     private fun publishDeviceTelemetryIfClient(force: Boolean = false) {

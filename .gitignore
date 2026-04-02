@@ -21,7 +21,7 @@ migrate_working_dir/
 # VS Code which you may wish to be included in version control, so this line
 # is commented out by default.
 #.vscode/
-
+.github
 # Build and tooling artifacts
 **/doc/api/
 /build/
@@ -44,3 +44,4 @@ app.*.map.json
 .serena/
 .seren/
 .serena/memories/
+windows/node_modules

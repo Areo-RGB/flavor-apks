@@ -58,6 +58,7 @@ import kotlin.math.roundToInt
 class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsResultCallback {
     companion object {
         private const val DEFAULT_SERVICE_ID = "sync.sprint.tcp"
+        private const val PC_RECONNECT_ENDPOINT_ID = "192.168.0.100"
         private const val PERMISSIONS_REQUEST_CODE = 7301
         private const val SENSOR_ELAPSED_PROJECTION_MAX_AGE_NANOS = 3_000_000_000L
         private const val TIMER_REFRESH_INTERVAL_MS = 100L
@@ -88,6 +89,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     private val displayLatestLapByEndpointId = linkedMapOf<String, Long>()
     private var lastRelayedStopSensorNanos: Long? = null
     private var displayReconnectionPending: Boolean = false
+    private var preferredClientEndpointId: String? = null
     private val pendingLapResults = ArrayDeque<SessionLapResultMessage>()
     private var pendingPermissionScope: PermissionScope = PermissionScope.NETWORK_ONLY
     private var lastNativeFrameStatsRealtimeMs: Long = 0L
@@ -297,6 +299,14 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                     onReconnectClient = {
                         if (uiState.value.setupBusy) return@SprintSyncApp
                         startClientDiscoveryFlow(errorPrefix = "client reconnect", setBusy = true)
+                    },
+                    onReconnectPc = {
+                        if (uiState.value.setupBusy) return@SprintSyncApp
+                        startClientDiscoveryFlow(
+                            errorPrefix = "client pc reconnect",
+                            setBusy = true,
+                            preferredEndpointId = PC_RECONNECT_ENDPOINT_ID,
+                        )
                     },
                     onStartMonitoring = {
                         val scope = if (isControllerOnlyHost) PermissionScope.NETWORK_ONLY else PermissionScope.CAMERA_AND_NETWORK
@@ -823,11 +833,12 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         updateUiState { copy(setupBusy = busy) }
     }
 
-    private fun startClientDiscoveryFlow(errorPrefix: String, setBusy: Boolean) {
+    private fun startClientDiscoveryFlow(errorPrefix: String, setBusy: Boolean, preferredEndpointId: String? = null) {
         if (setBusy) {
             setSetupBusy(true)
         }
         requestPermissionsIfNeeded(PermissionScope.NETWORK_ONLY) {
+            preferredClientEndpointId = preferredEndpointId?.trim()?.ifBlank { null }
             clearDisplayRelayReconnectionState()
             displayDiscoveryActive = false
             displayConnectedHostEndpointId = null
@@ -862,9 +873,11 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 if (event is SessionConnectionEvent.EndpointFound) {
                     val role = state.networkRole
                     if (role == SessionNetworkRole.CLIENT && state.connectedEndpoints.isEmpty()) {
+                        val endpointId = preferredClientEndpointId ?: event.endpointId
+                        preferredClientEndpointId = null
                         try {
                             connectionsManager.requestConnection(
-                                endpointId = event.endpointId,
+                                endpointId = endpointId,
                                 endpointName = localEndpointName(),
                             ) { result ->
                                 result.exceptionOrNull()?.let { error ->

@@ -1,0 +1,458 @@
+{
+  "type": "windows_results_export",
+  "exportedAtIso": "2026-04-04T21:08:09.832Z",
+  "exportedAtMs": 1775336889832,
+  "runId": "run-1775336633216",
+  "session": {
+    "stage": "LOBBY",
+    "monitoringActive": false,
+    "monitoringStartedIso": null,
+    "monitoringElapsedMs": 269824,
+    "runId": "run-1775336633216",
+    "hostStartSensorNanos": 32627815334736,
+    "hostStopSensorNanos": 32631062499215,
+    "hostSplitMarks": [
+      {
+        "roleLabel": "Split 1",
+        "hostSensorNanos": 32629674766499
+      }
+    ],
+    "roleOptions": [
+      "Unassigned",
+      "Start",
+      "Split 1",
+      "Split 2",
+      "Stop"
+    ],
+    "roleAssignments": {
+      "android-327d53b9db1b243d": "Start",
+      "android-c002fcbe4b74d89b": "Stop",
+      "android-ac736d15589abcb7": "Split 1"
+    }
+  },
+  "clients": [
+    {
+      "endpointId": "192.168.0.102:38858",
+      "remoteAddress": "192.168.0.102",
+      "remotePort": 38858,
+      "connectedAtIso": "2026-04-04T21:02:25.511Z",
+      "lastSeenAtIso": "2026-04-04T21:08:08.633Z",
+      "stableDeviceId": "android-327d53b9db1b243d",
+      "deviceName": "CPH2399",
+      "cameraFacing": "front",
+      "telemetrySensitivity": 72,
+      "telemetryLatencyMs": 7,
+      "telemetryClockSynced": true,
+      "telemetryAnalysisWidth": 1088,
+      "telemetryAnalysisHeight": 1088,
+      "telemetryTimestampMillis": 1775336887769,
+      "assignedRole": "Start",
+      "roleTarget": "android-327d53b9db1b243d",
+      "sensitivity": 72
+    },
+    {
+      "endpointId": "192.168.0.104:40908",
+      "remoteAddress": "192.168.0.104",
+      "remotePort": 40908,
+      "connectedAtIso": "2026-04-04T21:02:26.345Z",
+      "lastSeenAtIso": "2026-04-04T21:08:08.579Z",
+      "stableDeviceId": "android-c002fcbe4b74d89b",
+      "deviceName": "EML-L29",
+      "cameraFacing": "front",
+      "telemetrySensitivity": 94,
+      "telemetryLatencyMs": 4,
+      "telemetryClockSynced": true,
+      "telemetryAnalysisWidth": 720,
+      "telemetryAnalysisHeight": 720,
+      "telemetryTimestampMillis": 1775336889022,
+      "assignedRole": "Stop",
+      "roleTarget": "android-c002fcbe4b74d89b",
+      "sensitivity": 94
+    },
+    {
+      "endpointId": "192.168.0.101:40030",
+      "remoteAddress": "192.168.0.101",
+      "remotePort": 40030,
+      "connectedAtIso": "2026-04-04T21:02:32.623Z",
+      "lastSeenAtIso": "2026-04-04T21:08:08.643Z",
+      "stableDeviceId": "android-ac736d15589abcb7",
+      "deviceName": "Pixel 7",
+      "cameraFacing": "front",
+      "telemetrySensitivity": 90,
+      "telemetryLatencyMs": 4,
+      "telemetryClockSynced": true,
+      "telemetryAnalysisWidth": 1080,
+      "telemetryAnalysisHeight": 1080,
+      "telemetryTimestampMillis": 1775336891013,
+      "assignedRole": "Split 1",
+      "roleTarget": "android-ac736d15589abcb7",
+      "sensitivity": 90
+    }
+  ],
+  "latestLapResults": [],
+  "lapHistory": [],
+  "recentEvents": [
+    {
+      "id": "event-43",
+      "timestampIso": "2026-04-04T21:08:08.568Z",
+      "level": "info",
+      "message": "Monitoring stopped",
+      "runId": "run-1775336633216"
+    },
+    {
+      "id": "event-42",
+      "timestampIso": "2026-04-04T21:05:59.714Z",
+      "level": "warn",
+      "message": "Trigger request rejected from 192.168.0.104:40908: timeline state rejected",
+      "endpointId": "192.168.0.104:40908",
+      "sourceType": "trigger_request",
+      "triggerType": "stop",
+      "splitIndex": 0
+    },
+    {
+      "id": "event-41",
+      "timestampIso": "2026-04-04T21:05:14.982Z",
+      "level": "warn",
+      "message": "Trigger request rejected from 192.168.0.104:40908: timeline state rejected",
+      "endpointId": "192.168.0.104:40908",
+      "sourceType": "trigger_request",
+      "triggerType": "stop",
+      "splitIndex": 0
+    },
+    {
+      "id": "event-40",
+      "timestampIso": "2026-04-04T21:03:59.374Z",
+      "level": "warn",
+      "message": "Trigger request rejected from 192.168.0.104:40908: timeline state rejected",
+      "endpointId": "192.168.0.104:40908",
+      "sourceType": "trigger_request",
+      "triggerType": "stop",
+      "splitIndex": 0
+    },
+    {
+      "id": "event-39",
+      "timestampIso": "2026-04-04T21:03:58.419Z",
+      "level": "info",
+      "message": "Trigger accepted from 192.168.0.104:40908: stop",
+      "endpointId": "192.168.0.104:40908",
+      "triggerType": "stop",
+      "splitIndex": 0
+    },
+    {
+      "id": "event-38",
+      "timestampIso": "2026-04-04T21:03:57.052Z",
+      "level": "info",
+      "message": "Trigger accepted from 192.168.0.101:40030: split",
+      "endpointId": "192.168.0.101:40030",
+      "triggerType": "split",
+      "splitIndex": 1
+    },
+    {
+      "id": "event-37",
+      "timestampIso": "2026-04-04T21:03:55.193Z",
+      "level": "info",
+      "message": "Trigger accepted from 192.168.0.102:38858: start",
+      "endpointId": "192.168.0.102:38858",
+      "triggerType": "start",
+      "splitIndex": 0
+    },
+    {
+      "id": "event-36",
+      "timestampIso": "2026-04-04T21:03:54.222Z",
+      "level": "warn",
+      "message": "Trigger request rejected from 192.168.0.104:40908: timeline state rejected",
+      "endpointId": "192.168.0.104:40908",
+      "sourceType": "trigger_request",
+      "triggerType": "stop",
+      "splitIndex": 0
+    },
+    {
+      "id": "event-35",
+      "timestampIso": "2026-04-04T21:03:53.216Z",
+      "level": "info",
+      "message": "Run reset"
+    },
+    {
+      "id": "event-34",
+      "timestampIso": "2026-04-04T21:03:46.836Z",
+      "level": "warn",
+      "message": "Trigger request rejected from 192.168.0.104:40908: timeline state rejected",
+      "endpointId": "192.168.0.104:40908",
+      "sourceType": "trigger_request",
+      "triggerType": "stop",
+      "splitIndex": 0
+    },
+    {
+      "id": "event-33",
+      "timestampIso": "2026-04-04T21:03:42.611Z",
+      "level": "info",
+      "message": "Trigger accepted from 192.168.0.104:40908: stop",
+      "endpointId": "192.168.0.104:40908",
+      "triggerType": "stop",
+      "splitIndex": 0
+    },
+    {
+      "id": "event-32",
+      "timestampIso": "2026-04-04T21:03:41.495Z",
+      "level": "info",
+      "message": "Trigger accepted from 192.168.0.102:38858: start",
+      "endpointId": "192.168.0.102:38858",
+      "triggerType": "start",
+      "splitIndex": 0
+    },
+    {
+      "id": "event-31",
+      "timestampIso": "2026-04-04T21:03:38.744Z",
+      "level": "info",
+      "message": "Monitoring started",
+      "runId": "run-1775336618744"
+    },
+    {
+      "id": "event-30",
+      "timestampIso": "2026-04-04T21:03:36.636Z",
+      "level": "info",
+      "message": "Device config updated: android-ac736d15589abcb7",
+      "targetId": "android-ac736d15589abcb7",
+      "sensitivity": null,
+      "cameraFacing": "front",
+      "endpointCount": 1
+    },
+    {
+      "id": "event-29",
+      "timestampIso": "2026-04-04T21:03:34.907Z",
+      "level": "info",
+      "message": "Device config updated: android-c002fcbe4b74d89b",
+      "targetId": "android-c002fcbe4b74d89b",
+      "sensitivity": null,
+      "cameraFacing": "front",
+      "endpointCount": 1
+    },
+    {
+      "id": "event-28",
+      "timestampIso": "2026-04-04T21:03:32.096Z",
+      "level": "info",
+      "message": "Monitoring stopped",
+      "runId": "run-1775336606240"
+    },
+    {
+      "id": "event-27",
+      "timestampIso": "2026-04-04T21:03:29.679Z",
+      "level": "info",
+      "message": "Trigger accepted from 192.168.0.102:38858: start",
+      "endpointId": "192.168.0.102:38858",
+      "triggerType": "start",
+      "splitIndex": 0
+    },
+    {
+      "id": "event-26",
+      "timestampIso": "2026-04-04T21:03:26.240Z",
+      "level": "info",
+      "message": "Monitoring started",
+      "runId": "run-1775336606240"
+    },
+    {
+      "id": "event-25",
+      "timestampIso": "2026-04-04T21:03:25.496Z",
+      "level": "info",
+      "message": "Monitoring stopped",
+      "runId": "run-1775336590192"
+    },
+    {
+      "id": "event-24",
+      "timestampIso": "2026-04-04T21:03:21.131Z",
+      "level": "info",
+      "message": "Trigger accepted from 192.168.0.104:40908: stop",
+      "endpointId": "192.168.0.104:40908",
+      "triggerType": "stop",
+      "splitIndex": 0
+    },
+    {
+      "id": "event-23",
+      "timestampIso": "2026-04-04T21:03:17.704Z",
+      "level": "warn",
+      "message": "Trigger request rejected from 192.168.0.102:38858: timeline state rejected",
+      "endpointId": "192.168.0.102:38858",
+      "sourceType": "trigger_request",
+      "triggerType": "start",
+      "splitIndex": 0
+    },
+    {
+      "id": "event-22",
+      "timestampIso": "2026-04-04T21:03:15.118Z",
+      "level": "info",
+      "message": "Trigger accepted from 192.168.0.102:38858: start",
+      "endpointId": "192.168.0.102:38858",
+      "triggerType": "start",
+      "splitIndex": 0
+    },
+    {
+      "id": "event-21",
+      "timestampIso": "2026-04-04T21:03:10.192Z",
+      "level": "info",
+      "message": "Monitoring started",
+      "runId": "run-1775336590192"
+    },
+    {
+      "id": "event-20",
+      "timestampIso": "2026-04-04T21:03:09.216Z",
+      "level": "info",
+      "message": "Device config updated: android-327d53b9db1b243d",
+      "targetId": "android-327d53b9db1b243d",
+      "sensitivity": 72,
+      "cameraFacing": null,
+      "endpointCount": 1
+    },
+    {
+      "id": "event-19",
+      "timestampIso": "2026-04-04T21:03:07.040Z",
+      "level": "info",
+      "message": "Monitoring stopped",
+      "runId": "run-1775336572248"
+    },
+    {
+      "id": "event-18",
+      "timestampIso": "2026-04-04T21:03:05.616Z",
+      "level": "info",
+      "message": "Device config updated: android-327d53b9db1b243d",
+      "targetId": "android-327d53b9db1b243d",
+      "sensitivity": 72,
+      "cameraFacing": null,
+      "endpointCount": 1
+    },
+    {
+      "id": "event-17",
+      "timestampIso": "2026-04-04T21:03:02.992Z",
+      "level": "info",
+      "message": "Device config updated: android-327d53b9db1b243d",
+      "targetId": "android-327d53b9db1b243d",
+      "sensitivity": 72,
+      "cameraFacing": null,
+      "endpointCount": 1
+    },
+    {
+      "id": "event-16",
+      "timestampIso": "2026-04-04T21:03:02.181Z",
+      "level": "info",
+      "message": "Device config updated: android-327d53b9db1b243d",
+      "targetId": "android-327d53b9db1b243d",
+      "sensitivity": null,
+      "cameraFacing": "front",
+      "endpointCount": 1
+    },
+    {
+      "id": "event-15",
+      "timestampIso": "2026-04-04T21:02:52.248Z",
+      "level": "info",
+      "message": "Monitoring started",
+      "runId": "run-1775336572248"
+    },
+    {
+      "id": "event-14",
+      "timestampIso": "2026-04-04T21:02:48.792Z",
+      "level": "info",
+      "message": "Device config updated: android-ac736d15589abcb7",
+      "targetId": "android-ac736d15589abcb7",
+      "sensitivity": 90,
+      "cameraFacing": null,
+      "endpointCount": 1
+    },
+    {
+      "id": "event-13",
+      "timestampIso": "2026-04-04T21:02:48.072Z",
+      "level": "info",
+      "message": "Device config updated: android-c002fcbe4b74d89b",
+      "targetId": "android-c002fcbe4b74d89b",
+      "sensitivity": 94,
+      "cameraFacing": null,
+      "endpointCount": 1
+    },
+    {
+      "id": "event-12",
+      "timestampIso": "2026-04-04T21:02:47.273Z",
+      "level": "info",
+      "message": "Device config updated: android-327d53b9db1b243d",
+      "targetId": "android-327d53b9db1b243d",
+      "sensitivity": 72,
+      "cameraFacing": null,
+      "endpointCount": 1
+    },
+    {
+      "id": "event-11",
+      "timestampIso": "2026-04-04T21:02:43.748Z",
+      "level": "info",
+      "message": "Role assigned: android-ac736d15589abcb7 -> Split 1"
+    },
+    {
+      "id": "event-10",
+      "timestampIso": "2026-04-04T21:02:41.470Z",
+      "level": "info",
+      "message": "Role assigned: android-c002fcbe4b74d89b -> Stop"
+    },
+    {
+      "id": "event-9",
+      "timestampIso": "2026-04-04T21:02:37.326Z",
+      "level": "info",
+      "message": "Role assigned: android-327d53b9db1b243d -> Start"
+    },
+    {
+      "id": "event-8",
+      "timestampIso": "2026-04-04T21:02:32.624Z",
+      "level": "info",
+      "message": "Identity update Pixel 7 (android-ac736d15589abcb7)",
+      "endpointId": "192.168.0.101:40030",
+      "stableDeviceId": "android-ac736d15589abcb7",
+      "deviceName": "Pixel 7"
+    },
+    {
+      "id": "event-7",
+      "timestampIso": "2026-04-04T21:02:32.623Z",
+      "level": "info",
+      "message": "TCP client connected: 192.168.0.101:40030",
+      "endpointId": "192.168.0.101:40030"
+    },
+    {
+      "id": "event-6",
+      "timestampIso": "2026-04-04T21:02:26.364Z",
+      "level": "info",
+      "message": "Identity update EML-L29 (android-c002fcbe4b74d89b)",
+      "endpointId": "192.168.0.104:40908",
+      "stableDeviceId": "android-c002fcbe4b74d89b",
+      "deviceName": "EML-L29"
+    },
+    {
+      "id": "event-5",
+      "timestampIso": "2026-04-04T21:02:26.345Z",
+      "level": "info",
+      "message": "TCP client connected: 192.168.0.104:40908",
+      "endpointId": "192.168.0.104:40908"
+    },
+    {
+      "id": "event-4",
+      "timestampIso": "2026-04-04T21:02:25.514Z",
+      "level": "info",
+      "message": "Identity update CPH2399 (android-327d53b9db1b243d)",
+      "endpointId": "192.168.0.102:38858",
+      "stableDeviceId": "android-327d53b9db1b243d",
+      "deviceName": "CPH2399"
+    },
+    {
+      "id": "event-3",
+      "timestampIso": "2026-04-04T21:02:25.511Z",
+      "level": "info",
+      "message": "TCP client connected: 192.168.0.102:38858",
+      "endpointId": "192.168.0.102:38858"
+    },
+    {
+      "id": "event-2",
+      "timestampIso": "2026-04-04T21:02:20.301Z",
+      "level": "info",
+      "message": "HTTP server listening on 0.0.0.0:8787"
+    },
+    {
+      "id": "event-1",
+      "timestampIso": "2026-04-04T21:02:20.300Z",
+      "level": "info",
+      "message": "TCP server listening on 0.0.0.0:9000"
+    }
+  ]
+}

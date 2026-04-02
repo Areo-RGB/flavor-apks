@@ -1,0 +1,20 @@
+{
+  "name": "sprint-sync-windows",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "ui"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace @sprint-sync/windows-backend\" \"npm run dev --workspace @sprint-sync/windows-ui\"",
+    "start:all": "npm run dev",
+    "dev:backend": "npm run dev --workspace @sprint-sync/windows-backend",
+    "dev:ui": "npm run dev --workspace @sprint-sync/windows-ui",
+    "build": "npm run build --workspace @sprint-sync/windows-ui && npm run build --workspace @sprint-sync/windows-backend",
+    "start": "npm run start --workspace @sprint-sync/windows-backend",
+    "preview:ui": "npm run preview --workspace @sprint-sync/windows-ui"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
