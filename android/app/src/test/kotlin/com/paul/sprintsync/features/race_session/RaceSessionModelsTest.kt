@@ -167,6 +167,7 @@ class RaceSessionModelsTest {
             role = SessionDeviceRole.SPLIT,
             sensitivity = 72,
             latencyMs = 18,
+            clockSynced = true,
             timestampMillis = 123456789L,
         )
 
@@ -177,6 +178,7 @@ class RaceSessionModelsTest {
         assertEquals(SessionDeviceRole.SPLIT, parsed?.role)
         assertEquals(72, parsed?.sensitivity)
         assertEquals(18, parsed?.latencyMs)
+        assertEquals(true, parsed?.clockSynced)
         assertEquals(123456789L, parsed?.timestampMillis)
     }
 

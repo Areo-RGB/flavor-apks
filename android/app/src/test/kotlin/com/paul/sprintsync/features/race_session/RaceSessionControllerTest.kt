@@ -1,6 +1,6 @@
 package com.paul.sprintsync.features.race_session
 
-import com.paul.sprintsync.core.services.NearbyEvent
+import com.paul.sprintsync.core.services.SessionConnectionEvent
 import kotlinx.coroutines.Dispatchers
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -130,8 +130,8 @@ class RaceSessionControllerTest {
             clockSyncDelay = { _ -> },
         )
 
-        controller.onNearbyEvent(
-            NearbyEvent.ConnectionResult(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
                 endpointId = "ep-1",
                 endpointName = "peer",
                 connected = true,
@@ -166,20 +166,20 @@ class RaceSessionControllerTest {
             hostSendElapsedNanos = request1.clientSendElapsedNanos + 310L,
         )
 
-        controller.onNearbyEvent(
-            NearbyEvent.ClockSyncSampleReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ClockSyncSampleReceived(
                 endpointId = "ep-1",
                 sample = response2,
             ),
         )
-        controller.onNearbyEvent(
-            NearbyEvent.ClockSyncSampleReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ClockSyncSampleReceived(
                 endpointId = "ep-1",
                 sample = response3,
             ),
         )
-        controller.onNearbyEvent(
-            NearbyEvent.ClockSyncSampleReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ClockSyncSampleReceived(
                 endpointId = "ep-1",
                 sample = response1,
             ),
@@ -215,8 +215,8 @@ class RaceSessionControllerTest {
             clockSyncDelay = { delayCalls += it },
         )
 
-        controller.onNearbyEvent(
-            NearbyEvent.ConnectionResult(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
                 endpointId = "ep-1",
                 endpointName = "peer",
                 connected = true,
@@ -232,8 +232,8 @@ class RaceSessionControllerTest {
         assertTrue(controller.uiState.value.clockSyncInProgress)
 
         requests.take(3).forEach { request ->
-            controller.onNearbyEvent(
-                NearbyEvent.ClockSyncSampleReceived(
+            controller.onConnectionEvent(
+                SessionConnectionEvent.ClockSyncSampleReceived(
                     endpointId = "ep-1",
                     sample = SessionClockSyncBinaryResponse(
                         clientSendElapsedNanos = request.clientSendElapsedNanos,
@@ -246,8 +246,8 @@ class RaceSessionControllerTest {
         assertTrue(controller.uiState.value.clockSyncInProgress)
 
         val lastRequest = requests.last()
-        controller.onNearbyEvent(
-            NearbyEvent.ClockSyncSampleReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ClockSyncSampleReceived(
                 endpointId = "ep-1",
                 sample = SessionClockSyncBinaryResponse(
                     clientSendElapsedNanos = lastRequest.clientSendElapsedNanos,
@@ -325,8 +325,8 @@ class RaceSessionControllerTest {
             sentElapsedNanos = 10L,
         )
 
-        controller.onNearbyEvent(
-            NearbyEvent.PayloadReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
                 endpointId = "ep-1",
                 message = snapshot.toJsonString(),
             ),
@@ -352,8 +352,8 @@ class RaceSessionControllerTest {
             hostSensorMinusElapsedNanos = 500L,
             localSensorMinusElapsedNanos = 200L,
         )
-        controller.onNearbyEvent(
-            NearbyEvent.PayloadReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
                 endpointId = "ep-1",
                 message = SessionTimelineSnapshotMessage(
                     hostStartSensorNanos = 1_000L,
@@ -372,8 +372,8 @@ class RaceSessionControllerTest {
             hostGpsUtcOffsetNanos = null,
             localGpsUtcOffsetNanos = null,
         )
-        controller.onNearbyEvent(
-            NearbyEvent.PayloadReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
                 endpointId = "ep-1",
                 message = SessionSnapshotMessage(
                     stage = SessionStage.MONITORING,
@@ -455,7 +455,7 @@ class RaceSessionControllerTest {
     }
 
     @Test
-    fun `clock sync sample can be ingested from non-nearby transport`() {
+    fun `clock sync sample can be ingested from tcp transport`() {
         var nowNanos = 0L
         val sentPayloads = mutableListOf<ByteArray>()
         val controller = RaceSessionController(
@@ -473,8 +473,8 @@ class RaceSessionControllerTest {
             },
             clockSyncDelay = { _ -> },
         )
-        controller.onNearbyEvent(
-            NearbyEvent.ConnectionResult(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
                 endpointId = "ep-1",
                 endpointName = "peer",
                 connected = true,
@@ -503,7 +503,7 @@ class RaceSessionControllerTest {
     }
 
     @Test
-    fun `auto ticker does not start NTP burst when fresh GPS lock exists`() {
+    fun `auto ticker does not start NTP burst when RTT lock is valid`() {
         val sentClockSyncRequests = AtomicInteger(0)
         val controller = RaceSessionController(
             loadLastRun = { null },
@@ -520,8 +520,8 @@ class RaceSessionControllerTest {
 
         controller.setNetworkRole(SessionNetworkRole.CLIENT)
         controller.setSessionStage(SessionStage.LOBBY)
-        controller.onNearbyEvent(
-            NearbyEvent.ConnectionResult(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
                 endpointId = "ep-1",
                 endpointName = "peer",
                 connected = true,
@@ -530,12 +530,10 @@ class RaceSessionControllerTest {
             ),
         )
         controller.updateClockState(
+            hostMinusClientElapsedNanos = 100L,
             hostSensorMinusElapsedNanos = 500L,
             localSensorMinusElapsedNanos = 200L,
-            localGpsUtcOffsetNanos = 1_000L,
-            localGpsFixAgeNanos = 1_000_000_000L,
-            hostGpsUtcOffsetNanos = 900L,
-            hostGpsFixAgeNanos = 1_000_000_000L,
+            hostClockRoundTripNanos = 90_000_000L,
         )
 
         val requestsAfterFreshLock = sentClockSyncRequests.get()
@@ -544,7 +542,7 @@ class RaceSessionControllerTest {
     }
 
     @Test
-    fun `auto ticker starts NTP burst when GPS lock is unavailable and clock lock is stale`() {
+    fun `auto ticker starts NTP burst when RTT lock is invalid`() {
         val sentClockSyncRequests = AtomicInteger(0)
         val firstRequestSent = CountDownLatch(1)
         val controller = RaceSessionController(
@@ -563,8 +561,8 @@ class RaceSessionControllerTest {
 
         controller.setNetworkRole(SessionNetworkRole.CLIENT)
         controller.setSessionStage(SessionStage.LOBBY)
-        controller.onNearbyEvent(
-            NearbyEvent.ConnectionResult(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
                 endpointId = "ep-1",
                 endpointName = "peer",
                 connected = true,
@@ -575,6 +573,197 @@ class RaceSessionControllerTest {
 
         assertTrue(firstRequestSent.await(3, TimeUnit.SECONDS))
         assertTrue(sentClockSyncRequests.get() >= 1)
+    }
+
+    @Test
+    fun `adaptive ticker starts stale burst after lock ages out`() {
+        var now = 0L
+        val sentClockSyncPayloads = mutableListOf<ByteArray>()
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            sendClockSyncPayload = { _, payloadBytes, onComplete ->
+                sentClockSyncPayloads += payloadBytes
+                onComplete(Result.success(Unit))
+            },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { now },
+            clockSyncDelay = { _ -> },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.CLIENT)
+        controller.setSessionStage(SessionStage.LOBBY)
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
+                endpointId = "ep-1",
+                endpointName = "peer",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+
+        val initialRequests = sentClockSyncPayloads.mapNotNull { SessionClockSyncBinaryCodec.decodeRequest(it) }
+        now = 1_000_000_000L
+        initialRequests.forEach { request ->
+            controller.onConnectionEvent(
+                SessionConnectionEvent.ClockSyncSampleReceived(
+                    endpointId = "ep-1",
+                    sample = SessionClockSyncBinaryResponse(
+                        clientSendElapsedNanos = request.clientSendElapsedNanos,
+                        hostReceiveElapsedNanos = request.clientSendElapsedNanos + 100L,
+                        hostSendElapsedNanos = request.clientSendElapsedNanos + 200L,
+                    ),
+                ),
+            )
+            now += 1_000_000L
+        }
+        assertFalse(controller.uiState.value.clockSyncInProgress)
+
+        val beforeAdaptiveTick = sentClockSyncPayloads.size
+        now = 20_000_000_000L
+        controller.runAdaptiveClockSyncTickForTest()
+
+        assertTrue(sentClockSyncPayloads.size > beforeAdaptiveTick)
+        assertEquals("clock_sync_burst_started_stale", controller.uiState.value.lastEvent)
+    }
+
+    @Test
+    fun `adaptive ticker starts drift burst after cooldown when host offset jumps`() {
+        var now = 0L
+        val sentClockSyncPayloads = mutableListOf<ByteArray>()
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            sendClockSyncPayload = { _, payloadBytes, onComplete ->
+                sentClockSyncPayloads += payloadBytes
+                onComplete(Result.success(Unit))
+            },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { now },
+            clockSyncDelay = { _ -> },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.CLIENT)
+        controller.setSessionStage(SessionStage.LOBBY)
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
+                endpointId = "ep-1",
+                endpointName = "peer",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+
+        val initialRequests = sentClockSyncPayloads.mapNotNull { SessionClockSyncBinaryCodec.decodeRequest(it) }
+        now = 1_000_000_000L
+        initialRequests.forEach { request ->
+            controller.onConnectionEvent(
+                SessionConnectionEvent.ClockSyncSampleReceived(
+                    endpointId = "ep-1",
+                    sample = SessionClockSyncBinaryResponse(
+                        clientSendElapsedNanos = request.clientSendElapsedNanos,
+                        hostReceiveElapsedNanos = request.clientSendElapsedNanos + 100L,
+                        hostSendElapsedNanos = request.clientSendElapsedNanos + 200L,
+                    ),
+                ),
+            )
+            now += 1_000_000L
+        }
+
+        now = 20_000_000_000L
+        controller.updateClockState(hostSensorMinusElapsedNanos = 1_000L)
+        now = 20_100_000_000L
+        controller.updateClockState(hostSensorMinusElapsedNanos = 30_000_000L)
+
+        val beforeDriftTick = sentClockSyncPayloads.size
+        now = 21_000_000_000L
+        controller.runAdaptiveClockSyncTickForTest()
+        assertEquals(beforeDriftTick, sentClockSyncPayloads.size)
+
+        now = 22_500_000_000L
+        controller.runAdaptiveClockSyncTickForTest()
+
+        assertTrue(sentClockSyncPayloads.size > beforeDriftTick)
+        assertEquals("clock_sync_burst_started_drift", controller.uiState.value.lastEvent)
+    }
+
+    @Test
+    fun `adaptive ticker emits rate limit event for drift burst inside minimum spacing`() {
+        var now = 0L
+        val sentClockSyncPayloads = mutableListOf<ByteArray>()
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            sendClockSyncPayload = { _, payloadBytes, onComplete ->
+                sentClockSyncPayloads += payloadBytes
+                onComplete(Result.success(Unit))
+            },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { now },
+            clockSyncDelay = { _ -> },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.CLIENT)
+        controller.setSessionStage(SessionStage.LOBBY)
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
+                endpointId = "ep-1",
+                endpointName = "peer",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+
+        val initialRequests = sentClockSyncPayloads.mapNotNull { SessionClockSyncBinaryCodec.decodeRequest(it) }
+        now = 1_000_000_000L
+        initialRequests.forEach { request ->
+            controller.onConnectionEvent(
+                SessionConnectionEvent.ClockSyncSampleReceived(
+                    endpointId = "ep-1",
+                    sample = SessionClockSyncBinaryResponse(
+                        clientSendElapsedNanos = request.clientSendElapsedNanos,
+                        hostReceiveElapsedNanos = request.clientSendElapsedNanos + 100L,
+                        hostSendElapsedNanos = request.clientSendElapsedNanos + 200L,
+                    ),
+                ),
+            )
+            now += 1_000_000L
+        }
+
+        now = 30_000_000_000L
+        controller.startClockSyncBurst(endpointId = "ep-1", sampleCount = 3)
+        val manualRequests = sentClockSyncPayloads
+            .drop(initialRequests.size)
+            .mapNotNull { SessionClockSyncBinaryCodec.decodeRequest(it) }
+        manualRequests.forEach { request ->
+            controller.onConnectionEvent(
+                SessionConnectionEvent.ClockSyncSampleReceived(
+                    endpointId = "ep-1",
+                    sample = SessionClockSyncBinaryResponse(
+                        clientSendElapsedNanos = request.clientSendElapsedNanos,
+                        hostReceiveElapsedNanos = request.clientSendElapsedNanos + 100L,
+                        hostSendElapsedNanos = request.clientSendElapsedNanos + 200L,
+                    ),
+                ),
+            )
+        }
+
+        controller.updateClockState(hostSensorMinusElapsedNanos = 1_000L)
+        now = 30_100_000_000L
+        controller.updateClockState(hostSensorMinusElapsedNanos = 30_000_000L)
+        val beforeRateLimitedTick = sentClockSyncPayloads.size
+
+        now = 33_000_000_000L
+        controller.runAdaptiveClockSyncTickForTest()
+
+        assertEquals(beforeRateLimitedTick, sentClockSyncPayloads.size)
+        assertEquals("clock_sync_skipped_rate_limited", controller.uiState.value.lastEvent)
     }
 
     @Test
@@ -595,8 +784,8 @@ class RaceSessionControllerTest {
 
         controller.setNetworkRole(SessionNetworkRole.CLIENT)
         controller.setSessionStage(SessionStage.LOBBY)
-        controller.onNearbyEvent(
-            NearbyEvent.ConnectionResult(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
                 endpointId = "ep-1",
                 endpointName = "peer",
                 connected = true,
@@ -634,19 +823,19 @@ class RaceSessionControllerTest {
         )
 
         controller.setNetworkRole(SessionNetworkRole.HOST)
-        controller.onNearbyEvent(
-            NearbyEvent.ConnectionResult(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
                 endpointId = "start-ep",
-                endpointName = "start-device",
+                endpointName = "OnePlus 12",
                 connected = true,
                 statusCode = 0,
                 statusMessage = null,
             ),
         )
-        controller.onNearbyEvent(
-            NearbyEvent.ConnectionResult(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
                 endpointId = "stop-ep",
-                endpointName = "stop-device",
+                endpointName = "Pixel 7",
                 connected = true,
                 statusCode = 0,
                 statusMessage = null,
@@ -656,11 +845,11 @@ class RaceSessionControllerTest {
         controller.assignRole("stop-ep", SessionDeviceRole.STOP)
         assertTrue(controller.startMonitoring())
 
-        controller.onNearbyEvent(NearbyEvent.EndpointDisconnected(endpointId = "start-ep"))
+        controller.onConnectionEvent(SessionConnectionEvent.EndpointDisconnected(endpointId = "start-ep"))
         assertEquals(SessionAnchorState.LOST, controller.uiState.value.anchorState)
 
-        controller.onNearbyEvent(
-            NearbyEvent.PayloadReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
                 endpointId = "stop-ep",
                 message = SessionTriggerRequestMessage(
                     role = SessionDeviceRole.STOP,
@@ -678,7 +867,7 @@ class RaceSessionControllerTest {
     }
 
     @Test
-    fun `host rejects non-start triggers when strict clock lock is stale`() {
+    fun `host accepts non-start trigger requests when mapped host sensor is present`() {
         val controller = RaceSessionController(
             loadLastRun = { null },
             saveLastRun = { },
@@ -688,19 +877,19 @@ class RaceSessionControllerTest {
         )
 
         controller.setNetworkRole(SessionNetworkRole.HOST)
-        controller.onNearbyEvent(
-            NearbyEvent.ConnectionResult(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
                 endpointId = "start-ep",
-                endpointName = "start-device",
+                endpointName = "OnePlus 12",
                 connected = true,
                 statusCode = 0,
                 statusMessage = null,
             ),
         )
-        controller.onNearbyEvent(
-            NearbyEvent.ConnectionResult(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
                 endpointId = "stop-ep",
-                endpointName = "stop-device",
+                endpointName = "Pixel 7",
                 connected = true,
                 statusCode = 0,
                 statusMessage = null,
@@ -711,8 +900,21 @@ class RaceSessionControllerTest {
         assertTrue(controller.startMonitoring())
         assertFalse(controller.hasFreshAnyClockLock())
 
-        controller.onNearbyEvent(
-            NearbyEvent.PayloadReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
+                endpointId = "start-ep",
+                message = SessionTriggerRequestMessage(
+                    role = SessionDeviceRole.START,
+                    triggerSensorNanos = 1_000L,
+                    mappedHostSensorNanos = 1_000L,
+                    sourceDeviceId = "start-ep",
+                    sourceElapsedNanos = 123L,
+                    mappedAnchorElapsedNanos = 123L,
+                ).toJsonString(),
+            ),
+        )
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
                 endpointId = "stop-ep",
                 message = SessionTriggerRequestMessage(
                     role = SessionDeviceRole.STOP,
@@ -725,8 +927,8 @@ class RaceSessionControllerTest {
             ),
         )
 
-        assertEquals("trigger_request_rejected_unsynced", controller.uiState.value.lastEvent)
-        assertNull(controller.uiState.value.timeline.hostStopSensorNanos)
+        assertEquals(1_000L, controller.uiState.value.timeline.hostStartSensorNanos)
+        assertEquals(2_000L, controller.uiState.value.timeline.hostStopSensorNanos)
     }
 
     @Test
@@ -744,8 +946,8 @@ class RaceSessionControllerTest {
         )
 
         controller.setNetworkRole(SessionNetworkRole.HOST)
-        controller.onNearbyEvent(
-            NearbyEvent.ConnectionResult(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
                 endpointId = "ep-1",
                 endpointName = "Huawei",
                 connected = true,
@@ -753,8 +955,8 @@ class RaceSessionControllerTest {
                 statusMessage = null,
             ),
         )
-        controller.onNearbyEvent(
-            NearbyEvent.PayloadReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
                 endpointId = "ep-1",
                 message = SessionDeviceIdentityMessage(
                     stableDeviceId = "stable-huawei",
@@ -762,14 +964,15 @@ class RaceSessionControllerTest {
                 ).toJsonString(),
             ),
         )
-        controller.onNearbyEvent(
-            NearbyEvent.PayloadReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
                 endpointId = "ep-1",
                 message = SessionDeviceTelemetryMessage(
                     stableDeviceId = "stable-huawei",
                     role = SessionDeviceRole.SPLIT,
                     sensitivity = 63,
                     latencyMs = 21,
+                    clockSynced = true,
                     timestampMillis = 10L,
                 ).toJsonString(),
             ),
@@ -780,6 +983,7 @@ class RaceSessionControllerTest {
         assertEquals(SessionDeviceRole.SPLIT, telemetry?.role)
         assertEquals(63, telemetry?.sensitivity)
         assertEquals(21, telemetry?.latencyMs)
+        assertTrue(telemetry?.clockSynced == true)
         assertEquals("stable-huawei", controller.stableDeviceIdForEndpoint("ep-1"))
 
         assertTrue(controller.sendRemoteSensitivityUpdate("stable-huawei", 44))
@@ -806,8 +1010,8 @@ class RaceSessionControllerTest {
         controller.setNetworkRole(SessionNetworkRole.CLIENT)
         controller.setLocalDeviceIdentity(deviceId = "stable-local", deviceName = "Pixel")
 
-        controller.onNearbyEvent(
-            NearbyEvent.PayloadReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
                 endpointId = "host-ep",
                 message = SessionDeviceConfigUpdateMessage(
                     targetStableDeviceId = "stable-local",
@@ -819,8 +1023,8 @@ class RaceSessionControllerTest {
         assertEquals(37, controller.consumePendingSensitivityUpdateFromHost())
         assertNull(controller.consumePendingSensitivityUpdateFromHost())
 
-        controller.onNearbyEvent(
-            NearbyEvent.PayloadReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
                 endpointId = "host-ep",
                 message = SessionDeviceConfigUpdateMessage(
                     targetStableDeviceId = "someone-else",
@@ -842,8 +1046,8 @@ class RaceSessionControllerTest {
         )
 
         controller.setNetworkRole(SessionNetworkRole.HOST)
-        controller.onNearbyEvent(
-            NearbyEvent.ConnectionResult(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
                 endpointId = "ep-old",
                 endpointName = "Huawei",
                 connected = true,
@@ -851,8 +1055,8 @@ class RaceSessionControllerTest {
                 statusMessage = null,
             ),
         )
-        controller.onNearbyEvent(
-            NearbyEvent.PayloadReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
                 endpointId = "ep-old",
                 message = SessionDeviceIdentityMessage(
                     stableDeviceId = "stable-huawei",
@@ -860,26 +1064,27 @@ class RaceSessionControllerTest {
                 ).toJsonString(),
             ),
         )
-        controller.onNearbyEvent(
-            NearbyEvent.PayloadReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
                 endpointId = "ep-old",
                 message = SessionDeviceTelemetryMessage(
                     stableDeviceId = "stable-huawei",
                     role = SessionDeviceRole.SPLIT,
                     sensitivity = 20,
                     latencyMs = 30,
+                    clockSynced = false,
                     timestampMillis = 10L,
                 ).toJsonString(),
             ),
         )
         assertNotNull(controller.uiState.value.remoteDeviceTelemetry["stable-huawei"])
 
-        controller.onNearbyEvent(NearbyEvent.EndpointDisconnected(endpointId = "ep-old"))
+        controller.onConnectionEvent(SessionConnectionEvent.EndpointDisconnected(endpointId = "ep-old"))
         assertNull(controller.uiState.value.remoteDeviceTelemetry["stable-huawei"])
         assertNull(controller.stableDeviceIdForEndpoint("ep-old"))
 
-        controller.onNearbyEvent(
-            NearbyEvent.ConnectionResult(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
                 endpointId = "ep-new",
                 endpointName = "Huawei",
                 connected = true,
@@ -887,8 +1092,8 @@ class RaceSessionControllerTest {
                 statusMessage = null,
             ),
         )
-        controller.onNearbyEvent(
-            NearbyEvent.PayloadReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
                 endpointId = "ep-new",
                 message = SessionDeviceIdentityMessage(
                     stableDeviceId = "stable-huawei",
@@ -896,14 +1101,15 @@ class RaceSessionControllerTest {
                 ).toJsonString(),
             ),
         )
-        controller.onNearbyEvent(
-            NearbyEvent.PayloadReceived(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.PayloadReceived(
                 endpointId = "ep-new",
                 message = SessionDeviceTelemetryMessage(
                     stableDeviceId = "stable-huawei",
                     role = SessionDeviceRole.SPLIT,
                     sensitivity = 33,
                     latencyMs = 12,
+                    clockSynced = true,
                     timestampMillis = 11L,
                 ).toJsonString(),
             ),
@@ -912,6 +1118,7 @@ class RaceSessionControllerTest {
         assertEquals("stable-huawei", controller.stableDeviceIdForEndpoint("ep-new"))
         assertEquals(33, controller.uiState.value.remoteDeviceTelemetry["stable-huawei"]?.sensitivity)
         assertEquals(12, controller.uiState.value.remoteDeviceTelemetry["stable-huawei"]?.latencyMs)
+        assertTrue(controller.uiState.value.remoteDeviceTelemetry["stable-huawei"]?.clockSynced == true)
     }
 
     @Test
@@ -929,8 +1136,8 @@ class RaceSessionControllerTest {
         )
 
         controller.setNetworkRole(SessionNetworkRole.CLIENT)
-        controller.onNearbyEvent(
-            NearbyEvent.ConnectionResult(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
                 endpointId = "host-ep",
                 endpointName = "host",
                 connected = true,
@@ -943,8 +1150,9 @@ class RaceSessionControllerTest {
             hostMinusClientElapsedNanos = 100L,
             hostSensorMinusElapsedNanos = 900L,
             localSensorMinusElapsedNanos = 500L,
-            lastClockSyncElapsedNanos = 10_000L,
+            hostClockRoundTripNanos = 150_000_000L,
         )
+        assertFalse(controller.hasFreshAnyClockLock())
         assertTrue(controller.startMonitoring())
 
         controller.onLocalMotionTrigger(
@@ -980,8 +1188,8 @@ class RaceSessionControllerTest {
         )
 
         controller.setNetworkRole(SessionNetworkRole.CLIENT)
-        controller.onNearbyEvent(
-            NearbyEvent.ConnectionResult(
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
                 endpointId = "host-ep",
                 endpointName = "host",
                 connected = true,
@@ -992,8 +1200,8 @@ class RaceSessionControllerTest {
 
         val initialRequests = sentClockSyncPayloads.mapNotNull { SessionClockSyncBinaryCodec.decodeRequest(it) }
         initialRequests.forEach { request ->
-            controller.onNearbyEvent(
-                NearbyEvent.ClockSyncSampleReceived(
+            controller.onConnectionEvent(
+                SessionConnectionEvent.ClockSyncSampleReceived(
                     endpointId = "host-ep",
                     sample = SessionClockSyncBinaryResponse(
                         clientSendElapsedNanos = request.clientSendElapsedNanos,
@@ -1009,6 +1217,55 @@ class RaceSessionControllerTest {
         assertTrue(controller.startMonitoring())
 
         assertTrue(sentClockSyncPayloads.size > beforeStartMonitoringCount)
-        assertEquals("clock_sync_burst_started", controller.uiState.value.lastEvent)
+        assertEquals("clock_sync_burst_started_stale", controller.uiState.value.lastEvent)
+    }
+
+    @Test
+    fun `client reset run triggers immediate clock sync burst when connected`() {
+        val sentClockSyncPayloads = mutableListOf<ByteArray>()
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            sendClockSyncPayload = { _, payloadBytes, onComplete ->
+                sentClockSyncPayloads += payloadBytes
+                onComplete(Result.success(Unit))
+            },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1_000_000L },
+            clockSyncDelay = { _ -> },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.CLIENT)
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
+                endpointId = "host-ep",
+                endpointName = "host",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+
+        val initialRequests = sentClockSyncPayloads.mapNotNull { SessionClockSyncBinaryCodec.decodeRequest(it) }
+        initialRequests.forEach { request ->
+            controller.onConnectionEvent(
+                SessionConnectionEvent.ClockSyncSampleReceived(
+                    endpointId = "host-ep",
+                    sample = SessionClockSyncBinaryResponse(
+                        clientSendElapsedNanos = request.clientSendElapsedNanos,
+                        hostReceiveElapsedNanos = request.clientSendElapsedNanos + 100L,
+                        hostSendElapsedNanos = request.clientSendElapsedNanos + 200L,
+                    ),
+                ),
+            )
+        }
+        assertFalse(controller.uiState.value.clockSyncInProgress)
+
+        val beforeResetCount = sentClockSyncPayloads.size
+        controller.resetRun()
+
+        assertTrue(sentClockSyncPayloads.size > beforeResetCount)
+        assertEquals("clock_sync_burst_started_stale", controller.uiState.value.lastEvent)
     }
 }

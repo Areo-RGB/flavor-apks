@@ -25,7 +25,7 @@ data class NativeMonitoringConfig(
             return NativeMonitoringConfig(
                 threshold = 0.006,
                 roiCenterX = 0.5,
-                roiWidth = 0.12,
+                roiWidth = 0.03,
                 cooldownMs = 900,
                 processEveryNFrames = 1,
                 cameraFacing = NativeCameraFacing.REAR,
@@ -50,7 +50,7 @@ data class NativeMonitoringConfig(
                 ),
                 roiWidth = clampDouble(
                     (raw["roiWidth"] as? Number)?.toDouble() ?: defaults.roiWidth,
-                    0.05,
+                    0.03,
                     0.40,
                 ),
                 cooldownMs = clampInt(

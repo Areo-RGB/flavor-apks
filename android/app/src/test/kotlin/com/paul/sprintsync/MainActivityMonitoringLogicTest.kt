@@ -1,6 +1,7 @@
 package com.paul.sprintsync
 
-import com.paul.sprintsync.core.services.NearbyEvent
+import com.paul.sprintsync.core.models.SavedRunResult
+import com.paul.sprintsync.core.services.SessionConnectionEvent
 import com.paul.sprintsync.features.race_session.SessionOperatingMode
 import com.paul.sprintsync.features.race_session.SessionNetworkRole
 import org.junit.Assert.assertEquals
@@ -12,7 +13,7 @@ class MainActivityMonitoringLogicTest {
     @Test
     fun `shows wifi only guidance when tcp client connection fails`() {
         val message = connectionFailureGuidanceMessage(
-            event = NearbyEvent.ConnectionResult(
+            event = SessionConnectionEvent.ConnectionResult(
                 endpointId = "host",
                 endpointName = "Pad",
                 connected = false,
@@ -29,7 +30,7 @@ class MainActivityMonitoringLogicTest {
     @Test
     fun `does not show wifi only guidance for non tcp or successful connection`() {
         val tcpSuccessMessage = connectionFailureGuidanceMessage(
-            event = NearbyEvent.ConnectionResult(
+            event = SessionConnectionEvent.ConnectionResult(
                 endpointId = "host",
                 endpointName = "Pad",
                 connected = true,
@@ -40,7 +41,7 @@ class MainActivityMonitoringLogicTest {
             sessionNetworkRole = SessionNetworkRole.CLIENT,
         )
         val nonTcpMessage = connectionFailureGuidanceMessage(
-            event = NearbyEvent.ConnectionResult(
+            event = SessionConnectionEvent.ConnectionResult(
                 endpointId = "host",
                 endpointName = "Pad",
                 connected = false,
@@ -51,7 +52,7 @@ class MainActivityMonitoringLogicTest {
             sessionNetworkRole = SessionNetworkRole.CLIENT,
         )
         val hostModeMessage = connectionFailureGuidanceMessage(
-            event = NearbyEvent.ConnectionResult(
+            event = SessionConnectionEvent.ConnectionResult(
                 endpointId = "host",
                 endpointName = "Pad",
                 connected = false,
@@ -311,5 +312,37 @@ class MainActivityMonitoringLogicTest {
         assertEquals(1, rows.size)
         assertEquals("CPH2399", rows[0].deviceName)
         assertEquals(formatElapsedTimerDisplay(1_770L), rows[0].lapTimeLabel)
+    }
+
+    @Test
+    fun `derive saveable duration only when run completed with positive duration`() {
+        assertEquals(500L, deriveSaveableRunDurationNanos(startedSensorNanos = 100L, stoppedSensorNanos = 600L))
+        assertEquals(null, deriveSaveableRunDurationNanos(startedSensorNanos = null, stoppedSensorNanos = 600L))
+        assertEquals(null, deriveSaveableRunDurationNanos(startedSensorNanos = 100L, stoppedSensorNanos = null))
+        assertEquals(null, deriveSaveableRunDurationNanos(startedSensorNanos = 100L, stoppedSensorNanos = 100L))
+    }
+
+    @Test
+    fun `normalize save name trims value and rejects blank`() {
+        val normalized = normalizeSavedRunName("  Alice  ")
+        val blank = normalizeSavedRunName("   ")
+
+        assertEquals("Alice", normalized.first)
+        assertEquals(null, normalized.second)
+        assertEquals(null, blank.first)
+        assertEquals("Name is required.", blank.second)
+    }
+
+    @Test
+    fun `sort saved results orders by lowest duration then save time`() {
+        val sorted = sortSavedRunResults(
+            listOf(
+                SavedRunResult(id = "3", name = "C", durationNanos = 2_000L, savedAtMillis = 30L),
+                SavedRunResult(id = "1", name = "A", durationNanos = 1_000L, savedAtMillis = 20L),
+                SavedRunResult(id = "2", name = "B", durationNanos = 1_000L, savedAtMillis = 10L),
+            ),
+        )
+
+        assertEquals(listOf("2", "1", "3"), sorted.map { it.id })
     }
 }

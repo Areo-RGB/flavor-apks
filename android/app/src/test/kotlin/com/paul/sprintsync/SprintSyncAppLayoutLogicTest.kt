@@ -145,6 +145,14 @@ class SprintSyncAppLayoutLogicTest {
     }
 
     @Test
+    fun `preview visibility is consistently toggle-driven across monitoring modes`() {
+        assertTrue(shouldShowMonitoringPreview(SessionOperatingMode.SINGLE_DEVICE, effectiveShowPreview = true))
+        assertTrue(shouldShowMonitoringPreview(SessionOperatingMode.NETWORK_RACE, effectiveShowPreview = true))
+        assertFalse(shouldShowMonitoringPreview(SessionOperatingMode.SINGLE_DEVICE, effectiveShowPreview = false))
+        assertFalse(shouldShowMonitoringPreview(SessionOperatingMode.NETWORK_RACE, effectiveShowPreview = false))
+    }
+
+    @Test
     fun `single-device mode hides run detail metrics and fps requires debug`() {
         assertFalse(shouldShowRunDetailMetrics(SessionOperatingMode.SINGLE_DEVICE))
         assertTrue(shouldShowRunDetailMetrics(SessionOperatingMode.NETWORK_RACE))
@@ -180,6 +188,34 @@ class SprintSyncAppLayoutLogicTest {
 
         assertFalse(
             shouldShowMonitoringTopResetRunButton(
+                stage = SessionStage.LOBBY,
+                isHost = true,
+                operatingMode = SessionOperatingMode.NETWORK_RACE,
+                deviceProfile = "host_xiaomi",
+            ),
+        )
+    }
+
+    @Test
+    fun `monitoring header show results button only shows for xiaomi host flavor`() {
+        assertTrue(
+            shouldShowMonitoringTopSavedResultsButton(
+                stage = SessionStage.MONITORING,
+                isHost = true,
+                operatingMode = SessionOperatingMode.NETWORK_RACE,
+                deviceProfile = "host_xiaomi",
+            ),
+        )
+        assertFalse(
+            shouldShowMonitoringTopSavedResultsButton(
+                stage = SessionStage.MONITORING,
+                isHost = true,
+                operatingMode = SessionOperatingMode.NETWORK_RACE,
+                deviceProfile = "client_pixel",
+            ),
+        )
+        assertFalse(
+            shouldShowMonitoringTopSavedResultsButton(
                 stage = SessionStage.LOBBY,
                 isHost = true,
                 operatingMode = SessionOperatingMode.NETWORK_RACE,

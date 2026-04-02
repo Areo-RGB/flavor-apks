@@ -45,22 +45,22 @@ class TcpConnectionsManagerTest {
         var clientEndpointId: String? = null
 
         host.setEventListener { event ->
-            if (event is NearbyEvent.PayloadReceived) {
+            if (event is SessionConnectionEvent.PayloadReceived) {
                 hostPayload = event.message
                 payloadLatch.countDown()
             }
         }
         client.setEventListener { event ->
-            if (event is NearbyEvent.ConnectionResult && event.connected) {
+            if (event is SessionConnectionEvent.ConnectionResult && event.connected) {
                 clientEndpointId = event.endpointId
                 clientConnected.countDown()
             }
         }
 
-        host.startHosting("svc", "host", NearbyTransportStrategy.POINT_TO_STAR) {
+        host.startHosting("svc", "host", SessionConnectionStrategy.POINT_TO_STAR) {
             assertTrue(it.isSuccess)
         }
-        client.startDiscovery("svc", NearbyTransportStrategy.POINT_TO_STAR) {
+        client.startDiscovery("svc", SessionConnectionStrategy.POINT_TO_STAR) {
             assertTrue(it.isSuccess)
         }
         client.requestConnection("127.0.0.1", "client") {
@@ -98,18 +98,18 @@ class TcpConnectionsManagerTest {
 
         client.setEventListener { event ->
             when (event) {
-                is NearbyEvent.ConnectionResult -> if (event.connected) {
+                is SessionConnectionEvent.ConnectionResult -> if (event.connected) {
                     clientEndpointId = event.endpointId
                     connectedLatch.countDown()
                 }
-                is NearbyEvent.ClockSyncSampleReceived -> responseLatch.countDown()
+                is SessionConnectionEvent.ClockSyncSampleReceived -> responseLatch.countDown()
                 else -> Unit
             }
         }
 
         host.configureNativeClockSyncHost(enabled = true, requireSensorDomainClock = false)
-        host.startHosting("svc", "host", NearbyTransportStrategy.POINT_TO_POINT) { assertTrue(it.isSuccess) }
-        client.startDiscovery("svc", NearbyTransportStrategy.POINT_TO_POINT) { assertTrue(it.isSuccess) }
+        host.startHosting("svc", "host", SessionConnectionStrategy.POINT_TO_POINT) { assertTrue(it.isSuccess) }
+        client.startDiscovery("svc", SessionConnectionStrategy.POINT_TO_POINT) { assertTrue(it.isSuccess) }
         client.requestConnection("127.0.0.1", "client") { assertTrue(it.isSuccess) }
         assertTrue(awaitWithMainLooper(connectedLatch, timeoutMs = 5_000))
 

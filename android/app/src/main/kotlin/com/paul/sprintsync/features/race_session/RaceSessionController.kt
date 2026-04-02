@@ -6,8 +6,7 @@ import com.paul.sprintsync.BuildConfig
 import com.paul.sprintsync.core.clock.ClockDomain
 import com.paul.sprintsync.core.models.LastRunResult
 import com.paul.sprintsync.core.repositories.LocalRepository
-import com.paul.sprintsync.core.services.NearbyConnectionsManager
-import com.paul.sprintsync.core.services.NearbyEvent
+import com.paul.sprintsync.core.services.SessionConnectionEvent
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,6 +28,17 @@ typealias RaceSessionSendClockSyncPayload = (
     onComplete: (Result<Unit>) -> Unit,
 ) -> Unit
 typealias RaceSessionClockSyncDelay = suspend (delayMillis: Long) -> Unit
+
+private enum class ClockSyncBurstReason {
+    MANUAL,
+    STALE,
+    DRIFT,
+}
+
+private enum class AdaptiveClockSyncDecision {
+    START,
+    RATE_LIMITED,
+}
 
 private data class AcceptedClockSyncSample(
     val offsetNanos: Long,
@@ -61,6 +71,7 @@ data class SessionRemoteDeviceTelemetryState(
     val role: SessionDeviceRole,
     val sensitivity: Int,
     val latencyMs: Int?,
+    val clockSynced: Boolean,
     val connected: Boolean,
     val timestampMillis: Long,
 )
@@ -97,11 +108,16 @@ class RaceSessionController(
 ) : ViewModel() {
     companion object {
         private const val MAX_ACCEPTED_ROUND_TRIP_NANOS = 120_000_000L
+        private const val MAX_VALID_LOCK_ROUND_TRIP_NANOS = 100_000_000L
         private const val DEFAULT_CLOCK_SYNC_SAMPLE_COUNT = 8
         private const val CLOCK_SYNC_BURST_STAGGER_MILLIS = 50L
         private const val CLOCK_SYNC_SAMPLE_EXPIRY_MILLIS = 1_500L
-        private const val CLOCK_LOCK_VALIDITY_NANOS = 6_000_000_000L
-        private const val GPS_LOCK_VALIDITY_NANOS = 10_000_000_000L
+        private const val ADAPTIVE_CLOCK_SYNC_TICK_MILLIS = 500L
+        private const val BASE_STALE_CHECK_INTERVAL_MS = 8_000L
+        private const val POST_DRIFT_COOLDOWN_MS = 2_000L
+        private const val MIN_BURST_SPACING_MS = 15_000L
+        private const val DRIFT_JUMP_THRESHOLD_NANOS = 25_000_000L
+        private const val RECENT_HOST_OFFSET_SAMPLE_LIMIT = 6
         private const val DEFAULT_LOCAL_DEVICE_ID = "local-device"
         private const val DEFAULT_LOCAL_DEVICE_NAME = "This Device"
     }
@@ -120,26 +136,6 @@ class RaceSessionController(
         sendClockSyncPayload = { endpointId, payloadBytes, onComplete ->
             val payload = String(payloadBytes, StandardCharsets.ISO_8859_1)
             sendMessage(endpointId, payload, onComplete)
-        },
-        ioDispatcher = ioDispatcher,
-        nowElapsedNanos = nowElapsedNanos,
-        clockSyncDelay = clockSyncDelay,
-    )
-
-    constructor(
-        localRepository: LocalRepository,
-        nearbyConnectionsManager: NearbyConnectionsManager,
-        ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-        nowElapsedNanos: () -> Long = { ClockDomain.nowElapsedNanos() },
-        clockSyncDelay: RaceSessionClockSyncDelay = { delayMillis -> kotlinx.coroutines.delay(delayMillis) },
-    ) : this(
-        loadLastRun = { localRepository.loadLastRun() },
-        saveLastRun = { run -> localRepository.saveLastRun(run) },
-        sendMessage = { endpointId, messageJson, onComplete ->
-            nearbyConnectionsManager.sendMessage(endpointId, messageJson, onComplete)
-        },
-        sendClockSyncPayload = { endpointId, payloadBytes, onComplete ->
-            nearbyConnectionsManager.sendClockSyncPayload(endpointId, payloadBytes, onComplete)
         },
         ioDispatcher = ioDispatcher,
         nowElapsedNanos = nowElapsedNanos,
@@ -171,6 +167,12 @@ class RaceSessionController(
     private var lastPublishedTelemetryFingerprint: String? = null
     private var clockSyncBurstDispatchCompleted = false
     private var acceptedClockSampleCounter = 0
+    private val recentHostOffsetSamplesNanos = ArrayDeque<Long>()
+    private var lastBurstStartedElapsedNanos: Long? = null
+    private var lastBurstReason: ClockSyncBurstReason? = null
+    private var driftRiseDetectedAtElapsedNanos: Long? = null
+    private var nextStaleBurstCheckElapsedNanos: Long = 0L
+    private var lastRateLimitedEventElapsedNanos: Long? = null
 
     private var localDeviceId = DEFAULT_LOCAL_DEVICE_ID
 
@@ -186,20 +188,8 @@ class RaceSessionController(
 
         viewModelScope.launch(ioDispatcher) {
             while (true) {
-                kotlinx.coroutines.delay(2000)
-                val state = _uiState.value
-                if (state.networkRole == SessionNetworkRole.CLIENT &&
-                    (state.stage == SessionStage.LOBBY || state.stage == SessionStage.MONITORING)
-                ) {
-                    val endpointId = state.connectedEndpoints.firstOrNull()
-                    if (endpointId != null &&
-                        !state.clockSyncInProgress &&
-                        !hasFreshGpsLock() &&
-                        !hasFreshClockLock(CLOCK_LOCK_VALIDITY_NANOS / 2)
-                    ) {
-                        startClockSyncBurst(endpointId)
-                    }
-                }
+                kotlinx.coroutines.delay(ADAPTIVE_CLOCK_SYNC_TICK_MILLIS)
+                maybeRunAdaptiveClockSyncTick()
             }
         }
     }
@@ -286,6 +276,7 @@ class RaceSessionController(
     fun setNetworkRole(role: SessionNetworkRole) {
         endpointIdByStableDeviceId.clear()
         stableDeviceIdByEndpointId.clear()
+        resetAdaptiveClockSyncPolicyState()
         lastPublishedTelemetryFingerprint = null
         val local = ensureLocalDevice(
             SessionDevice(
@@ -429,27 +420,27 @@ class RaceSessionController(
         assignRole(localDeviceId, role)
     }
 
-    fun onNearbyEvent(event: NearbyEvent) {
+    fun onConnectionEvent(event: SessionConnectionEvent) {
         when (event) {
-            is NearbyEvent.EndpointFound -> {
+            is SessionConnectionEvent.EndpointFound -> {
                 _uiState.value = _uiState.value.copy(
                     discoveredEndpoints = _uiState.value.discoveredEndpoints + (event.endpointId to event.endpointName),
                     lastEvent = "endpoint_found",
                 )
             }
 
-            is NearbyEvent.EndpointLost -> {
+            is SessionConnectionEvent.EndpointLost -> {
                 _uiState.value = _uiState.value.copy(
                     discoveredEndpoints = _uiState.value.discoveredEndpoints - event.endpointId,
                     lastEvent = "endpoint_lost",
                 )
             }
 
-            is NearbyEvent.ConnectionResult -> {
+            is SessionConnectionEvent.ConnectionResult -> {
                 handleConnectionResult(event)
             }
 
-            is NearbyEvent.EndpointDisconnected -> {
+            is SessionConnectionEvent.EndpointDisconnected -> {
                 val stableId = stableDeviceIdByEndpointId[event.endpointId]
                 clearIdentityMappingForEndpoint(event.endpointId)
                 val nextConnected = _uiState.value.connectedEndpoints - event.endpointId
@@ -503,15 +494,15 @@ class RaceSessionController(
                 }
             }
 
-            is NearbyEvent.PayloadReceived -> {
+            is SessionConnectionEvent.PayloadReceived -> {
                 handleIncomingPayload(endpointId = event.endpointId, rawMessage = event.message)
             }
 
-            is NearbyEvent.ClockSyncSampleReceived -> {
+            is SessionConnectionEvent.ClockSyncSampleReceived -> {
                 onClockSyncSampleReceived(endpointId = event.endpointId, sample = event.sample)
             }
 
-            is NearbyEvent.Error -> {
+            is SessionConnectionEvent.Error -> {
                 _uiState.value = _uiState.value.copy(lastError = event.message, lastEvent = "error")
             }
         }
@@ -564,7 +555,7 @@ class RaceSessionController(
         if (_uiState.value.networkRole == SessionNetworkRole.CLIENT && _uiState.value.connectedEndpoints.isNotEmpty()) {
             val endpointId = _uiState.value.connectedEndpoints.first()
             if (!_uiState.value.clockSyncInProgress) {
-                startClockSyncBurst(endpointId)
+                startClockSyncBurstInternal(endpointId, DEFAULT_CLOCK_SYNC_SAMPLE_COUNT, ClockSyncBurstReason.STALE)
             }
             publishDeviceTelemetryIfClient(force = true)
         }
@@ -621,7 +612,7 @@ class RaceSessionController(
         } else if (_uiState.value.networkRole == SessionNetworkRole.CLIENT) {
             val endpointId = _uiState.value.connectedEndpoints.firstOrNull()
             if (endpointId != null && !_uiState.value.clockSyncInProgress) {
-                startClockSyncBurst(endpointId)
+                startClockSyncBurstInternal(endpointId, DEFAULT_CLOCK_SYNC_SAMPLE_COUNT, ClockSyncBurstReason.STALE)
             }
             publishDeviceTelemetryIfClient(force = true)
         }
@@ -660,6 +651,12 @@ class RaceSessionController(
         )
         if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
             broadcastSnapshotIfHost()
+        } else if (_uiState.value.networkRole == SessionNetworkRole.CLIENT) {
+            val endpointId = _uiState.value.connectedEndpoints.firstOrNull()
+            if (endpointId != null && !_uiState.value.clockSyncInProgress) {
+                startClockSyncBurstInternal(endpointId, DEFAULT_CLOCK_SYNC_SAMPLE_COUNT, ClockSyncBurstReason.STALE)
+            }
+            publishDeviceTelemetryIfClient(force = true)
         }
     }
 
@@ -739,12 +736,33 @@ class RaceSessionController(
     }
 
     fun startClockSyncBurst(endpointId: String, sampleCount: Int = DEFAULT_CLOCK_SYNC_SAMPLE_COUNT) {
+        startClockSyncBurstInternal(endpointId, sampleCount, ClockSyncBurstReason.MANUAL)
+    }
+
+    private fun startClockSyncBurstInternal(
+        endpointId: String,
+        sampleCount: Int,
+        reason: ClockSyncBurstReason,
+    ) {
         if (!_uiState.value.connectedEndpoints.contains(endpointId)) {
             _uiState.value = _uiState.value.copy(lastError = "Clock sync ignored: endpoint not connected")
             return
         }
+        val now = nowElapsedNanos()
+        lastBurstStartedElapsedNanos = now
+        lastBurstReason = reason
+        nextStaleBurstCheckElapsedNanos = now + millisToNanos(BASE_STALE_CHECK_INTERVAL_MS)
+        if (reason == ClockSyncBurstReason.DRIFT) {
+            driftRiseDetectedAtElapsedNanos = null
+        }
         _uiState.value = _uiState.value.copy(clockSyncInProgress = true, lastError = null)
-        _uiState.value = _uiState.value.copy(lastEvent = "clock_sync_burst_started")
+        _uiState.value = _uiState.value.copy(
+            lastEvent = when (reason) {
+                ClockSyncBurstReason.MANUAL -> "clock_sync_burst_started"
+                ClockSyncBurstReason.STALE -> "clock_sync_burst_started_stale"
+                ClockSyncBurstReason.DRIFT -> "clock_sync_burst_started_drift"
+            },
+        )
         _clockState.value = _clockState.value.copy(lockReason = SessionClockLockReason.LOCK_STALE)
         pendingClockSyncSamplesByClientSendNanos.clear()
         acceptedClockSyncSamples.clear()
@@ -850,6 +868,8 @@ class RaceSessionController(
             lastClockSyncElapsedNanos = lastClockSyncElapsedNanos,
             hostClockRoundTripNanos = hostClockRoundTripNanos,
         )
+        updateRecentHostOffsetSamples(hostSensorMinusElapsedNanos)
+        detectHostOffsetDriftRise(previousHostOffset, hostSensorMinusElapsedNanos)
 
         // If we are the host and our camera just booted or heavily drifted/restarted, inform clients so they can map.
         if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
@@ -866,6 +886,111 @@ class RaceSessionController(
         refreshLockReasonFromState()
         publishDeviceTelemetryIfClient()
     }
+
+    internal fun runAdaptiveClockSyncTickForTest() {
+        maybeRunAdaptiveClockSyncTick()
+    }
+
+    private fun maybeRunAdaptiveClockSyncTick() {
+        val state = _uiState.value
+        if (state.networkRole != SessionNetworkRole.CLIENT) {
+            return
+        }
+        if (state.stage != SessionStage.LOBBY && state.stage != SessionStage.MONITORING) {
+            return
+        }
+        val endpointId = state.connectedEndpoints.firstOrNull() ?: return
+        if (state.clockSyncInProgress) {
+            return
+        }
+        val now = nowElapsedNanos()
+        val reason = shouldStartAdaptiveBurst(now) ?: return
+        when (evaluateAdaptiveBurstDecision(now)) {
+            AdaptiveClockSyncDecision.START -> {
+                if (reason == ClockSyncBurstReason.STALE) {
+                    nextStaleBurstCheckElapsedNanos = now + millisToNanos(BASE_STALE_CHECK_INTERVAL_MS)
+                }
+                startClockSyncBurstInternal(endpointId, DEFAULT_CLOCK_SYNC_SAMPLE_COUNT, reason)
+            }
+
+            AdaptiveClockSyncDecision.RATE_LIMITED -> {
+                if (reason == ClockSyncBurstReason.STALE) {
+                    nextStaleBurstCheckElapsedNanos = now + millisToNanos(BASE_STALE_CHECK_INTERVAL_MS)
+                }
+                maybeEmitRateLimitedEvent(now)
+            }
+        }
+    }
+
+    private fun shouldStartAdaptiveBurst(nowElapsedNanos: Long): ClockSyncBurstReason? {
+        val driftDetectedAt = driftRiseDetectedAtElapsedNanos
+        if (driftDetectedAt != null) {
+            if (nowElapsedNanos - driftDetectedAt >= millisToNanos(POST_DRIFT_COOLDOWN_MS)) {
+                return ClockSyncBurstReason.DRIFT
+            }
+            return null
+        }
+        val lockStale = !hasFreshClockLock()
+        if (!lockStale) {
+            return null
+        }
+        if (nowElapsedNanos < nextStaleBurstCheckElapsedNanos) {
+            return null
+        }
+        return ClockSyncBurstReason.STALE
+    }
+
+    private fun evaluateAdaptiveBurstDecision(nowElapsedNanos: Long): AdaptiveClockSyncDecision {
+        val lastStartedAt = lastBurstStartedElapsedNanos
+        if (lastStartedAt != null &&
+            nowElapsedNanos - lastStartedAt < millisToNanos(MIN_BURST_SPACING_MS)
+        ) {
+            return AdaptiveClockSyncDecision.RATE_LIMITED
+        }
+        return AdaptiveClockSyncDecision.START
+    }
+
+    private fun maybeEmitRateLimitedEvent(nowElapsedNanos: Long) {
+        val lastEventAt = lastRateLimitedEventElapsedNanos
+        if (lastEventAt != null &&
+            nowElapsedNanos - lastEventAt < millisToNanos(POST_DRIFT_COOLDOWN_MS)
+        ) {
+            return
+        }
+        lastRateLimitedEventElapsedNanos = nowElapsedNanos
+        _uiState.value = _uiState.value.copy(lastEvent = "clock_sync_skipped_rate_limited")
+    }
+
+    private fun updateRecentHostOffsetSamples(hostSensorMinusElapsedNanos: Long?) {
+        val sample = hostSensorMinusElapsedNanos ?: return
+        recentHostOffsetSamplesNanos.addLast(sample)
+        while (recentHostOffsetSamplesNanos.size > RECENT_HOST_OFFSET_SAMPLE_LIMIT) {
+            recentHostOffsetSamplesNanos.removeFirst()
+        }
+    }
+
+    private fun detectHostOffsetDriftRise(previousHostOffset: Long?, hostSensorMinusElapsedNanos: Long?) {
+        if (_uiState.value.networkRole != SessionNetworkRole.CLIENT) {
+            return
+        }
+        val previous = previousHostOffset ?: return
+        val current = hostSensorMinusElapsedNanos ?: return
+        if (abs(current - previous) <= DRIFT_JUMP_THRESHOLD_NANOS) {
+            return
+        }
+        driftRiseDetectedAtElapsedNanos = nowElapsedNanos()
+    }
+
+    private fun resetAdaptiveClockSyncPolicyState() {
+        recentHostOffsetSamplesNanos.clear()
+        lastBurstStartedElapsedNanos = null
+        lastBurstReason = null
+        driftRiseDetectedAtElapsedNanos = null
+        nextStaleBurstCheckElapsedNanos = 0L
+        lastRateLimitedEventElapsedNanos = null
+    }
+
+    private fun millisToNanos(value: Long): Long = value * 1_000_000L
 
     private fun refreshLockReasonFromState() {
         val nextReason = when {
@@ -926,47 +1051,22 @@ class RaceSessionController(
         )
     }
 
-    fun hasFreshClockLock(maxAgeNanos: Long = CLOCK_LOCK_VALIDITY_NANOS): Boolean {
-        val lockAt = _clockState.value.lastClockSyncElapsedNanos ?: return false
-        return nowElapsedNanos() - lockAt <= maxAgeNanos
-    }
-
-    fun hasFreshGpsLock(maxAgeNanos: Long = GPS_LOCK_VALIDITY_NANOS): Boolean {
+    fun hasFreshClockLock(maxAcceptedRoundTripNanos: Long = MAX_VALID_LOCK_ROUND_TRIP_NANOS): Boolean {
         val state = _clockState.value
-        if (state.localSensorMinusElapsedNanos == null || state.hostSensorMinusElapsedNanos == null) {
+        val hostMinusClientElapsedNanos = state.hostMinusClientElapsedNanos ?: return false
+        if (hostMinusClientElapsedNanos == Long.MIN_VALUE) {
             return false
         }
-        if (state.localGpsUtcOffsetNanos == null || state.hostGpsUtcOffsetNanos == null) {
-            return false
-        }
-        val localFixAge = state.localGpsFixAgeNanos ?: return false
-        val hostFixAge = state.hostGpsFixAgeNanos ?: return false
-        if (localFixAge < 0L || localFixAge > maxAgeNanos) {
-            return false
-        }
-        if (hostFixAge < 0L || hostFixAge > maxAgeNanos) {
-            return false
-        }
-        return true
+        val roundTripNanos = state.hostClockRoundTripNanos ?: return false
+        return roundTripNanos in 0L..maxAcceptedRoundTripNanos
     }
 
     fun hasFreshAnyClockLock(): Boolean {
-        return hasFreshGpsLock() || hasFreshClockLock()
-    }
-
-    private fun gpsHostMinusClientElapsedNanosIfFresh(): Long? {
-        if (!hasFreshGpsLock()) {
-            return null
-        }
-        val state = _clockState.value
-        val localGpsUtcOffsetNanos = state.localGpsUtcOffsetNanos ?: return null
-        val hostGpsUtcOffsetNanos = state.hostGpsUtcOffsetNanos ?: return null
-        return localGpsUtcOffsetNanos - hostGpsUtcOffsetNanos
+        return hasFreshClockLock()
     }
 
     private fun currentHostMinusClientElapsedNanos(): Long? {
-        return gpsHostMinusClientElapsedNanosIfFresh()
-            ?: _clockState.value.hostMinusClientElapsedNanos
+        return _clockState.value.hostMinusClientElapsedNanos
     }
 
     private fun handleIncomingPayload(endpointId: String, rawMessage: String) {
@@ -1021,7 +1121,7 @@ class RaceSessionController(
         }
     }
 
-    private fun handleConnectionResult(event: NearbyEvent.ConnectionResult) {
+    private fun handleConnectionResult(event: SessionConnectionEvent.ConnectionResult) {
         val stableIdForEndpoint = stableDeviceIdByEndpointId[event.endpointId]
         val nextConnected = if (event.connected) {
             if (_uiState.value.networkRole == SessionNetworkRole.HOST) {
@@ -1112,7 +1212,7 @@ class RaceSessionController(
         if (event.connected) {
             sendIdentityHandshake(event.endpointId)
             if (_uiState.value.networkRole == SessionNetworkRole.CLIENT && !_uiState.value.clockSyncInProgress) {
-                startClockSyncBurst(event.endpointId)
+                startClockSyncBurstInternal(event.endpointId, DEFAULT_CLOCK_SYNC_SAMPLE_COUNT, ClockSyncBurstReason.STALE)
                 publishDeviceTelemetryIfClient(force = true)
             }
             if (_uiState.value.anchorDeviceId != null) {
@@ -1153,10 +1253,6 @@ class RaceSessionController(
         }
         if (senderRole == SessionDeviceRole.START && _uiState.value.anchorDeviceId != endpointId) {
             _uiState.value = _uiState.value.copy(lastEvent = "trigger_request_rejected_anchor_mismatch")
-            return
-        }
-        if (senderRole != SessionDeviceRole.START && !hasFreshAnyClockLock()) {
-            _uiState.value = _uiState.value.copy(lastEvent = "trigger_request_rejected_unsynced")
             return
         }
         if (request.mappedHostSensorNanos == null) {
@@ -1588,6 +1684,7 @@ class RaceSessionController(
             role = telemetry.role,
             sensitivity = telemetry.sensitivity.coerceIn(1, 100),
             latencyMs = telemetry.latencyMs,
+            clockSynced = telemetry.clockSynced,
             connected = _uiState.value.connectedEndpoints.contains(endpointId),
             timestampMillis = telemetry.timestampMillis,
         )
@@ -1621,9 +1718,10 @@ class RaceSessionController(
             role = localDeviceRole(),
             sensitivity = localSensitivity.coerceIn(1, 100),
             latencyMs = latencyMs,
+            clockSynced = hasFreshAnyClockLock(),
             timestampMillis = System.currentTimeMillis(),
         )
-        val fingerprint = "$hostEndpointId|${message.role.name}|${message.sensitivity}|${message.latencyMs}"
+        val fingerprint = "$hostEndpointId|${message.role.name}|${message.sensitivity}|${message.latencyMs}|${message.clockSynced}"
         if (!force && fingerprint == lastPublishedTelemetryFingerprint) {
             return
         }

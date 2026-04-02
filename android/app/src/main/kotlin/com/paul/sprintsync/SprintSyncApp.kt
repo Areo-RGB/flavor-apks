@@ -19,10 +19,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
@@ -54,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.paul.sprintsync.features.race_session.SessionCameraFacing
+import com.paul.sprintsync.core.models.SavedRunResult
 import com.paul.sprintsync.features.race_session.SessionDevice
 import com.paul.sprintsync.features.race_session.SessionDeviceRole
 import com.paul.sprintsync.features.race_session.SessionAnchorState
@@ -97,7 +100,7 @@ data class SprintSyncUiState(
     val elapsedDisplay: String = "00.00",
     val threshold: Double = 0.006,
     val roiCenterX: Double = 0.5,
-    val roiWidth: Double = 0.12,
+    val roiWidth: Double = 0.03,
     val cooldownMs: Int = 900,
     val processEveryNFrames: Int = 2,
     val observedFps: Double? = null,
@@ -110,7 +113,7 @@ data class SprintSyncUiState(
     val streamFrameCount: Long = 0,
     val processedFrameCount: Long = 0,
     val triggerHistory: List<String> = emptyList(),
-    val lastNearbyEvent: String? = null,
+    val lastConnectionEvent: String? = null,
     val lastSensorEvent: String? = null,
     val recentEvents: List<String> = emptyList(),
     val operatingMode: SessionOperatingMode = SessionOperatingMode.NETWORK_RACE,
@@ -122,6 +125,12 @@ data class SprintSyncUiState(
     val anchorDeviceName: String? = null,
     val anchorState: SessionAnchorState = SessionAnchorState.READY,
     val clockLockReasonLabel: String = "-",
+    val saveableRunDurationNanos: Long? = null,
+    val savedRunResults: List<SavedRunResult> = emptyList(),
+    val showSaveResultDialog: Boolean = false,
+    val showSavedResultsDialog: Boolean = false,
+    val saveResultNameDraft: String = "",
+    val saveResultNameError: String? = null,
 )
 
 data class DisplayLapRow(
@@ -135,6 +144,7 @@ data class ConnectedDeviceMonitoringCardUiState(
     val deviceName: String,
     val role: SessionDeviceRole,
     val latencyMs: Int?,
+    val clockSynced: Boolean,
     val sensitivity: Int,
     val connected: Boolean,
 )
@@ -163,6 +173,13 @@ fun SprintSyncApp(
     onUpdateRoiWidth: (Double) -> Unit,
     onUpdateCooldown: (Int) -> Unit,
     onStopHosting: () -> Unit,
+    onOpenSaveResultDialog: () -> Unit,
+    onDismissSaveResultDialog: () -> Unit,
+    onSaveResultNameChanged: (String) -> Unit,
+    onConfirmSaveResult: () -> Unit,
+    onOpenSavedResultsDialog: () -> Unit,
+    onDismissSavedResultsDialog: () -> Unit,
+    onDeleteSavedResult: (String) -> Unit,
 ) {
     var showPreview by rememberSaveable { mutableStateOf(true) }
     var showDebugInfo by rememberSaveable { mutableStateOf(false) }
@@ -232,6 +249,18 @@ fun SprintSyncApp(
                                         Text("Reset Run")
                                     }
                                 }
+                                if (
+                                    shouldShowMonitoringTopSavedResultsButton(
+                                        stage = uiState.stage,
+                                        isHost = uiState.isHost,
+                                        operatingMode = uiState.operatingMode,
+                                        deviceProfile = BuildConfig.DEVICE_PROFILE,
+                                    )
+                                ) {
+                                    TextButton(onClick = onOpenSavedResultsDialog) {
+                                        Text("Show Results")
+                                    }
+                                }
                             }
                             TextButton(onClick = { showDebugInfo = !showDebugInfo }) {
                                 Text(if (showDebugInfo) "Debug On" else "Debug Off")
@@ -264,7 +293,7 @@ fun SprintSyncApp(
                             onStartSingleDevice = onStartSingleDevice,
                             onStartDisplayHost = onStartDisplayHost,
                             onReconnectClient = onReconnectClient,
-                            showReconnectClientAction = BuildConfig.TCP_ONLY && BuildConfig.AUTO_START_ROLE == "client",
+                            showReconnectClientAction = BuildConfig.AUTO_START_ROLE == "client",
                             hideSingleDeviceAction = uiState.isControllerOnlyHost,
                         )
                     }
@@ -329,6 +358,7 @@ fun SprintSyncApp(
                                 isHost = uiState.isHost,
                                 showDebugInfo = showDebugInfo,
                                 onResetRun = onResetRun,
+                                onOpenSaveResultDialog = onOpenSaveResultDialog,
                             )
                         }
                         if (uiState.clockLockWarningText != null) {
@@ -417,6 +447,24 @@ fun SprintSyncApp(
             }
             }
 
+            if (uiState.showSaveResultDialog) {
+                SaveResultDialog(
+                    value = uiState.saveResultNameDraft,
+                    error = uiState.saveResultNameError,
+                    onValueChange = onSaveResultNameChanged,
+                    onDismiss = onDismissSaveResultDialog,
+                    onConfirm = onConfirmSaveResult,
+                )
+            }
+
+            if (uiState.showSavedResultsDialog) {
+                SavedResultsDialog(
+                    rows = uiState.savedRunResults,
+                    onDismiss = onDismissSavedResultsDialog,
+                    onDelete = onDeleteSavedResult,
+                )
+            }
+
             if (isDisplayHostMode) {
                 OutlinedButton(
                     onClick = onStopMonitoring,
@@ -451,7 +499,7 @@ private fun StatusCard(uiState: SprintSyncUiState) {
                 MetricDisplay(label = "Motion", value = uiState.monitoringSummary)
             }
             MetricDisplay(label = "Clock", value = uiState.clockSummary)
-            uiState.lastNearbyEvent?.let { Text("Last Nearby: $it") }
+            uiState.lastConnectionEvent?.let { Text("Last Connection: $it") }
             uiState.lastSensorEvent?.let { Text("Last Sensor: $it") }
             if (!uiState.permissionGranted && uiState.deniedPermissions.isNotEmpty()) {
                 Text(
@@ -469,7 +517,7 @@ private fun PermissionWarningCard(deniedPermissions: List<String>) {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             SectionHeader("Permissions Needed")
             Text(
-                text = "Grant permissions to host or join nearby devices.",
+                text = "Grant permissions to host or join devices.",
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
@@ -543,7 +591,7 @@ private fun SetupActionsCard(
             )
             if (!permissionGranted) {
                 Text(
-                    text = "Camera and nearby permissions are required.",
+                    text = "Camera and network permissions are required.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.Gray,
                 )
@@ -768,8 +816,6 @@ private fun MonitoringSummaryCard(
 
     SprintSyncCard {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-            val useTwoColumns = maxWidth >= 340.dp
-
             if (controllerOnlyHost && operatingMode != SessionOperatingMode.SINGLE_DEVICE) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
@@ -911,41 +957,6 @@ private fun MonitoringSummaryCard(
                         }
                     }
                 }
-            } else if (useTwoColumns) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.Top,
-                ) {
-                    PreviewSurface(
-                        previewViewFactory = previewViewFactory,
-                        roiCenterX = roiCenterX,
-                    )
-                    MonitoringPreviewInfoPanel(
-                        isHost = isHost,
-                        controllerOnlyHost = controllerOnlyHost,
-                        localRole = localRole,
-                        localCameraFacing = localCameraFacing,
-                        showDebugInfo = showDebugInfo,
-                        connectionTypeLabel = connectionTypeLabel,
-                        syncModeLabel = syncModeLabel,
-                        latencyLabel = latencyLabel,
-                        userMonitoringEnabled = userMonitoringEnabled,
-                        onSetMonitoringEnabled = onSetMonitoringEnabled,
-                        onAssignLocalCameraFacing = onAssignLocalCameraFacing,
-                        effectiveShowPreview = effectiveShowPreview,
-                        onShowPreviewChanged = onShowPreviewChanged,
-                        sensitivity = sensitivity,
-                        onUpdateSensitivity = onUpdateSensitivity,
-                        operatingMode = operatingMode,
-                        discoveredDisplayHosts = discoveredDisplayHosts,
-                        displayConnectedHostName = displayConnectedHostName,
-                        displayDiscoveryActive = displayDiscoveryActive,
-                        onStartDisplayDiscovery = onStartDisplayDiscovery,
-                        onConnectDisplayHost = onConnectDisplayHost,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     MonitoringPreviewInfoPanel(
@@ -1006,7 +1017,7 @@ private fun HostConnectedDeviceCards(
                     ) {
                         Text(card.deviceName, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "Role: ${sessionDeviceRoleLabel(card.role)} · Latency: ${card.latencyMs?.let { "$it ms" } ?: "-"}",
+                            "Role: ${sessionDeviceRoleLabel(card.role)} · Latency: ${card.latencyMs?.let { "$it ms" } ?: "-"} · Sync: ${if (card.clockSynced) "✓" else "✗"}",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.Gray,
                         )
@@ -1243,7 +1254,7 @@ private fun AdvancedDetectionCard(
                 Slider(
                     value = uiState.roiWidth.toFloat(),
                     onValueChange = { onUpdateRoiWidth(it.toDouble()) },
-                    valueRange = 0.05f..0.40f,
+                    valueRange = 0.03f..0.40f,
                 )
 
                 Text("Cooldown: ${uiState.cooldownMs} ms")
@@ -1283,6 +1294,7 @@ private fun RunMetricsCard(
     isHost: Boolean,
     showDebugInfo: Boolean,
     onResetRun: () -> Unit,
+    onOpenSaveResultDialog: () -> Unit,
 ) {
     val fpsLabel = uiState.observedFps?.let { String.format("%.1f", it) } ?: "--.-"
     val targetSuffix = uiState.targetFpsUpper?.let { " · target $it" } ?: ""
@@ -1306,8 +1318,109 @@ private fun RunMetricsCard(
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth(),
             )
+            if (
+                shouldShowMonitoringTopSavedResultsButton(
+                    stage = uiState.stage,
+                    isHost = uiState.isHost,
+                    operatingMode = uiState.operatingMode,
+                    deviceProfile = BuildConfig.DEVICE_PROFILE,
+                )
+            ) {
+                TextButton(
+                    onClick = onOpenSaveResultDialog,
+                    enabled = uiState.saveableRunDurationNanos != null,
+                ) {
+                    Text("Save")
+                }
+            }
         }
     }
+}
+
+@Composable
+private fun SaveResultDialog(
+    value: String,
+    error: String?,
+    onValueChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Save Result") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    label = { Text("Name") },
+                    singleLine = true,
+                )
+                if (error != null) {
+                    Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
+}
+
+@Composable
+private fun SavedResultsDialog(
+    rows: List<SavedRunResult>,
+    onDismiss: () -> Unit,
+    onDelete: (String) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Results") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Name", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                    Text("Time", modifier = Modifier.width(88.dp), fontWeight = FontWeight.SemiBold)
+                    Text("Action", modifier = Modifier.width(60.dp), fontWeight = FontWeight.SemiBold)
+                }
+                if (rows.isEmpty()) {
+                    Text("No saved results yet.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                } else {
+                    rows.forEach { row ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(row.name, modifier = Modifier.weight(1f))
+                            Text(
+                                formatElapsedTimerDisplay((row.durationNanos / 1_000_000L).coerceAtLeast(0L)),
+                                modifier = Modifier.width(88.dp),
+                            )
+                            TextButton(
+                                onClick = { onDelete(row.id) },
+                                modifier = Modifier.width(60.dp),
+                            ) {
+                                Text("Delete")
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        },
+    )
 }
 
 @Composable
@@ -1443,6 +1556,18 @@ internal fun shouldShowMonitoringResetAction(
 ): Boolean = isHost && startedSensorNanos != null
 
 internal fun shouldShowMonitoringTopResetRunButton(
+    stage: SessionStage,
+    isHost: Boolean,
+    operatingMode: SessionOperatingMode,
+    deviceProfile: String,
+): Boolean {
+    val canStopMonitoring =
+        stage == SessionStage.MONITORING &&
+            (isHost || operatingMode != SessionOperatingMode.NETWORK_RACE)
+    return canStopMonitoring && deviceProfile == "host_xiaomi"
+}
+
+internal fun shouldShowMonitoringTopSavedResultsButton(
     stage: SessionStage,
     isHost: Boolean,
     operatingMode: SessionOperatingMode,

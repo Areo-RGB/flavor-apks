@@ -389,6 +389,7 @@ data class SessionDeviceTelemetryMessage(
     val role: SessionDeviceRole,
     val sensitivity: Int,
     val latencyMs: Int?,
+    val clockSynced: Boolean,
     val timestampMillis: Long,
 ) {
     fun toJsonString(): String {
@@ -398,6 +399,7 @@ data class SessionDeviceTelemetryMessage(
             .put("role", role.name.lowercase())
             .put("sensitivity", sensitivity)
             .put("latencyMs", latencyMs ?: JSONObject.NULL)
+            .put("clockSynced", clockSynced)
             .put("timestampMillis", timestampMillis)
             .toString()
     }
@@ -417,6 +419,7 @@ data class SessionDeviceTelemetryMessage(
             val stableDeviceId = decoded.optString("stableDeviceId", "").trim()
             val role = sessionDeviceRoleFromName(decoded.readOptionalString("role")) ?: return null
             val sensitivity = decoded.optInt("sensitivity", Int.MIN_VALUE)
+            val clockSynced = if (decoded.has("clockSynced")) decoded.optBoolean("clockSynced", false) else false
             val timestampMillis = decoded.optLong("timestampMillis", Long.MIN_VALUE)
             val latencyMs = if (!decoded.has("latencyMs") || decoded.isNull("latencyMs")) null else decoded.optInt("latencyMs", -1)
             if (stableDeviceId.isEmpty() || sensitivity == Int.MIN_VALUE || timestampMillis == Long.MIN_VALUE) {
@@ -433,6 +436,7 @@ data class SessionDeviceTelemetryMessage(
                 role = role,
                 sensitivity = sensitivity,
                 latencyMs = latencyMs,
+                clockSynced = clockSynced,
                 timestampMillis = timestampMillis,
             )
         }

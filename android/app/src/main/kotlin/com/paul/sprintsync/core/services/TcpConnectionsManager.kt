@@ -34,13 +34,13 @@ class TcpConnectionsManager(
     private val discoveryRunning = AtomicBoolean(false)
 
     @Volatile
-    private var eventListener: ((NearbyEvent) -> Unit)? = null
+    private var eventListener: ((SessionConnectionEvent) -> Unit)? = null
 
     @Volatile
-    private var activeRole: NearbyRole = NearbyRole.NONE
+    private var activeRole: SessionConnectionRole = SessionConnectionRole.NONE
 
     @Volatile
-    private var activeStrategy: NearbyTransportStrategy = NearbyTransportStrategy.POINT_TO_POINT
+    private var activeStrategy: SessionConnectionStrategy = SessionConnectionStrategy.POINT_TO_POINT
 
     @Volatile
     private var serverSocket: ServerSocket? = null
@@ -51,13 +51,13 @@ class TcpConnectionsManager(
     @Volatile
     private var nativeClockSyncRequireSensorDomain = false
 
-    override fun setEventListener(listener: ((NearbyEvent) -> Unit)?) {
+    override fun setEventListener(listener: ((SessionConnectionEvent) -> Unit)?) {
         eventListener = listener
     }
 
-    override fun currentRole(): NearbyRole = activeRole
+    override fun currentRole(): SessionConnectionRole = activeRole
 
-    override fun currentStrategy(): NearbyTransportStrategy = activeStrategy
+    override fun currentStrategy(): SessionConnectionStrategy = activeStrategy
 
     override fun connectedEndpoints(): Set<String> = connectedSockets.keys.toSet()
 
@@ -69,11 +69,11 @@ class TcpConnectionsManager(
     override fun startHosting(
         serviceId: String,
         endpointName: String,
-        strategy: NearbyTransportStrategy,
+        strategy: SessionConnectionStrategy,
         onComplete: (Result<Unit>) -> Unit,
     ) {
         stopAll()
-        activeRole = NearbyRole.HOST
+        activeRole = SessionConnectionRole.HOST
         activeStrategy = strategy
         try {
             val socket = ServerSocket(hostPort)
@@ -83,10 +83,10 @@ class TcpConnectionsManager(
                     try {
                         val client = socket.accept()
                         val endpointId = endpointIdForSocket(client)
-                        if (activeStrategy == NearbyTransportStrategy.POINT_TO_POINT && connectedSockets.isNotEmpty()) {
+                        if (activeStrategy == SessionConnectionStrategy.POINT_TO_POINT && connectedSockets.isNotEmpty()) {
                             client.close()
                             emitEvent(
-                                NearbyEvent.ConnectionResult(
+                                SessionConnectionEvent.ConnectionResult(
                                     endpointId = endpointId,
                                     endpointName = endpointId,
                                     connected = false,
@@ -99,7 +99,7 @@ class TcpConnectionsManager(
                         connectedSockets[endpointId] = client
                         endpointNamesById[endpointId] = endpointId
                         emitEvent(
-                            NearbyEvent.ConnectionResult(
+                            SessionConnectionEvent.ConnectionResult(
                                 endpointId = endpointId,
                                 endpointName = endpointId,
                                 connected = true,
@@ -122,14 +122,14 @@ class TcpConnectionsManager(
         }
     }
 
-    override fun startDiscovery(serviceId: String, strategy: NearbyTransportStrategy, onComplete: (Result<Unit>) -> Unit) {
+    override fun startDiscovery(serviceId: String, strategy: SessionConnectionStrategy, onComplete: (Result<Unit>) -> Unit) {
         connectedSockets.clear()
         endpointNamesById.clear()
-        activeRole = NearbyRole.CLIENT
+        activeRole = SessionConnectionRole.CLIENT
         activeStrategy = strategy
         discoveryRunning.set(true)
         emitEvent(
-            NearbyEvent.EndpointFound(
+            SessionConnectionEvent.EndpointFound(
                 endpointId = hostIp,
                 endpointName = hostIp,
                 serviceId = serviceId,
@@ -139,7 +139,7 @@ class TcpConnectionsManager(
     }
 
     override fun requestConnection(endpointId: String, endpointName: String, onComplete: (Result<Unit>) -> Unit) {
-        if (activeRole != NearbyRole.CLIENT) {
+        if (activeRole != SessionConnectionRole.CLIENT) {
             onComplete(Result.failure(IllegalStateException("requestConnection ignored: not in client mode.")))
             return
         }
@@ -152,7 +152,7 @@ class TcpConnectionsManager(
                 endpointNamesById[connectedId] = endpointId
                 discoveryRunning.set(false)
                 emitEvent(
-                    NearbyEvent.ConnectionResult(
+                    SessionConnectionEvent.ConnectionResult(
                         endpointId = connectedId,
                         endpointName = endpointId,
                         connected = true,
@@ -164,7 +164,7 @@ class TcpConnectionsManager(
                 onComplete(Result.success(Unit))
             } catch (error: Throwable) {
                 emitEvent(
-                    NearbyEvent.ConnectionResult(
+                    SessionConnectionEvent.ConnectionResult(
                         endpointId = endpointId,
                         endpointName = endpointId,
                         connected = false,
@@ -224,7 +224,7 @@ class TcpConnectionsManager(
                     when (frameKind) {
                         FRAME_KIND_MESSAGE -> {
                             emitEvent(
-                                NearbyEvent.PayloadReceived(
+                                SessionConnectionEvent.PayloadReceived(
                                     endpointId = endpointId,
                                     message = String(payload, StandardCharsets.UTF_8),
                                 ),
@@ -260,7 +260,7 @@ class TcpConnectionsManager(
     }
 
     private fun tryRespondToClockSyncRequest(endpointId: String, payloadBytes: ByteArray): Boolean {
-        if (activeRole != NearbyRole.HOST || !nativeClockSyncHostEnabled) {
+        if (activeRole != SessionConnectionRole.HOST || !nativeClockSyncHostEnabled) {
             return true
         }
         if (!connectedSockets.containsKey(endpointId)) {
@@ -286,7 +286,7 @@ class TcpConnectionsManager(
     private fun tryEmitClockSyncResponse(endpointId: String, payloadBytes: ByteArray): Boolean {
         val response = SessionClockSyncBinaryCodec.decodeResponse(payloadBytes) ?: return true
         emitEvent(
-            NearbyEvent.ClockSyncSampleReceived(
+            SessionConnectionEvent.ClockSyncSampleReceived(
                 endpointId = endpointId,
                 sample = response,
             ),
@@ -303,15 +303,15 @@ class TcpConnectionsManager(
         }
         connectedSockets.clear()
         endpointNamesById.clear()
-        activeRole = NearbyRole.NONE
-        activeStrategy = NearbyTransportStrategy.POINT_TO_POINT
+        activeRole = SessionConnectionRole.NONE
+        activeStrategy = SessionConnectionStrategy.POINT_TO_POINT
     }
 
     private fun handleDisconnect(endpointId: String) {
         val socket = connectedSockets.remove(endpointId)
         runCatching { socket?.close() }
         endpointNamesById.remove(endpointId)
-        emitEvent(NearbyEvent.EndpointDisconnected(endpointId = endpointId))
+        emitEvent(SessionConnectionEvent.EndpointDisconnected(endpointId = endpointId))
     }
 
     private fun endpointIdForSocket(socket: Socket): String {
@@ -320,10 +320,10 @@ class TcpConnectionsManager(
     }
 
     private fun emitError(message: String) {
-        emitEvent(NearbyEvent.Error(message))
+        emitEvent(SessionConnectionEvent.Error(message))
     }
 
-    private fun emitEvent(event: NearbyEvent) {
+    private fun emitEvent(event: SessionConnectionEvent) {
         val listener = eventListener ?: return
         mainHandler.post { listener(event) }
     }
