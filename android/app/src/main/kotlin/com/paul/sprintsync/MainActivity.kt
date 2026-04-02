@@ -19,6 +19,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import com.paul.sprintsync.core.models.SavedRunResult
+import com.paul.sprintsync.core.models.SavedRunCheckpointResult
 import com.paul.sprintsync.core.repositories.LocalRepository
 import com.paul.sprintsync.core.services.SessionConnectionEvent
 import com.paul.sprintsync.core.services.SessionConnectionStrategy
@@ -37,6 +38,7 @@ import com.paul.sprintsync.features.race_session.SessionOperatingMode
 import com.paul.sprintsync.features.race_session.SessionAnchorState
 import com.paul.sprintsync.features.race_session.SessionSplitMark
 import com.paul.sprintsync.features.race_session.SessionStage
+import com.paul.sprintsync.features.race_session.explicitSplitRoles
 import com.paul.sprintsync.features.race_session.isSplitCheckpointRole
 import com.paul.sprintsync.features.race_session.splitIndexForRole
 import com.paul.sprintsync.features.race_session.sessionDeviceRoleLabel
@@ -47,6 +49,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import kotlin.math.roundToInt
 
@@ -391,6 +396,15 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                     },
                     onResetRun = {
                         raceSessionController.resetRun()
+                        updateUiState {
+                            copy(
+                                showRunDetailsOverlay = false,
+                                showRunDetailsSaveDialog = false,
+                                runDetailsResults = emptyList(),
+                                runDetailsValidationError = null,
+                                runDetailsSaveError = null,
+                            )
+                        }
                         syncControllerSummaries()
                     },
                     onAssignRole = { deviceId, role ->
@@ -530,6 +544,171 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                             localRepository.deleteSavedRunResult(id)
                             val refreshed = localRepository.loadSavedRunResults()
                             updateUiState { copy(savedRunResults = sortSavedRunResults(refreshed)) }
+                        }
+                    },
+                    onOpenSavedRunResultDetails = { result ->
+                        updateUiState {
+                            copy(
+                                selectedSavedRunResult = result,
+                                showSavedRunResultDetailsDialog = true,
+                            )
+                        }
+                    },
+                    onDismissSavedRunResultDetails = {
+                        updateUiState {
+                            copy(
+                                showSavedRunResultDetailsDialog = false,
+                                selectedSavedRunResult = null,
+                            )
+                        }
+                    },
+                    onOpenRunDetailsOverlay = {
+                        val timeline = raceSessionController.uiState.value.timeline
+                        val checkpointRoles = buildRunDetailsCheckpointRoles(
+                            splitMarks = timeline.hostSplitMarks,
+                            stoppedSensorNanos = timeline.hostStopSensorNanos,
+                        )
+                        if (checkpointRoles.isEmpty() || timeline.hostStopSensorNanos == null) {
+                            return@SprintSyncApp
+                        }
+                        val mergedDistances = mergeRunDetailsDistances(
+                            existing = uiState.value.runDetailsDistancesByRole,
+                            checkpointRoles = checkpointRoles,
+                        )
+                        updateUiState {
+                            copy(
+                                showRunDetailsOverlay = true,
+                                runDetailsCheckpointRoles = checkpointRoles,
+                                runDetailsDistancesByRole = mergedDistances,
+                                runDetailsValidationError = null,
+                                runDetailsSaveError = null,
+                            )
+                        }
+                    },
+                    onDismissRunDetailsOverlay = {
+                        updateUiState {
+                            copy(showRunDetailsOverlay = false)
+                        }
+                    },
+                    onUpdateRunDetailsDistance = { role, distanceMeters ->
+                        val nextDistances = uiState.value.runDetailsDistancesByRole.toMutableMap().apply {
+                            if (distanceMeters == null) {
+                                remove(role)
+                            } else {
+                                this[role] = distanceMeters
+                            }
+                        }
+                        updateUiState {
+                            copy(
+                                runDetailsDistancesByRole = nextDistances,
+                                runDetailsValidationError = null,
+                            )
+                        }
+                    },
+                    onCalculateRunDetails = {
+                        val raceState = raceSessionController.uiState.value
+                        val timeline = raceState.timeline
+                        val checkpointRoles = buildRunDetailsCheckpointRoles(
+                            splitMarks = timeline.hostSplitMarks,
+                            stoppedSensorNanos = timeline.hostStopSensorNanos,
+                        )
+                        val distances = uiState.value.runDetailsDistancesByRole
+                        val validationError = validateRunDetailsDistanceInputs(
+                            checkpointRoles = checkpointRoles,
+                            distancesByRole = checkpointRoles.associateWith { distances[it] },
+                        )
+                        if (validationError != null) {
+                            updateUiState {
+                                copy(
+                                    runDetailsResults = emptyList(),
+                                    runDetailsValidationError = validationError,
+                                )
+                            }
+                            return@SprintSyncApp
+                        }
+                        val results = calculateRunDetailsResults(
+                            startedSensorNanos = timeline.hostStartSensorNanos,
+                            splitMarks = timeline.hostSplitMarks,
+                            stoppedSensorNanos = timeline.hostStopSensorNanos,
+                            checkpointRoles = checkpointRoles,
+                            distancesByRole = distances,
+                        )
+                        updateUiState {
+                            copy(
+                                runDetailsCheckpointRoles = checkpointRoles,
+                                runDetailsResults = results,
+                                runDetailsValidationError = if (results.isEmpty()) {
+                                    "Could not calculate results from the current timeline."
+                                } else {
+                                    null
+                                },
+                            )
+                        }
+                    },
+                    onOpenRunDetailsSaveDialog = {
+                        if (uiState.value.saveableRunDurationNanos == null || uiState.value.runDetailsResults.isEmpty()) {
+                            return@SprintSyncApp
+                        }
+                        updateUiState {
+                            copy(
+                                showRunDetailsSaveDialog = true,
+                                runDetailsAthleteNameDraft = "",
+                                runDetailsSaveError = null,
+                            )
+                        }
+                    },
+                    onDismissRunDetailsSaveDialog = {
+                        updateUiState {
+                            copy(
+                                showRunDetailsSaveDialog = false,
+                                runDetailsSaveError = null,
+                            )
+                        }
+                    },
+                    onRunDetailsAthleteNameChanged = { value ->
+                        updateUiState {
+                            copy(
+                                runDetailsAthleteNameDraft = value.take(40),
+                                runDetailsSaveError = null,
+                            )
+                        }
+                    },
+                    onConfirmRunDetailsSave = {
+                        val durationNanos = uiState.value.saveableRunDurationNanos ?: return@SprintSyncApp
+                        val (athleteName, errorMessage) = normalizeAthleteNameForResult(raw = uiState.value.runDetailsAthleteNameDraft)
+                        if (errorMessage != null) {
+                            updateUiState { copy(runDetailsSaveError = errorMessage) }
+                            return@SprintSyncApp
+                        }
+                        val savedName = buildAthleteDateResultName(athleteName!!)
+                        val entry = SavedRunResult(
+                            id = UUID.randomUUID().toString(),
+                            name = savedName,
+                            durationNanos = durationNanos,
+                            savedAtMillis = System.currentTimeMillis(),
+                            checkpointResults = uiState.value.runDetailsResults.map { runResult ->
+                                SavedRunCheckpointResult(
+                                    checkpointLabel = sessionDeviceRoleLabel(runResult.role),
+                                    distanceMeters = runResult.distanceMeters,
+                                    totalTimeSec = runResult.totalTimeSec,
+                                    splitTimeSec = runResult.splitTimeSec,
+                                    avgSpeedKmh = runResult.avgSpeedKmh,
+                                    accelerationMs2 = runResult.accelerationMs2,
+                                )
+                            },
+                        )
+                        lifecycleScope.launch {
+                            localRepository.addSavedRunResult(entry)
+                            val refreshed = localRepository.loadSavedRunResults()
+                            updateUiState {
+                                copy(
+                                    savedRunResults = sortSavedRunResults(refreshed),
+                                    showRunDetailsSaveDialog = false,
+                                    showSavedResultsDialog = true,
+                                    runDetailsAthleteNameDraft = "",
+                                    runDetailsSaveError = null,
+                                )
+                            }
                         }
                     },
                 )
@@ -1177,6 +1356,18 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             }
             "$roleLabel at ${trigger.triggerSensorNanos}ns (score ${"%.4f".format(trigger.score)})"
         }
+        val splitHistory = buildSplitHistoryForTimeline(
+            startedSensorNanos = timelineForUi.hostStartSensorNanos,
+            splitMarks = timelineForUi.hostSplitMarks,
+        )
+        val runDetailsCheckpointRoles = buildRunDetailsCheckpointRoles(
+            splitMarks = timelineForUi.hostSplitMarks,
+            stoppedSensorNanos = timelineForUi.hostStopSensorNanos,
+        )
+        val runDetailsDistances = mergeRunDetailsDistances(
+            existing = uiState.value.runDetailsDistancesByRole,
+            checkpointRoles = runDetailsCheckpointRoles,
+        )
 
         val clockSummary = when {
             raceSessionController.hasFreshClockLock() && clockState.hostMinusClientElapsedNanos != null -> {
@@ -1276,6 +1467,9 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 streamFrameCount = motionState.streamFrameCount,
                 processedFrameCount = motionState.processedFrameCount,
                 triggerHistory = triggerHistory,
+                splitHistory = splitHistory,
+                runDetailsCheckpointRoles = runDetailsCheckpointRoles,
+                runDetailsDistancesByRole = runDetailsDistances,
                 discoveredEndpoints = if (mode == SessionOperatingMode.SINGLE_DEVICE) {
                     displayDiscoveredHosts.toMap()
                 } else {
@@ -1590,6 +1784,110 @@ internal fun buildSplitHistoryForTimeline(
     }
 }
 
+internal data class RunDetailsCheckpointTiming(
+    val role: SessionDeviceRole,
+    val sensorNanos: Long,
+)
+
+internal fun buildRunDetailsCheckpointRoles(
+    splitMarks: List<SessionSplitMark>,
+    stoppedSensorNanos: Long?,
+): List<SessionDeviceRole> {
+    val roles = mutableListOf<SessionDeviceRole>()
+    explicitSplitRoles().forEach { splitRole ->
+        if (splitMarks.any { it.role == splitRole }) {
+            roles += splitRole
+        }
+    }
+    if (stoppedSensorNanos != null) {
+        roles += SessionDeviceRole.STOP
+    }
+    return roles
+}
+
+internal fun mergeRunDetailsDistances(
+    existing: Map<SessionDeviceRole, Double>,
+    checkpointRoles: List<SessionDeviceRole>,
+): Map<SessionDeviceRole, Double> {
+    val merged = existing.toMutableMap()
+    checkpointRoles.forEach { role ->
+        if (merged[role] == null) {
+            defaultRunDetailsDistanceForRole(role)?.let { merged[role] = it }
+        }
+    }
+    return merged
+}
+
+internal fun defaultRunDetailsDistanceForRole(role: SessionDeviceRole): Double? {
+    return when (role) {
+        SessionDeviceRole.SPLIT1 -> 5.0
+        SessionDeviceRole.SPLIT2 -> 10.0
+        SessionDeviceRole.STOP -> 20.0
+        else -> null
+    }
+}
+
+internal fun calculateRunDetailsResults(
+    startedSensorNanos: Long?,
+    splitMarks: List<SessionSplitMark>,
+    stoppedSensorNanos: Long?,
+    checkpointRoles: List<SessionDeviceRole>,
+    distancesByRole: Map<SessionDeviceRole, Double>,
+): List<RunDetailsCheckpointResult> {
+    val started = startedSensorNanos ?: return emptyList()
+    val splitByRole = splitMarks.associateBy { it.role }
+    val checkpoints = checkpointRoles.mapNotNull { role ->
+        when (role) {
+            SessionDeviceRole.STOP -> stoppedSensorNanos?.let { RunDetailsCheckpointTiming(role, it) }
+            else -> splitByRole[role]?.let { RunDetailsCheckpointTiming(role, it.hostSensorNanos) }
+        }
+    }
+    if (checkpoints.size != checkpointRoles.size) {
+        return emptyList()
+    }
+
+    val results = mutableListOf<RunDetailsCheckpointResult>()
+    var previousTimeNanos = started
+    var previousDistanceMeters = 0.0
+    var previousSpeedMs = 0.0
+    for (checkpoint in checkpoints) {
+        val distanceMeters = distancesByRole[checkpoint.role] ?: return emptyList()
+        if (distanceMeters <= previousDistanceMeters) {
+            return emptyList()
+        }
+        if (checkpoint.sensorNanos <= previousTimeNanos || checkpoint.sensorNanos <= started) {
+            return emptyList()
+        }
+
+        val totalTimeSec = (checkpoint.sensorNanos - started) / 1_000_000_000.0
+        val splitTimeSec = (checkpoint.sensorNanos - previousTimeNanos) / 1_000_000_000.0
+        if (splitTimeSec <= 0.0 || totalTimeSec <= 0.0) {
+            return emptyList()
+        }
+        val splitDistanceMeters = distanceMeters - previousDistanceMeters
+        if (splitDistanceMeters <= 0.0) {
+            return emptyList()
+        }
+        val avgSpeedMs = splitDistanceMeters / splitTimeSec
+        val avgSpeedKmh = avgSpeedMs * 3.6
+        val accelMs2 = (avgSpeedMs - previousSpeedMs) / splitTimeSec
+
+        results += RunDetailsCheckpointResult(
+            role = checkpoint.role,
+            distanceMeters = distanceMeters,
+            totalTimeSec = totalTimeSec,
+            splitTimeSec = splitTimeSec,
+            avgSpeedKmh = avgSpeedKmh,
+            accelerationMs2 = accelMs2,
+        )
+
+        previousTimeNanos = checkpoint.sensorNanos
+        previousDistanceMeters = distanceMeters
+        previousSpeedMs = avgSpeedMs
+    }
+    return results
+}
+
 internal fun connectionFailureGuidanceMessage(
     event: SessionConnectionEvent,
     isTcpOnly: Boolean,
@@ -1621,6 +1919,28 @@ internal fun normalizeSavedRunName(raw: String): Pair<String?, String?> {
         return null to "Name must be 40 characters or fewer."
     }
     return trimmed to null
+}
+
+internal fun normalizeAthleteNameForResult(raw: String): Pair<String?, String?> {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty()) {
+        return null to "Athlete name is required."
+    }
+    val collapsed = trimmed.replace("\\s+".toRegex(), "_")
+    val cleaned = collapsed.replace("[^A-Za-z0-9_]+".toRegex(), "")
+    if (cleaned.isEmpty()) {
+        return null to "Athlete name must include letters or numbers."
+    }
+    return cleaned.take(30) to null
+}
+
+internal fun buildAthleteDateResultName(
+    athleteName: String,
+    now: Date = Date(),
+    locale: Locale = Locale.getDefault(),
+): String {
+    val formattedDate = SimpleDateFormat("dd_MM_yyyy", locale).format(now)
+    return "${athleteName}_${formattedDate}"
 }
 
 internal fun sortSavedRunResults(results: List<SavedRunResult>): List<SavedRunResult> {

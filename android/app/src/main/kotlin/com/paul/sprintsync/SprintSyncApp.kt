@@ -32,6 +32,7 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -56,7 +57,10 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.paul.sprintsync.features.race_session.SessionCameraFacing
+import com.paul.sprintsync.core.models.SavedRunCheckpointResult
 import com.paul.sprintsync.core.models.SavedRunResult
 import com.paul.sprintsync.features.race_session.SessionDevice
 import com.paul.sprintsync.features.race_session.SessionDeviceRole
@@ -116,6 +120,7 @@ data class SprintSyncUiState(
     val streamFrameCount: Long = 0,
     val processedFrameCount: Long = 0,
     val triggerHistory: List<String> = emptyList(),
+    val splitHistory: List<String> = emptyList(),
     val lastConnectionEvent: String? = null,
     val lastSensorEvent: String? = null,
     val recentEvents: List<String> = emptyList(),
@@ -134,6 +139,16 @@ data class SprintSyncUiState(
     val showSavedResultsDialog: Boolean = false,
     val saveResultNameDraft: String = "",
     val saveResultNameError: String? = null,
+    val showRunDetailsOverlay: Boolean = false,
+    val runDetailsCheckpointRoles: List<SessionDeviceRole> = emptyList(),
+    val runDetailsDistancesByRole: Map<SessionDeviceRole, Double> = emptyMap(),
+    val runDetailsResults: List<RunDetailsCheckpointResult> = emptyList(),
+    val runDetailsValidationError: String? = null,
+    val showRunDetailsSaveDialog: Boolean = false,
+    val runDetailsAthleteNameDraft: String = "",
+    val runDetailsSaveError: String? = null,
+    val showSavedRunResultDetailsDialog: Boolean = false,
+    val selectedSavedRunResult: SavedRunResult? = null,
 )
 
 data class DisplayLapRow(
@@ -152,6 +167,15 @@ data class ConnectedDeviceMonitoringCardUiState(
     val analysisHeight: Int?,
     val sensitivity: Int,
     val connected: Boolean,
+)
+
+data class RunDetailsCheckpointResult(
+    val role: SessionDeviceRole,
+    val distanceMeters: Double,
+    val totalTimeSec: Double,
+    val splitTimeSec: Double,
+    val avgSpeedKmh: Double,
+    val accelerationMs2: Double,
 )
 
 @Composable
@@ -186,6 +210,16 @@ fun SprintSyncApp(
     onOpenSavedResultsDialog: () -> Unit,
     onDismissSavedResultsDialog: () -> Unit,
     onDeleteSavedResult: (String) -> Unit,
+    onOpenSavedRunResultDetails: (SavedRunResult) -> Unit,
+    onDismissSavedRunResultDetails: () -> Unit,
+    onOpenRunDetailsOverlay: () -> Unit,
+    onDismissRunDetailsOverlay: () -> Unit,
+    onUpdateRunDetailsDistance: (SessionDeviceRole, Double?) -> Unit,
+    onCalculateRunDetails: () -> Unit,
+    onOpenRunDetailsSaveDialog: () -> Unit,
+    onDismissRunDetailsSaveDialog: () -> Unit,
+    onRunDetailsAthleteNameChanged: (String) -> Unit,
+    onConfirmRunDetailsSave: () -> Unit,
 ) {
     var showPreview by rememberSaveable { mutableStateOf(true) }
     var showDebugInfo by rememberSaveable { mutableStateOf(false) }
@@ -355,6 +389,7 @@ fun SprintSyncApp(
                                 showDebugInfo = showDebugInfo,
                                 onResetRun = onResetRun,
                                 onOpenSaveResultDialog = onOpenSaveResultDialog,
+                                onOpenRunDetailsOverlay = onOpenRunDetailsOverlay,
                             )
                         }
                         if (uiState.clockLockWarningText != null) {
@@ -467,6 +502,38 @@ fun SprintSyncApp(
                     rows = uiState.savedRunResults,
                     onDismiss = onDismissSavedResultsDialog,
                     onDelete = onDeleteSavedResult,
+                    onOpen = onOpenSavedRunResultDetails,
+                )
+            }
+
+            if (uiState.showSavedRunResultDetailsDialog && uiState.selectedSavedRunResult != null) {
+                SavedRunResultDetailsDialog(
+                    result = uiState.selectedSavedRunResult,
+                    onDismiss = onDismissSavedRunResultDetails,
+                )
+            }
+
+            if (uiState.showRunDetailsOverlay) {
+                RunDetailsOverlay(
+                    checkpointRoles = uiState.runDetailsCheckpointRoles,
+                    distancesByRole = uiState.runDetailsDistancesByRole,
+                    results = uiState.runDetailsResults,
+                    validationError = uiState.runDetailsValidationError,
+                    saveEnabled = uiState.saveableRunDurationNanos != null && uiState.runDetailsResults.isNotEmpty(),
+                    onDismiss = onDismissRunDetailsOverlay,
+                    onUpdateDistance = onUpdateRunDetailsDistance,
+                    onCalculate = onCalculateRunDetails,
+                    onSave = onOpenRunDetailsSaveDialog,
+                )
+            }
+
+            if (uiState.showRunDetailsSaveDialog) {
+                SaveRunDetailsDialog(
+                    athleteName = uiState.runDetailsAthleteNameDraft,
+                    error = uiState.runDetailsSaveError,
+                    onValueChange = onRunDetailsAthleteNameChanged,
+                    onDismiss = onDismissRunDetailsSaveDialog,
+                    onConfirm = onConfirmRunDetailsSave,
                 )
             }
 
@@ -1362,6 +1429,7 @@ private fun RunMetricsCard(
     showDebugInfo: Boolean,
     onResetRun: () -> Unit,
     onOpenSaveResultDialog: () -> Unit,
+    onOpenRunDetailsOverlay: () -> Unit,
 ) {
     val fpsLabel = uiState.observedFps?.let { String.format("%.1f", it) } ?: "--.-"
     val targetSuffix = uiState.targetFpsUpper?.let { " · target $it" } ?: ""
@@ -1377,6 +1445,8 @@ private fun RunMetricsCard(
         operatingMode = uiState.operatingMode,
         deviceProfile = BuildConfig.DEVICE_PROFILE,
     )
+    val showDetailsAction = showSaveAction
+    val detailsEnabled = shouldEnableRunDetailsButton(uiState.stoppedSensorNanos)
     SprintSyncCard {
         Column(
             modifier = Modifier.fillMaxWidth(),
@@ -1397,7 +1467,26 @@ private fun RunMetricsCard(
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth(),
             )
-            if (showResetRunAction || showSaveAction) {
+            if (uiState.splitHistory.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        text = "Checkpoints",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    uiState.splitHistory.forEach { checkpoint ->
+                        Text(
+                            text = checkpoint,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+            }
+            if (showResetRunAction || showSaveAction || showDetailsAction) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1425,10 +1514,200 @@ private fun RunMetricsCard(
                             Text("Save", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
+                    if (showDetailsAction) {
+                        Button(
+                            onClick = onOpenRunDetailsOverlay,
+                            enabled = detailsEnabled,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(56.dp),
+                        ) {
+                            Text("Details", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun RunDetailsOverlay(
+    checkpointRoles: List<SessionDeviceRole>,
+    distancesByRole: Map<SessionDeviceRole, Double>,
+    results: List<RunDetailsCheckpointResult>,
+    validationError: String?,
+    saveEnabled: Boolean,
+    onDismiss: () -> Unit,
+    onUpdateDistance: (SessionDeviceRole, Double?) -> Unit,
+    onCalculate: () -> Unit,
+    onSave: () -> Unit,
+) {
+    val inputState = remember(checkpointRoles, distancesByRole) {
+        mutableStateOf(
+            checkpointRoles.associateWith { role ->
+                distancesByRole[role]?.let { formatDistanceInput(it) } ?: ""
+            },
+        )
+    }
+    val distanceInputs = inputState.value
+    val parsedDistances = checkpointRoles.associateWith { role ->
+        distanceInputs[role]?.toDoubleOrNull()
+    }
+    val canCalculate = validateRunDetailsDistanceInputs(
+        checkpointRoles = checkpointRoles,
+        distancesByRole = parsedDistances,
+    ) == null
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+        ),
+    ) {
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Run Details", style = MaterialTheme.typography.headlineSmall)
+                    TextButton(onClick = onDismiss) {
+                        Text("Close")
+                    }
+                }
+
+                SectionHeader("Distance Mapping")
+                if (checkpointRoles.isEmpty()) {
+                    Text(
+                        text = "No finished checkpoints available yet.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                } else {
+                    checkpointRoles.forEach { role ->
+                        val currentValue = distanceInputs[role].orEmpty()
+                        OutlinedTextField(
+                            value = currentValue,
+                            onValueChange = { raw ->
+                                val filtered = raw.filter { it.isDigit() || it == '.' }
+                                inputState.value = inputState.value.toMutableMap().apply {
+                                    this[role] = filtered
+                                }
+                                onUpdateDistance(role, filtered.toDoubleOrNull())
+                            },
+                            label = { Text("${sessionDeviceRoleLabel(role)} Distance (m)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+
+                if (validationError != null) {
+                    Text(
+                        text = validationError,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                ) {
+                    OutlinedButton(
+                        onClick = onSave,
+                        enabled = saveEnabled,
+                    ) {
+                        Text("Save")
+                    }
+                    Button(
+                        onClick = onCalculate,
+                        enabled = checkpointRoles.isNotEmpty() && canCalculate,
+                    ) {
+                        Text("Calculate")
+                    }
+                }
+
+                SectionHeader("Calculated Results")
+                if (results.isEmpty()) {
+                    Text(
+                        text = "Tap Calculate to generate speed and acceleration cards.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                } else {
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        items(results) { result ->
+                            Card(modifier = Modifier.fillMaxWidth()) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Text(
+                                        text = "${distanceMetersLabel(result.distanceMeters)} • ${sessionDeviceRoleLabel(result.role)}",
+                                        style = MaterialTheme.typography.titleMedium,
+                                    )
+                                    MetricDisplay("Total Time", "${formatSeconds(result.totalTimeSec)} s")
+                                    MetricDisplay("Split Time", "${formatSeconds(result.splitTimeSec)} s")
+                                    MetricDisplay("Avg Speed", "${formatNumber(result.avgSpeedKmh)} km/h")
+                                    MetricDisplay("Acceleration", "${formatNumber(result.accelerationMs2)} m/s²")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SaveRunDetailsDialog(
+    athleteName: String,
+    error: String?,
+    onValueChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Save Details Result") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = athleteName,
+                    onValueChange = onValueChange,
+                    label = { Text("Athlete Name") },
+                    singleLine = true,
+                )
+                Text(
+                    text = "Saved name format: athlete_dd_MM_yyyy",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (error != null) {
+                    Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
 }
 
 @Composable
@@ -1473,6 +1752,7 @@ private fun SavedResultsDialog(
     rows: List<SavedRunResult>,
     onDismiss: () -> Unit,
     onDelete: (String) -> Unit,
+    onOpen: (SavedRunResult) -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1482,7 +1762,8 @@ private fun SavedResultsDialog(
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Name", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
                     Text("Time", modifier = Modifier.width(88.dp), fontWeight = FontWeight.SemiBold)
-                    Text("Action", modifier = Modifier.width(60.dp), fontWeight = FontWeight.SemiBold)
+                    Text("Open", modifier = Modifier.width(60.dp), fontWeight = FontWeight.SemiBold)
+                    Text("Delete", modifier = Modifier.width(60.dp), fontWeight = FontWeight.SemiBold)
                 }
                 if (rows.isEmpty()) {
                     Text("No saved results yet.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
@@ -1493,11 +1774,22 @@ private fun SavedResultsDialog(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(row.name, modifier = Modifier.weight(1f))
+                            TextButton(
+                                onClick = { onOpen(row) },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(row.name)
+                            }
                             Text(
                                 formatElapsedTimerDisplay((row.durationNanos / 1_000_000L).coerceAtLeast(0L)),
                                 modifier = Modifier.width(88.dp),
                             )
+                            TextButton(
+                                onClick = { onOpen(row) },
+                                modifier = Modifier.width(60.dp),
+                            ) {
+                                Text("Open")
+                            }
                             TextButton(
                                 onClick = { onDelete(row.id) },
                                 modifier = Modifier.width(60.dp),
@@ -1515,6 +1807,72 @@ private fun SavedResultsDialog(
             }
         },
     )
+}
+
+@Composable
+private fun SavedRunResultDetailsDialog(
+    result: SavedRunResult,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+        ),
+    ) {
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(result.name, style = MaterialTheme.typography.headlineSmall)
+                    TextButton(onClick = onDismiss) { Text("Close") }
+                }
+                SectionHeader("Calculated Results")
+                if (result.checkpointResults.isEmpty()) {
+                    Text(
+                        text = "No calculated checkpoint cards saved for this result.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                } else {
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        items(result.checkpointResults) { checkpoint ->
+                            SavedCheckpointResultCard(checkpoint = checkpoint)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SavedCheckpointResultCard(checkpoint: SavedRunCheckpointResult) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = "${distanceMetersLabel(checkpoint.distanceMeters)} • ${checkpoint.checkpointLabel}",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            MetricDisplay("Total Time", "${formatSeconds(checkpoint.totalTimeSec)} s")
+            MetricDisplay("Split Time", "${formatSeconds(checkpoint.splitTimeSec)} s")
+            MetricDisplay("Avg Speed", "${formatNumber(checkpoint.avgSpeedKmh)} km/h")
+            MetricDisplay("Acceleration", "${formatNumber(checkpoint.accelerationMs2)} m/s²")
+        }
+    }
 }
 
 @Composable
@@ -1674,6 +2032,46 @@ internal fun shouldShowMonitoringTopSavedResultsButton(
             (isHost || operatingMode != SessionOperatingMode.NETWORK_RACE)
     return canStopMonitoring && deviceProfile == "host_xiaomi"
 }
+
+internal fun shouldEnableRunDetailsButton(stoppedSensorNanos: Long?): Boolean = stoppedSensorNanos != null
+
+internal fun validateRunDetailsDistanceInputs(
+    checkpointRoles: List<SessionDeviceRole>,
+    distancesByRole: Map<SessionDeviceRole, Double?>,
+): String? {
+    var previousDistance = 0.0
+    for (role in checkpointRoles) {
+        val distance = distancesByRole[role] ?: return "${sessionDeviceRoleLabel(role)} distance is required."
+        if (distance <= 0.0) {
+            return "${sessionDeviceRoleLabel(role)} distance must be greater than 0."
+        }
+        if (distance <= previousDistance) {
+            return "Distances must be strictly increasing from start to stop."
+        }
+        previousDistance = distance
+    }
+    return null
+}
+
+internal fun formatDistanceInput(value: Double): String {
+    return if (value % 1.0 == 0.0) {
+        value.toInt().toString()
+    } else {
+        String.format("%.2f", value)
+    }
+}
+
+private fun formatSeconds(value: Double): String = formatNumber(value)
+
+private fun distanceMetersLabel(value: Double): String {
+    return if (value % 1.0 == 0.0) {
+        "${value.toInt()}m"
+    } else {
+        "${formatNumber(value)}m"
+    }
+}
+
+private fun formatNumber(value: Double): String = String.format("%.2f", value)
 
 internal fun shouldShowHostConnectedDeviceCards(
     stage: SessionStage,

@@ -43,6 +43,7 @@ data class SavedRunResult(
     val name: String,
     val durationNanos: Long,
     val savedAtMillis: Long,
+    val checkpointResults: List<SavedRunCheckpointResult> = emptyList(),
 ) {
     fun toJsonObject(): JSONObject {
         return JSONObject()
@@ -50,6 +51,7 @@ data class SavedRunResult(
             .put("name", name)
             .put("durationNanos", durationNanos)
             .put("savedAtMillis", savedAtMillis)
+            .put("checkpointResults", checkpointResults.toJsonArray())
     }
 
     companion object {
@@ -72,6 +74,7 @@ data class SavedRunResult(
                 name = name,
                 durationNanos = durationNanos,
                 savedAtMillis = savedAtMillis,
+                checkpointResults = raw.readCheckpointResults("checkpointResults"),
             )
         }
 
@@ -96,4 +99,71 @@ data class SavedRunResult(
             return items
         }
     }
+}
+
+data class SavedRunCheckpointResult(
+    val checkpointLabel: String,
+    val distanceMeters: Double,
+    val totalTimeSec: Double,
+    val splitTimeSec: Double,
+    val avgSpeedKmh: Double,
+    val accelerationMs2: Double,
+) {
+    fun toJsonObject(): JSONObject {
+        return JSONObject()
+            .put("checkpointLabel", checkpointLabel)
+            .put("distanceMeters", distanceMeters)
+            .put("totalTimeSec", totalTimeSec)
+            .put("splitTimeSec", splitTimeSec)
+            .put("avgSpeedKmh", avgSpeedKmh)
+            .put("accelerationMs2", accelerationMs2)
+    }
+
+    companion object {
+        fun fromJsonObject(raw: JSONObject): SavedRunCheckpointResult? {
+            val checkpointLabel = raw.optString("checkpointLabel", "").trim()
+            val distanceMeters = raw.optDouble("distanceMeters", Double.NaN)
+            val totalTimeSec = raw.optDouble("totalTimeSec", Double.NaN)
+            val splitTimeSec = raw.optDouble("splitTimeSec", Double.NaN)
+            val avgSpeedKmh = raw.optDouble("avgSpeedKmh", Double.NaN)
+            val accelerationMs2 = raw.optDouble("accelerationMs2", Double.NaN)
+            if (
+                checkpointLabel.isEmpty() ||
+                !distanceMeters.isFinite() ||
+                !totalTimeSec.isFinite() ||
+                !splitTimeSec.isFinite() ||
+                !avgSpeedKmh.isFinite() ||
+                !accelerationMs2.isFinite()
+            ) {
+                return null
+            }
+            return SavedRunCheckpointResult(
+                checkpointLabel = checkpointLabel,
+                distanceMeters = distanceMeters,
+                totalTimeSec = totalTimeSec,
+                splitTimeSec = splitTimeSec,
+                avgSpeedKmh = avgSpeedKmh,
+                accelerationMs2 = accelerationMs2,
+            )
+        }
+    }
+}
+
+private fun List<SavedRunCheckpointResult>.toJsonArray(): JSONArray {
+    val array = JSONArray()
+    forEach { array.put(it.toJsonObject()) }
+    return array
+}
+
+private fun JSONObject.readCheckpointResults(key: String): List<SavedRunCheckpointResult> {
+    if (!has(key) || isNull(key)) {
+        return emptyList()
+    }
+    val array = optJSONArray(key) ?: return emptyList()
+    val results = mutableListOf<SavedRunCheckpointResult>()
+    for (index in 0 until array.length()) {
+        val item = array.optJSONObject(index) ?: continue
+        SavedRunCheckpointResult.fromJsonObject(item)?.let { results += it }
+    }
+    return results
 }
