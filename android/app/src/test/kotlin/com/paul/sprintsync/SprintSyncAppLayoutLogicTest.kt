@@ -78,6 +78,13 @@ class SprintSyncAppLayoutLogicTest {
     }
 
     @Test
+    fun `client flavor shows reconnect-only setup actions`() {
+        assertTrue(shouldShowReconnectOnlySetupActions("client"))
+        assertFalse(shouldShowReconnectOnlySetupActions("host"))
+        assertFalse(shouldShowReconnectOnlySetupActions("none"))
+    }
+
+    @Test
     fun `monitoring reset action shows for host once a run has started`() {
         assertTrue(
             shouldShowMonitoringResetAction(

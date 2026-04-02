@@ -323,7 +323,8 @@ fun SprintSyncApp(
                             onStartSingleDevice = onStartSingleDevice,
                             onStartDisplayHost = onStartDisplayHost,
                             onReconnectClient = onReconnectClient,
-                            showReconnectClientAction = BuildConfig.AUTO_START_ROLE == "client",
+                            showReconnectClientAction =
+                                shouldShowReconnectOnlySetupActions(BuildConfig.AUTO_START_ROLE),
                             hideSingleDeviceAction = uiState.isControllerOnlyHost,
                         )
                     }
@@ -627,18 +628,20 @@ private fun SetupActionsCard(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            PrimaryButton(
-                text = "Host",
-                onClick = onStartHosting,
-                enabled = setupActionsEnabled,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            PrimaryButton(
-                text = "Join",
-                onClick = onStartDiscovery,
-                enabled = setupActionsEnabled,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            if (!showReconnectClientAction) {
+                PrimaryButton(
+                    text = "Host",
+                    onClick = onStartHosting,
+                    enabled = setupActionsEnabled,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                PrimaryButton(
+                    text = "Join",
+                    onClick = onStartDiscovery,
+                    enabled = setupActionsEnabled,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             if (showReconnectClientAction) {
                 PrimaryButton(
                     text = "Reconnect to Pad",
@@ -647,7 +650,7 @@ private fun SetupActionsCard(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            if (!hideSingleDeviceAction) {
+            if (!showReconnectClientAction && !hideSingleDeviceAction) {
                 PrimaryButton(
                     text = "Single Device",
                     onClick = onStartSingleDevice,
@@ -655,12 +658,14 @@ private fun SetupActionsCard(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            PrimaryButton(
-                text = "Display",
-                onClick = onStartDisplayHost,
-                enabled = setupActionsEnabled,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            if (!showReconnectClientAction) {
+                PrimaryButton(
+                    text = "Display",
+                    onClick = onStartDisplayHost,
+                    enabled = setupActionsEnabled,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             if (!permissionGranted) {
                 Text(
                     text = "Camera and network permissions are required.",
@@ -2002,6 +2007,8 @@ private fun EventsCard(recentEvents: List<String>) {
 
 internal fun shouldShowSetupPermissionWarning(permissionGranted: Boolean, deniedPermissions: List<String>): Boolean =
     !permissionGranted && deniedPermissions.isNotEmpty()
+
+internal fun shouldShowReconnectOnlySetupActions(autoStartRole: String): Boolean = autoStartRole == "client"
 
 internal fun shouldShowMonitoringResetAction(
     isHost: Boolean,
