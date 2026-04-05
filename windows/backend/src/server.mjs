@@ -383,9 +383,13 @@ app.post("/api/control/save-results", async (req, res) => {
   try {
     const snapshot = createSnapshot();
     const exportTimestampIso = new Date().toISOString();
+    const athleteName = normalizeAthleteNameForResult(req.body?.athleteName);
+    const notes = String(req.body?.notes ?? "").trim().slice(0, 240);
     const requestedName = String(req.body?.name ?? "").trim();
+    const athleteDateName =
+      athleteName !== null ? `${athleteName}_${formatDateForResultName(exportTimestampIso)}` : "";
     const runSegment = sanitizeFileNameSegment(
-      requestedName || snapshot.session.runId || `run_${Date.now()}`,
+      requestedName || athleteDateName || snapshot.session.runId || `run_${Date.now()}`,
     );
     const timestampSegment = exportTimestampIso.replace(/[:.]/g, "-");
     const fileName = `${runSegment}_${timestampSegment}.json`;
@@ -393,6 +397,10 @@ app.post("/api/control/save-results", async (req, res) => {
 
     const exportPayload = {
       type: "windows_results_export",
+      resultName: runSegment,
+      athleteName,
+      notes: notes || null,
+      namingFormat: "athlete_dd_MM_yyyy",
       exportedAtIso: exportTimestampIso,
       exportedAtMs: Date.now(),
       runId: snapshot.session.runId,
@@ -411,11 +419,49 @@ app.post("/api/control/save-results", async (req, res) => {
     pushEvent("info", `Results saved to ${filePath}`);
     publishState();
 
-    res.json({ ok: true, filePath, savedAtIso: exportTimestampIso });
+    res.json({
+      ok: true,
+      filePath,
+      fileName,
+      resultName: runSegment,
+      athleteName,
+      notes: notes || null,
+      savedAtIso: exportTimestampIso,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown save error";
     pushEvent("error", `Failed to save results: ${message}`);
     publishState();
+    res.status(500).json({ error: message });
+  }
+});
+
+app.get("/api/results", async (_req, res) => {
+  try {
+    const items = await listSavedResultItems();
+    res.json({ ok: true, items });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "failed to list results";
+    res.status(500).json({ error: message });
+  }
+});
+
+app.get("/api/results/:fileName", async (req, res) => {
+  const fileName = String(req.params?.fileName ?? "").trim();
+  if (!isSafeSavedResultsFileName(fileName)) {
+    res.status(400).json({ error: "invalid file name" });
+    return;
+  }
+
+  try {
+    const loaded = await loadSavedResultsFile(fileName);
+    if (!loaded) {
+      res.status(404).json({ error: "saved result not found" });
+      return;
+    }
+    res.json({ ok: true, ...loaded });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "failed to load saved result";
     res.status(500).json({ error: message });
   }
 });
@@ -1214,6 +1260,91 @@ function sanitizeFileNameSegment(rawName) {
     return "results";
   }
   return stripped.slice(0, 80);
+}
+
+function normalizeAthleteNameForResult(rawAthleteName) {
+  const normalized = String(rawAthleteName ?? "").trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  const compacted = normalized.replace(/\s+/g, "_").replace(/[^a-z0-9_-]+/g, "").replace(/^_+|_+$/g, "");
+  if (!compacted) {
+    return null;
+  }
+  return compacted.slice(0, 40);
+}
+
+function formatDateForResultName(rawDate) {
+  const date = new Date(rawDate);
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const year = String(date.getFullYear());
+  return `${day}_${month}_${year}`;
+}
+
+function isSafeSavedResultsFileName(fileName) {
+  return /^[a-zA-Z0-9._-]+\.json$/u.test(fileName);
+}
+
+async function loadSavedResultsFile(fileName) {
+  if (!isSafeSavedResultsFileName(fileName)) {
+    return null;
+  }
+  const filePath = path.join(config.resultsDir, fileName);
+  try {
+    const rawContent = await fs.readFile(filePath, "utf8");
+    const payload = JSON.parse(rawContent);
+    return {
+      fileName,
+      filePath,
+      payload,
+    };
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function summarizeSavedResults(fileName, filePath, payload, stat) {
+  const latestLapResults = Array.isArray(payload?.latestLapResults) ? payload.latestLapResults : [];
+  const bestLap = latestLapResults.find((lap) => Number.isFinite(Number(lap?.elapsedNanos)));
+
+  return {
+    fileName,
+    filePath,
+    resultName: String(payload?.resultName ?? fileName.replace(/\.json$/iu, "")),
+    athleteName: typeof payload?.athleteName === "string" ? payload.athleteName : null,
+    notes: typeof payload?.notes === "string" ? payload.notes : null,
+    runId: typeof payload?.runId === "string" ? payload.runId : null,
+    savedAtIso:
+      typeof payload?.exportedAtIso === "string" && payload.exportedAtIso.length > 0
+        ? payload.exportedAtIso
+        : new Date(stat.mtimeMs).toISOString(),
+    resultCount: latestLapResults.length,
+    bestElapsedNanos: bestLap ? Number(bestLap.elapsedNanos) : null,
+  };
+}
+
+async function listSavedResultItems() {
+  await fs.mkdir(config.resultsDir, { recursive: true });
+  const dirEntries = await fs.readdir(config.resultsDir, { withFileTypes: true });
+  const savedFiles = dirEntries.filter((entry) => entry.isFile() && isSafeSavedResultsFileName(entry.name));
+
+  const items = [];
+  for (const entry of savedFiles) {
+    const filePath = path.join(config.resultsDir, entry.name);
+    try {
+      const [rawContent, stat] = await Promise.all([fs.readFile(filePath, "utf8"), fs.stat(filePath)]);
+      const payload = JSON.parse(rawContent);
+      items.push(summarizeSavedResults(entry.name, filePath, payload, stat));
+    } catch {
+      // Ignore unreadable or malformed files to keep listing resilient.
+    }
+  }
+
+  return items.sort((left, right) => String(right.savedAtIso).localeCompare(String(left.savedAtIso)));
 }
 
 function roleOrderIndex(role) {

@@ -1,0 +1,45 @@
+{
+  "type": "windows_results_export",
+  "resultName": "paul_test_04_04_2026",
+  "athleteName": "paul_test",
+  "notes": "PET style save prompt test",
+  "namingFormat": "athlete_dd_MM_yyyy",
+  "exportedAtIso": "2026-04-04T21:24:37.354Z",
+  "exportedAtMs": 1775337877354,
+  "runId": null,
+  "session": {
+    "stage": "LOBBY",
+    "monitoringActive": false,
+    "monitoringStartedIso": null,
+    "monitoringElapsedMs": 0,
+    "runId": null,
+    "hostStartSensorNanos": null,
+    "hostStopSensorNanos": null,
+    "hostSplitMarks": [],
+    "roleOptions": [
+      "Unassigned",
+      "Start",
+      "Split 1",
+      "Stop"
+    ],
+    "roleAssignments": {},
+    "distanceAssignments": {}
+  },
+  "clients": [],
+  "latestLapResults": [],
+  "lapHistory": [],
+  "recentEvents": [
+    {
+      "id": "event-2",
+      "timestampIso": "2026-04-04T21:23:41.018Z",
+      "level": "info",
+      "message": "HTTP server listening on 0.0.0.0:8787"
+    },
+    {
+      "id": "event-1",
+      "timestampIso": "2026-04-04T21:23:41.017Z",
+      "level": "info",
+      "message": "TCP server listening on 0.0.0.0:9000"
+    }
+  ]
+}
