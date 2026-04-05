@@ -18,6 +18,11 @@ const CLOCK_SYNC_TYPE_REQUEST = 1;
 const CLOCK_SYNC_TYPE_RESPONSE = 2;
 const CLOCK_SYNC_REQUEST_BYTES = 10;
 const CLOCK_SYNC_RESPONSE_BYTES = 26;
+const CLOCK_RESYNC_MIN_SAMPLE_COUNT = 3;
+const CLOCK_RESYNC_MAX_SAMPLE_COUNT = 24;
+const CLOCK_RESYNC_DEFAULT_SAMPLE_COUNT = 8;
+const CLOCK_RESYNC_TARGET_LATENCY_MS = 50;
+const CLOCK_RESYNC_RETRY_DELAY_MS = 1_200;
 
 const EVENT_LIMIT = 300;
 const HISTORY_LIMIT = 1000;
@@ -70,6 +75,7 @@ const startedAtMs = Date.now();
 const clientsByEndpoint = new Map();
 const socketsByEndpoint = new Map();
 const latestLapByEndpoint = new Map();
+const clockResyncLoopsByEndpoint = new Map();
 
 const lapHistory = [];
 const recentEvents = [];
@@ -181,7 +187,24 @@ app.post("/api/control/start-monitoring", (_req, res) => {
   sessionState.hostStopSensorNanos = null;
   sessionState.hostSplitMarks = [];
   resetRunData();
-  pushEvent("info", "Monitoring started", { runId: sessionState.runId });
+  let resyncScheduledCount = 0;
+  for (const endpointId of socketsByEndpoint.keys()) {
+    if (
+      startClockResyncLoopForEndpoint(
+        endpointId,
+        CLOCK_RESYNC_DEFAULT_SAMPLE_COUNT,
+        CLOCK_RESYNC_TARGET_LATENCY_MS,
+      )
+    ) {
+      resyncScheduledCount += 1;
+    }
+  }
+
+  pushEvent("info", "Monitoring started", {
+    runId: sessionState.runId,
+    resyncScheduledCount,
+    targetLatencyMs: CLOCK_RESYNC_TARGET_LATENCY_MS,
+  });
   broadcastProtocolSnapshots();
   broadcastTimelineSnapshot();
   publishState();
@@ -395,6 +418,64 @@ app.post("/api/control/device-config", (req, res) => {
   });
 });
 
+app.post("/api/control/resync-device", (req, res) => {
+  const targetIdRaw = String(req.body?.targetId ?? "").trim();
+  if (!targetIdRaw) {
+    res.status(400).json({ error: "targetId is required" });
+    return;
+  }
+
+  const sampleCountRaw = req.body?.sampleCount;
+  let sampleCount = CLOCK_RESYNC_DEFAULT_SAMPLE_COUNT;
+  if (sampleCountRaw !== null && sampleCountRaw !== undefined) {
+    const parsedSampleCount = normalizeClockResyncSampleCount(sampleCountRaw);
+    if (parsedSampleCount === null) {
+      res.status(400).json({
+        error: `sampleCount must be an integer in the range ${CLOCK_RESYNC_MIN_SAMPLE_COUNT}..${CLOCK_RESYNC_MAX_SAMPLE_COUNT}`,
+      });
+      return;
+    }
+    sampleCount = parsedSampleCount;
+  }
+
+  const targetId = canonicalTargetId(targetIdRaw);
+  const endpointIds = resolveEndpointIdsForTargetId(targetId);
+  if (endpointIds.length === 0) {
+    res.status(404).json({ error: `no connected endpoint for targetId ${targetId}` });
+    return;
+  }
+
+  let dispatchedCount = 0;
+  for (const endpointId of endpointIds) {
+    if (startClockResyncLoopForEndpoint(endpointId, sampleCount, CLOCK_RESYNC_TARGET_LATENCY_MS)) {
+      dispatchedCount += 1;
+    }
+  }
+
+  if (dispatchedCount === 0) {
+    res.status(502).json({ error: `failed to dispatch resync request for targetId ${targetId}` });
+    return;
+  }
+
+  pushEvent("info", `Clock resync requested: ${targetId}`, {
+    targetId,
+    sampleCount,
+    targetLatencyMs: CLOCK_RESYNC_TARGET_LATENCY_MS,
+    endpointCount: endpointIds.length,
+    dispatchedCount,
+  });
+  broadcastProtocolSnapshots();
+  publishState();
+  res.json({
+    ok: true,
+    targetId,
+    sampleCount,
+    targetLatencyMs: CLOCK_RESYNC_TARGET_LATENCY_MS,
+    endpointCount: endpointIds.length,
+    dispatchedCount,
+  });
+});
+
 app.post("/api/control/save-results", async (req, res) => {
   try {
     const snapshot = createSnapshot();
@@ -558,6 +639,7 @@ const tcpServer = net.createServer((socket) => {
   socket.on("close", () => {
     const client = clientsByEndpoint.get(endpointId);
     const stableId = client?.stableDeviceId;
+    stopClockResyncLoopForEndpoint(endpointId);
     socketsByEndpoint.delete(endpointId);
     clientsByEndpoint.delete(endpointId);
     if (!stableId) {
@@ -933,6 +1015,8 @@ function handleDeviceTelemetry(endpointId, decoded) {
     telemetryAnalysisHeight: analysisHeight,
     telemetryTimestampMillis: Math.trunc(timestampMillis),
   });
+
+  tryCompleteClockResyncLoop(endpointId, "telemetry");
 }
 
 function handleLapResult(endpointId, decoded) {
@@ -1091,25 +1175,25 @@ function handleTriggerRequest(endpointId, decoded) {
     return;
   }
 
+  let triggerSensorNanos = null;
+  let mappingFallbackUsed = false;
   const rawMappedHostSensorNanos = decoded.mappedHostSensorNanos;
-  if (rawMappedHostSensorNanos === null || rawMappedHostSensorNanos === undefined) {
-    rejectTriggerRequest(endpointId, "missing host mapping", {
+  if (rawMappedHostSensorNanos !== null && rawMappedHostSensorNanos !== undefined) {
+    const mappedHostSensorNanos = Number(rawMappedHostSensorNanos);
+    if (Number.isFinite(mappedHostSensorNanos)) {
+      triggerSensorNanos = Math.trunc(mappedHostSensorNanos);
+    }
+  }
+  if (triggerSensorNanos === null) {
+    triggerSensorNanos = nowHostSensorNanos();
+    mappingFallbackUsed = true;
+    pushEvent("warn", `Trigger mapping unavailable from ${endpointId}; using host receive timestamp`, {
+      endpointId,
       sourceType: "trigger_request",
       assignedRole,
     });
-    return;
   }
 
-  const mappedHostSensorNanos = Number(rawMappedHostSensorNanos);
-  if (!Number.isFinite(mappedHostSensorNanos)) {
-    rejectTriggerRequest(endpointId, "missing host mapping", {
-      sourceType: "trigger_request",
-      assignedRole,
-    });
-    return;
-  }
-
-  const triggerSensorNanos = Math.trunc(mappedHostSensorNanos);
   if (!applyTriggerToHostTimeline(triggerSpec, triggerSensorNanos)) {
     rejectTriggerRequest(endpointId, "timeline state rejected", {
       sourceType: "trigger_request",
@@ -1123,6 +1207,7 @@ function handleTriggerRequest(endpointId, decoded) {
     endpointId,
     triggerType: triggerSpec.triggerType,
     splitIndex: triggerSpec.splitIndex,
+    mappingFallbackUsed,
   });
   broadcastProtocolTrigger(triggerSpec.triggerType, triggerSensorNanos, triggerSpec.splitIndex);
   broadcastTimelineSnapshot();
@@ -1294,6 +1379,129 @@ function sendDeviceConfigUpdateToEndpoint(endpointId, targetStableDeviceId, sens
     targetStableDeviceId,
     sensitivity: normalizedSensitivity,
   });
+}
+
+function sendClockResyncRequestToEndpoint(endpointId, sampleCount = CLOCK_RESYNC_DEFAULT_SAMPLE_COUNT) {
+  const normalizedSampleCount = normalizeClockResyncSampleCount(sampleCount);
+  if (normalizedSampleCount === null) {
+    return false;
+  }
+  return sendTcpJsonMessage(endpointId, {
+    type: "clock_resync_request",
+    sampleCount: normalizedSampleCount,
+  });
+}
+
+function normalizeClockResyncSampleCount(sampleCount) {
+  const parsed = Number(sampleCount);
+  if (!Number.isInteger(parsed)) {
+    return null;
+  }
+  return Math.min(CLOCK_RESYNC_MAX_SAMPLE_COUNT, Math.max(CLOCK_RESYNC_MIN_SAMPLE_COUNT, parsed));
+}
+
+function stopClockResyncLoopForEndpoint(endpointId) {
+  const existing = clockResyncLoopsByEndpoint.get(endpointId);
+  if (!existing) {
+    return;
+  }
+  if (existing.timerHandle) {
+    clearTimeout(existing.timerHandle);
+  }
+  clockResyncLoopsByEndpoint.delete(endpointId);
+}
+
+function stopAllClockResyncLoops() {
+  for (const endpointId of clockResyncLoopsByEndpoint.keys()) {
+    stopClockResyncLoopForEndpoint(endpointId);
+  }
+}
+
+function tryCompleteClockResyncLoop(endpointId, source) {
+  const loopState = clockResyncLoopsByEndpoint.get(endpointId);
+  if (!loopState) {
+    return;
+  }
+
+  const client = clientsByEndpoint.get(endpointId);
+  const latencyMs = Number(client?.telemetryLatencyMs);
+  if (!Number.isInteger(latencyMs) || latencyMs < 0) {
+    return;
+  }
+  if (latencyMs >= loopState.targetLatencyMs) {
+    return;
+  }
+
+  pushEvent("info", `Clock resync target reached for ${endpointId}`, {
+    endpointId,
+    latencyMs,
+    targetLatencyMs: loopState.targetLatencyMs,
+    attempts: loopState.attempts,
+    source,
+  });
+  stopClockResyncLoopForEndpoint(endpointId);
+}
+
+function startClockResyncLoopForEndpoint(
+  endpointId,
+  sampleCount = CLOCK_RESYNC_DEFAULT_SAMPLE_COUNT,
+  targetLatencyMs = CLOCK_RESYNC_TARGET_LATENCY_MS,
+) {
+  if (!socketsByEndpoint.has(endpointId)) {
+    return false;
+  }
+
+  const normalizedSampleCount = normalizeClockResyncSampleCount(sampleCount);
+  if (normalizedSampleCount === null) {
+    return false;
+  }
+
+  const parsedTargetLatencyMs = Number(targetLatencyMs);
+  const normalizedTargetLatencyMs =
+    Number.isFinite(parsedTargetLatencyMs) && parsedTargetLatencyMs > 0
+      ? Math.trunc(parsedTargetLatencyMs)
+      : CLOCK_RESYNC_TARGET_LATENCY_MS;
+
+  stopClockResyncLoopForEndpoint(endpointId);
+
+  const loopState = {
+    sampleCount: normalizedSampleCount,
+    targetLatencyMs: normalizedTargetLatencyMs,
+    attempts: 0,
+    timerHandle: null,
+  };
+  clockResyncLoopsByEndpoint.set(endpointId, loopState);
+
+  const runAttempt = () => {
+    const current = clockResyncLoopsByEndpoint.get(endpointId);
+    if (!current) {
+      return;
+    }
+    if (!socketsByEndpoint.has(endpointId)) {
+      stopClockResyncLoopForEndpoint(endpointId);
+      return;
+    }
+
+    tryCompleteClockResyncLoop(endpointId, "before_send");
+    if (!clockResyncLoopsByEndpoint.has(endpointId)) {
+      return;
+    }
+
+    if (!sendClockResyncRequestToEndpoint(endpointId, current.sampleCount)) {
+      pushEvent("warn", `Clock resync request send failed for ${endpointId}`, {
+        endpointId,
+        attempts: current.attempts,
+      });
+      stopClockResyncLoopForEndpoint(endpointId);
+      return;
+    }
+
+    current.attempts += 1;
+    current.timerHandle = setTimeout(runAttempt, CLOCK_RESYNC_RETRY_DELAY_MS);
+  };
+
+  runAttempt();
+  return true;
 }
 
 function sanitizeFileNameSegment(rawName) {
@@ -2099,6 +2307,7 @@ function shutdown(signal) {
   for (const context of socketsByEndpoint.values()) {
     context.socket.destroy();
   }
+  stopAllClockResyncLoops();
   socketsByEndpoint.clear();
   clearInterval(monitoringTicker);
 

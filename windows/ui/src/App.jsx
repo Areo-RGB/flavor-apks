@@ -281,6 +281,10 @@ export default function App() {
     updateDeviceConfig(targetId, { cameraFacing }, `device-config-camera:${targetId}`);
   }
 
+  function requestDeviceClockResync(targetId) {
+    postControl("/api/control/resync-device", { targetId }, `device-resync:${targetId}`);
+  }
+
   function updateSensitivityDraft(targetId, rawValue, fallbackSensitivity) {
     setSensitivityDraftByTarget((previous) => ({
       ...previous,
@@ -869,6 +873,7 @@ export default function App() {
                       const cameraActionKey = `device-config-camera:${targetId}`;
                       const sensitivityActionKey = `device-config-sensitivity:${targetId}`;
                       const distanceActionKey = `device-config-distance:${targetId}`;
+                      const resyncActionKey = `device-resync:${targetId}`;
                       const assignedRole = client.assignedRole ?? "Unassigned";
                       const effectiveSensitivity =
                         Number.isInteger(client.sensitivity) && client.sensitivity >= 1 && client.sensitivity <= 100
@@ -957,9 +962,17 @@ export default function App() {
                             </label>
                           </div>
 
-                          <p className="mt-2 text-xs text-slate-500">
-                            Latency: {latencyLabel} · Clock: {syncLabel} · Distance: {formatMeters(client.distanceMeters)}
-                          </p>
+                          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-xs text-slate-500">
+                              Latency: {latencyLabel} · Clock: {syncLabel} · Distance: {formatMeters(client.distanceMeters)}
+                            </p>
+                            <ActionButton
+                              label="Re-Sync"
+                              onClick={() => requestDeviceClockResync(targetId)}
+                              busy={busyAction === resyncActionKey}
+                              variant="secondary"
+                            />
+                          </div>
                         </div>
                       );
                     })}
