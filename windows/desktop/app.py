@@ -71,7 +71,12 @@ def main() -> int:
         )
         return 1
 
-    window = webview.create_window(APP_TITLE, backend_url, width=1280, height=840, min_size=(960, 640))
+    window = webview.create_window(
+        APP_TITLE,
+        backend_url,
+        fullscreen=True,
+        frameless=True,
+    )
 
     def on_window_closing(*_args) -> None:
         stop_backend_process(backend_process)

@@ -631,7 +631,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900">
-      <main className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-4 md:p-6">
+      <main className="flex w-full flex-col gap-4 p-2 md:p-3">
         <header className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>

@@ -11,6 +11,7 @@ import { WebSocketServer } from "ws";
 
 const FRAME_KIND_MESSAGE = 1;
 const FRAME_KIND_BINARY = 2;
+const FRAME_KIND_TELEMETRY_BINARY = 3;
 const MAX_FRAME_BYTES = 1_048_576;
 
 const CLOCK_SYNC_VERSION = 1;
@@ -23,6 +24,14 @@ const CLOCK_RESYNC_MAX_SAMPLE_COUNT = 24;
 const CLOCK_RESYNC_DEFAULT_SAMPLE_COUNT = 8;
 const CLOCK_RESYNC_TARGET_LATENCY_MS = 50;
 const CLOCK_RESYNC_RETRY_DELAY_MS = 1_200;
+
+const TELEMETRY_PAYLOAD_SESSION_TRIGGER_REQUEST = 1;
+const TELEMETRY_PAYLOAD_SESSION_TRIGGER = 2;
+const TELEMETRY_PAYLOAD_SESSION_TIMELINE_SNAPSHOT = 3;
+const TELEMETRY_MISSING_OPTIONAL_LONG = -1n;
+const TELEMETRY_MISSING_OPTIONAL_INT = -1;
+const MAX_SAFE_INT64 = BigInt(Number.MAX_SAFE_INTEGER);
+const MIN_SAFE_INT64 = BigInt(Number.MIN_SAFE_INTEGER);
 
 const EVENT_LIMIT = 300;
 const HISTORY_LIMIT = 1000;
@@ -787,6 +796,12 @@ function handleSocketData(endpointId, chunk) {
       continue;
     }
 
+    if (frameKind === FRAME_KIND_TELEMETRY_BINARY) {
+      messageStats.binaryFrames += 1;
+      handleTelemetryBinaryFrame(endpointId, payload);
+      continue;
+    }
+
     messageStats.parseErrors += 1;
     pushEvent("warn", `Unsupported frame kind ${frameKind} from ${endpointId}`, { endpointId });
   }
@@ -861,6 +876,318 @@ function handleBinaryFrame(endpointId, payload) {
 
   // RESPONSE frames are expected from host to client, not the other way around.
   clockDomainState.ignoredFrames += 1;
+}
+
+function handleTelemetryBinaryFrame(endpointId, payload) {
+  const decoded = decodeTelemetryEnvelope(payload);
+  if (!decoded) {
+    messageStats.parseErrors += 1;
+    pushEvent("warn", `Invalid telemetry envelope from ${endpointId}`, { endpointId });
+    return;
+  }
+
+  if (decoded.type === "trigger_request") {
+    incrementMessageType("telemetry_trigger_request");
+    handleTriggerRequest(endpointId, decoded.message);
+    return;
+  }
+
+  if (decoded.type === "session_trigger") {
+    incrementMessageType("telemetry_session_trigger");
+    handleSessionTrigger(endpointId, decoded.message);
+    return;
+  }
+
+  if (decoded.type === "timeline_snapshot") {
+    // Windows backend is authoritative for timeline state in this mode.
+    incrementMessageType("telemetry_timeline_snapshot");
+    return;
+  }
+
+  messageStats.parseErrors += 1;
+  pushEvent("warn", `Unsupported telemetry payload from ${endpointId}`, { endpointId });
+}
+
+function decodeTelemetryEnvelope(payload) {
+  try {
+    const rootTableAddress = readFlatBufferRootTableAddress(payload);
+    if (rootTableAddress === null) {
+      return null;
+    }
+
+    const payloadTypeAddress = readFlatBufferFieldAddress(payload, rootTableAddress, 0);
+    const payloadAddressField = readFlatBufferFieldAddress(payload, rootTableAddress, 1);
+    if (payloadTypeAddress === null || payloadAddressField === null || payloadTypeAddress + 1 > payload.length) {
+      return null;
+    }
+
+    const payloadType = payload.readUInt8(payloadTypeAddress);
+    const payloadTableAddress = readFlatBufferUOffsetTarget(payload, payloadAddressField);
+    if (payloadTableAddress === null) {
+      return null;
+    }
+
+    if (payloadType === TELEMETRY_PAYLOAD_SESSION_TRIGGER_REQUEST) {
+      const message = decodeTelemetryTriggerRequest(payload, payloadTableAddress);
+      return message ? { type: "trigger_request", message } : null;
+    }
+
+    if (payloadType === TELEMETRY_PAYLOAD_SESSION_TRIGGER) {
+      const message = decodeTelemetrySessionTrigger(payload, payloadTableAddress);
+      return message ? { type: "session_trigger", message } : null;
+    }
+
+    if (payloadType === TELEMETRY_PAYLOAD_SESSION_TIMELINE_SNAPSHOT) {
+      const message = decodeTelemetryTimelineSnapshot(payload, payloadTableAddress);
+      return message ? { type: "timeline_snapshot", message } : null;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeTelemetryTriggerRequest(payload, tableAddress) {
+  const roleAddress = readFlatBufferFieldAddress(payload, tableAddress, 0);
+  const triggerSensorNanosAddress = readFlatBufferFieldAddress(payload, tableAddress, 1);
+  const mappedHostSensorNanosAddress = readFlatBufferFieldAddress(payload, tableAddress, 2);
+  const sourceDeviceIdAddress = readFlatBufferFieldAddress(payload, tableAddress, 3);
+  const sourceElapsedNanosAddress = readFlatBufferFieldAddress(payload, tableAddress, 4);
+  const mappedAnchorElapsedNanosAddress = readFlatBufferFieldAddress(payload, tableAddress, 5);
+
+  if (roleAddress === null || triggerSensorNanosAddress === null || sourceDeviceIdAddress === null) {
+    return null;
+  }
+  if (roleAddress + 1 > payload.length || triggerSensorNanosAddress + 8 > payload.length) {
+    return null;
+  }
+
+  const role = telemetryRoleByteToWireRole(payload.readUInt8(roleAddress));
+  const triggerSensorNanos = readFlatBufferInt64AsNumber(payload, triggerSensorNanosAddress);
+  const sourceDeviceId = readFlatBufferString(payload, sourceDeviceIdAddress);
+  const sourceElapsedNanos =
+    sourceElapsedNanosAddress === null ? 0 : readFlatBufferInt64AsNumber(payload, sourceElapsedNanosAddress);
+  if (!sourceDeviceId || !Number.isFinite(triggerSensorNanos) || !Number.isFinite(sourceElapsedNanos)) {
+    return null;
+  }
+
+  const mappedHostSensorNanos = readOptionalInt64(
+    payload,
+    mappedHostSensorNanosAddress,
+    TELEMETRY_MISSING_OPTIONAL_LONG,
+  );
+  const mappedAnchorElapsedNanos = readOptionalInt64(
+    payload,
+    mappedAnchorElapsedNanosAddress,
+    TELEMETRY_MISSING_OPTIONAL_LONG,
+  );
+
+  return {
+    role,
+    triggerSensorNanos,
+    mappedHostSensorNanos,
+    sourceDeviceId,
+    sourceElapsedNanos,
+    mappedAnchorElapsedNanos,
+  };
+}
+
+function decodeTelemetrySessionTrigger(payload, tableAddress) {
+  const triggerTypeAddress = readFlatBufferFieldAddress(payload, tableAddress, 0);
+  const splitIndexAddress = readFlatBufferFieldAddress(payload, tableAddress, 1);
+  const triggerSensorNanosAddress = readFlatBufferFieldAddress(payload, tableAddress, 2);
+  if (triggerTypeAddress === null || triggerSensorNanosAddress === null) {
+    return null;
+  }
+
+  const triggerType = readFlatBufferString(payload, triggerTypeAddress);
+  const triggerSensorNanos = readFlatBufferInt64AsNumber(payload, triggerSensorNanosAddress);
+  if (!triggerType || !Number.isFinite(triggerSensorNanos)) {
+    return null;
+  }
+
+  let splitIndex = null;
+  if (splitIndexAddress !== null) {
+    if (splitIndexAddress + 4 > payload.length) {
+      return null;
+    }
+    const decodedSplitIndex = payload.readInt32LE(splitIndexAddress);
+    splitIndex = decodedSplitIndex === TELEMETRY_MISSING_OPTIONAL_INT ? null : decodedSplitIndex;
+  }
+
+  return {
+    triggerType,
+    splitIndex,
+    triggerSensorNanos,
+  };
+}
+
+function decodeTelemetryTimelineSnapshot(payload, tableAddress) {
+  const startAddress = readFlatBufferFieldAddress(payload, tableAddress, 0);
+  const stopAddress = readFlatBufferFieldAddress(payload, tableAddress, 1);
+  const splitMarksVectorAddress = readFlatBufferFieldAddress(payload, tableAddress, 2);
+  const sentElapsedAddress = readFlatBufferFieldAddress(payload, tableAddress, 3);
+
+  const hostStartSensorNanos = readOptionalInt64(payload, startAddress, TELEMETRY_MISSING_OPTIONAL_LONG);
+  const hostStopSensorNanos = readOptionalInt64(payload, stopAddress, TELEMETRY_MISSING_OPTIONAL_LONG);
+  const sentElapsedNanos = sentElapsedAddress === null ? 0 : readFlatBufferInt64AsNumber(payload, sentElapsedAddress);
+  if (!Number.isFinite(sentElapsedNanos)) {
+    return null;
+  }
+
+  const hostSplitMarks = [];
+  if (splitMarksVectorAddress !== null) {
+    const vectorAddress = readFlatBufferUOffsetTarget(payload, splitMarksVectorAddress);
+    if (vectorAddress === null || vectorAddress + 4 > payload.length) {
+      return null;
+    }
+    const vectorLength = payload.readUInt32LE(vectorAddress);
+    for (let index = 0; index < vectorLength; index += 1) {
+      const elementOffsetAddress = vectorAddress + 4 + index * 4;
+      const splitMarkTableAddress = readFlatBufferUOffsetTarget(payload, elementOffsetAddress);
+      if (splitMarkTableAddress === null) {
+        continue;
+      }
+
+      const roleAddress = readFlatBufferFieldAddress(payload, splitMarkTableAddress, 0);
+      const sensorAddress = readFlatBufferFieldAddress(payload, splitMarkTableAddress, 1);
+      if (roleAddress === null || sensorAddress === null || roleAddress + 1 > payload.length) {
+        continue;
+      }
+      const role = telemetryRoleByteToWireRole(payload.readUInt8(roleAddress));
+      const hostSensorNanos = readFlatBufferInt64AsNumber(payload, sensorAddress);
+      if (!Number.isFinite(hostSensorNanos)) {
+        continue;
+      }
+      hostSplitMarks.push({ role, hostSensorNanos });
+    }
+  }
+
+  return {
+    hostStartSensorNanos,
+    hostStopSensorNanos,
+    hostSplitMarks,
+    sentElapsedNanos,
+  };
+}
+
+function readOptionalInt64(payload, fieldAddress, missingValue) {
+  if (fieldAddress === null) {
+    return null;
+  }
+  if (fieldAddress + 8 > payload.length) {
+    return null;
+  }
+  const value = payload.readBigInt64LE(fieldAddress);
+  if (value === missingValue) {
+    return null;
+  }
+  return safeInt64ToNumber(value);
+}
+
+function readFlatBufferRootTableAddress(payload) {
+  if (payload.length < 4) {
+    return null;
+  }
+  const rootAddress = payload.readUInt32LE(0);
+  if (rootAddress < 0 || rootAddress >= payload.length) {
+    return null;
+  }
+  return rootAddress;
+}
+
+function readFlatBufferFieldAddress(payload, tableAddress, fieldIndex) {
+  if (tableAddress + 4 > payload.length) {
+    return null;
+  }
+  const vtableOffset = payload.readInt32LE(tableAddress);
+  const vtableAddress = tableAddress - vtableOffset;
+  if (vtableAddress < 0 || vtableAddress + 4 > payload.length) {
+    return null;
+  }
+  const vtableLength = payload.readUInt16LE(vtableAddress);
+  const fieldOffsetAddress = vtableAddress + 4 + fieldIndex * 2;
+  if (fieldOffsetAddress + 2 > vtableAddress + vtableLength || fieldOffsetAddress + 2 > payload.length) {
+    return null;
+  }
+  const fieldOffset = payload.readUInt16LE(fieldOffsetAddress);
+  if (fieldOffset === 0) {
+    return null;
+  }
+  const fieldAddress = tableAddress + fieldOffset;
+  if (fieldAddress < 0 || fieldAddress >= payload.length) {
+    return null;
+  }
+  return fieldAddress;
+}
+
+function readFlatBufferUOffsetTarget(payload, offsetAddress) {
+  if (offsetAddress + 4 > payload.length) {
+    return null;
+  }
+  const relativeOffset = payload.readUInt32LE(offsetAddress);
+  const targetAddress = offsetAddress + relativeOffset;
+  if (targetAddress < 0 || targetAddress >= payload.length) {
+    return null;
+  }
+  return targetAddress;
+}
+
+function readFlatBufferString(payload, offsetAddress) {
+  const stringAddress = readFlatBufferUOffsetTarget(payload, offsetAddress);
+  if (stringAddress === null || stringAddress + 4 > payload.length) {
+    return null;
+  }
+  const length = payload.readUInt32LE(stringAddress);
+  const valueStart = stringAddress + 4;
+  const valueEnd = valueStart + length;
+  if (valueEnd > payload.length) {
+    return null;
+  }
+  return payload.toString("utf8", valueStart, valueEnd);
+}
+
+function readFlatBufferInt64AsNumber(payload, fieldAddress) {
+  if (fieldAddress + 8 > payload.length) {
+    return Number.NaN;
+  }
+  return safeInt64ToNumber(payload.readBigInt64LE(fieldAddress));
+}
+
+function safeInt64ToNumber(value) {
+  if (value > MAX_SAFE_INT64) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  if (value < MIN_SAFE_INT64) {
+    return Number.MIN_SAFE_INTEGER;
+  }
+  return Number(value);
+}
+
+function telemetryRoleByteToWireRole(roleByte) {
+  if (roleByte === 1) {
+    return "start";
+  }
+  if (roleByte === 2) {
+    return "split1";
+  }
+  if (roleByte === 3) {
+    return "split2";
+  }
+  if (roleByte === 4) {
+    return "split3";
+  }
+  if (roleByte === 5) {
+    return "split4";
+  }
+  if (roleByte === 6) {
+    return "stop";
+  }
+  if (roleByte === 7) {
+    return "display";
+  }
+  return "unassigned";
 }
 
 function handleClockSyncRequest(endpointId, payload) {
