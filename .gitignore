@@ -1,4 +1,11 @@
 # Miscellaneous
+.agents/
+.claude/
+.claude/skills
+.agents/skills
+
+
+
 *.class
 *.log
 *.pyc
@@ -29,7 +36,7 @@ migrate_working_dir/
 .env
 # Symbolication related
 app.*.symbols
-
+.gitnexus
 # Obfuscation related
 app.*.map.json
 .agents .claude .github .codex .gitnexus .idea .serena .vscode openspec .gitignore
@@ -50,3 +57,4 @@ windows/backend/dist
 windows/desktop/dist
 windows/desktop/build
 windows/ui/dist
+.agents

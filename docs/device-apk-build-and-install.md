@@ -49,3 +49,11 @@ adb -s <xiaomi-client-serial> install -r android/app/build/outputs/apk/clientXia
 - Xiaomi pad (host) must be reachable at `192.168.0.103` (DHCP reservation recommended).
 - All devices must be on the same LAN subnet.
 - AP/client isolation must be disabled.
+
+## Wi-Fi Latency Lock Behavior
+
+- During `NETWORK_RACE` with active `MONITORING`, the app acquires a Wi-Fi lock to reduce radio sleep jitter.
+- Android 10+ (API 29+) requests low-latency mode (`WIFI_MODE_FULL_LOW_LATENCY`).
+- Android 9 and below fall back to high-performance mode (`WIFI_MODE_FULL_HIGH_PERF`).
+- The lock remains held while monitoring is active, even if the app goes to background.
+- The lock is released when monitoring is stopped or when the activity is destroyed.

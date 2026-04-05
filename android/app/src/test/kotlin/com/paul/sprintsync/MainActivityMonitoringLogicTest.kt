@@ -3,6 +3,7 @@ package com.paul.sprintsync
 import com.paul.sprintsync.core.models.SavedRunResult
 import com.paul.sprintsync.core.services.SessionConnectionEvent
 import com.paul.sprintsync.features.race_session.SessionDeviceRole
+import com.paul.sprintsync.features.race_session.SessionStage
 import com.paul.sprintsync.features.race_session.SessionOperatingMode
 import com.paul.sprintsync.features.race_session.SessionSplitMark
 import com.paul.sprintsync.features.race_session.SessionNetworkRole
@@ -199,6 +200,52 @@ class MainActivityMonitoringLogicTest {
         )
 
         assertEquals(LocalCaptureAction.START, action)
+    }
+
+    @Test
+    fun `wifi lock policy enables only for active network race monitoring`() {
+        assertTrue(
+            shouldHoldMonitoringWifiLock(
+                operatingMode = SessionOperatingMode.NETWORK_RACE,
+                stage = SessionStage.MONITORING,
+                monitoringActive = true,
+            ),
+        )
+        assertFalse(
+            shouldHoldMonitoringWifiLock(
+                operatingMode = SessionOperatingMode.NETWORK_RACE,
+                stage = SessionStage.LOBBY,
+                monitoringActive = true,
+            ),
+        )
+        assertFalse(
+            shouldHoldMonitoringWifiLock(
+                operatingMode = SessionOperatingMode.NETWORK_RACE,
+                stage = SessionStage.MONITORING,
+                monitoringActive = false,
+            ),
+        )
+        assertFalse(
+            shouldHoldMonitoringWifiLock(
+                operatingMode = SessionOperatingMode.SINGLE_DEVICE,
+                stage = SessionStage.MONITORING,
+                monitoringActive = true,
+            ),
+        )
+        assertFalse(
+            shouldHoldMonitoringWifiLock(
+                operatingMode = SessionOperatingMode.DISPLAY_HOST,
+                stage = SessionStage.MONITORING,
+                monitoringActive = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `wifi lock mode prefers low latency on api 29 plus with high perf fallback`() {
+        assertEquals(MonitoringWifiLockMode.HIGH_PERF, selectMonitoringWifiLockMode(apiLevel = 28))
+        assertEquals(MonitoringWifiLockMode.LOW_LATENCY, selectMonitoringWifiLockMode(apiLevel = 29))
+        assertEquals(MonitoringWifiLockMode.LOW_LATENCY, selectMonitoringWifiLockMode(apiLevel = 35))
     }
 
     @Test

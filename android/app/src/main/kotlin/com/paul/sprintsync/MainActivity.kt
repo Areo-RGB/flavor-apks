@@ -3,6 +3,7 @@ package com.paul.sprintsync
 import android.Manifest
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.os.Build
 import android.provider.Settings
@@ -66,6 +67,8 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         private const val MAX_PENDING_LAPS = 100
         private const val LOCAL_CAPTURE_RETRY_BACKOFF_MS = 1_500L
         private const val LOCAL_CAPTURE_FRAME_WATCHDOG_MS = 2_500L
+        private const val LOW_LATENCY_WIFI_MIN_API = 29
+        private const val MONITORING_WIFI_LOCK_TAG = "SprintSyncMonitoringWifiLock"
     }
 
     private lateinit var sensorNativeController: SensorNativeController
@@ -97,6 +100,8 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     private var lastAnalysisHeight: Int? = null
     private var localCaptureWatchdogRestartRunId: String? = null
     private var lastCaptureDebugKey: String? = null
+    private var monitoringWifiLock: WifiManager.WifiLock? = null
+    private var monitoringWifiLockMode: MonitoringWifiLockMode? = null
     private val isControllerOnlyHost: Boolean
         get() = BuildConfig.HOST_CONTROLLER_ONLY && BuildConfig.AUTO_START_ROLE == "host"
 
@@ -787,6 +792,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
     override fun onDestroy() {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         stopTimerRefreshLoop()
+        releaseMonitoringWifiLock()
         connectionsManager.stopAll()
         connectionsManager.setEventListener(null)
         sensorNativeController.setEventListener(null)
@@ -1149,6 +1155,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         val clockState = raceSessionController.clockState.value
         val motionBefore = motionDetectionController.uiState.value
         val mode = raceState.operatingMode
+        syncMonitoringWifiLock(raceState)
         applyRequestedOrientationForMode(mode)
         val shouldRunLocalCapture = shouldRunLocalMonitoring()
         val startRetryBlocked = SystemClock.elapsedRealtime() < localCaptureRetryBlockedUntilMs
@@ -1501,6 +1508,75 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         }
     }
 
+    private fun syncMonitoringWifiLock(raceState: RaceSessionUiState) {
+        val shouldHoldLock = shouldHoldMonitoringWifiLock(
+            operatingMode = raceState.operatingMode,
+            stage = raceState.stage,
+            monitoringActive = raceState.monitoringActive,
+        )
+        if (!shouldHoldLock) {
+            releaseMonitoringWifiLock()
+            return
+        }
+
+        val desiredMode = selectMonitoringWifiLockMode(
+            apiLevel = Build.VERSION.SDK_INT,
+            lowLatencyMinApi = LOW_LATENCY_WIFI_MIN_API,
+        )
+        if (monitoringWifiLock == null || monitoringWifiLockMode != desiredMode) {
+            releaseMonitoringWifiLock()
+            val wifiManager = applicationContext.getSystemService(WifiManager::class.java)
+            if (wifiManager == null) {
+                logRuntimeDiagnostic("wifi lock unavailable: wifi manager missing")
+                return
+            }
+            monitoringWifiLock = wifiManager.createWifiLock(
+                wifiLockModeValue(desiredMode),
+                MONITORING_WIFI_LOCK_TAG,
+            ).apply {
+                setReferenceCounted(false)
+            }
+            monitoringWifiLockMode = desiredMode
+        }
+
+        val lock = monitoringWifiLock ?: return
+        if (lock.isHeld) {
+            return
+        }
+        runCatching {
+            lock.acquire()
+        }.onSuccess {
+            logRuntimeDiagnostic("wifi lock acquired: ${desiredMode.name.lowercase()}")
+        }.onFailure { error ->
+            logRuntimeDiagnostic("wifi lock acquire failed: ${error.localizedMessage ?: "unknown"}")
+            monitoringWifiLock = null
+            monitoringWifiLockMode = null
+        }
+    }
+
+    private fun releaseMonitoringWifiLock() {
+        val lock = monitoringWifiLock
+        if (lock != null && lock.isHeld) {
+            runCatching {
+                lock.release()
+            }.onSuccess {
+                logRuntimeDiagnostic("wifi lock released")
+            }.onFailure { error ->
+                logRuntimeDiagnostic("wifi lock release failed: ${error.localizedMessage ?: "unknown"}")
+            }
+        }
+        monitoringWifiLock = null
+        monitoringWifiLockMode = null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun wifiLockModeValue(mode: MonitoringWifiLockMode): Int {
+        return when (mode) {
+            MonitoringWifiLockMode.LOW_LATENCY -> WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            MonitoringWifiLockMode.HIGH_PERF -> WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        }
+    }
+
     private fun appendEvent(message: String) {
         val previous = uiState.value.recentEvents
         val updated = (listOf(message) + previous).take(10)
@@ -1741,6 +1817,32 @@ internal fun resolveLocalCaptureAction(
         return LocalCaptureAction.STOP
     }
     return LocalCaptureAction.NONE
+}
+
+internal enum class MonitoringWifiLockMode {
+    LOW_LATENCY,
+    HIGH_PERF,
+}
+
+internal fun shouldHoldMonitoringWifiLock(
+    operatingMode: SessionOperatingMode,
+    stage: SessionStage,
+    monitoringActive: Boolean,
+): Boolean {
+    return operatingMode == SessionOperatingMode.NETWORK_RACE &&
+        stage == SessionStage.MONITORING &&
+        monitoringActive
+}
+
+internal fun selectMonitoringWifiLockMode(
+    apiLevel: Int,
+    lowLatencyMinApi: Int = 29,
+): MonitoringWifiLockMode {
+    return if (apiLevel >= lowLatencyMinApi) {
+        MonitoringWifiLockMode.LOW_LATENCY
+    } else {
+        MonitoringWifiLockMode.HIGH_PERF
+    }
 }
 
 internal fun shouldKeepTimerRefreshActive(
