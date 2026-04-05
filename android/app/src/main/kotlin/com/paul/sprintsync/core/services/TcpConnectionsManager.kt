@@ -82,6 +82,7 @@ class TcpConnectionsManager(
                 while (!socket.isClosed) {
                     try {
                         val client = socket.accept()
+                        client.tcpNoDelay = true
                         val endpointId = endpointIdForSocket(client)
                         if (activeStrategy == SessionConnectionStrategy.POINT_TO_POINT && connectedSockets.isNotEmpty()) {
                             client.close()
@@ -147,6 +148,7 @@ class TcpConnectionsManager(
         ioExecutor.execute {
             try {
                 val socket = Socket(targetHost, hostPort)
+                socket.tcpNoDelay = true
                 val connectedId = endpointIdForSocket(socket)
                 connectedSockets[connectedId] = socket
                 endpointNamesById[connectedId] = endpointId

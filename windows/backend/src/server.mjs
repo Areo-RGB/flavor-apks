@@ -606,6 +606,7 @@ const monitoringTicker = setInterval(() => {
 
 const tcpServer = net.createServer((socket) => {
   const endpointId = `${socket.remoteAddress ?? "unknown"}:${socket.remotePort ?? 0}`;
+  socket.setNoDelay(true);
 
   socketsByEndpoint.set(endpointId, {
     endpointId,

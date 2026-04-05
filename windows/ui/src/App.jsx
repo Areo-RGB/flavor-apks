@@ -32,9 +32,48 @@ function formatMeters(distanceMeters) {
   return `${distanceMeters.toFixed(2)} m`;
 }
 
-function formatSpeed(speedMps) {
+function formatSpeedWithUnit(speedMps, speedUnit = "kmh") {
   if (!Number.isFinite(speedMps) || speedMps < 0) return "-";
-  return `${speedMps.toFixed(2)} m/s`;
+  if (speedUnit === "mps") {
+    return `${speedMps.toFixed(2)} m/s`;
+  }
+  return `${(speedMps * 3.6).toFixed(2)} km/h`;
+}
+
+function formatAcceleration(accelerationMps2) {
+  if (!Number.isFinite(accelerationMps2)) return "-";
+  return `${accelerationMps2.toFixed(2)} m/s^2`;
+}
+
+function buildMonitoringPointRows(lapResults) {
+  let previousSpeedMps = 0;
+  return (Array.isArray(lapResults) ? lapResults : []).map((lap) => {
+    const pointSpeedMps = Number.isFinite(lap.lapSpeedMps) && lap.lapSpeedMps >= 0 ? lap.lapSpeedMps : null;
+    const parsedLapElapsedNanos =
+      Number.isFinite(lap.lapElapsedNanos) && lap.lapElapsedNanos > 0
+        ? lap.lapElapsedNanos
+        : Number.isFinite(lap.elapsedNanos) && lap.elapsedNanos > 0
+          ? lap.elapsedNanos
+          : null;
+
+    let accelerationMps2 = null;
+    if (pointSpeedMps !== null && parsedLapElapsedNanos !== null) {
+      const deltaSeconds = parsedLapElapsedNanos / 1_000_000_000;
+      if (deltaSeconds > 0) {
+        accelerationMps2 = (pointSpeedMps - previousSpeedMps) / deltaSeconds;
+      }
+    }
+
+    if (pointSpeedMps !== null) {
+      previousSpeedMps = pointSpeedMps;
+    }
+
+    return {
+      lap,
+      pointSpeedMps,
+      accelerationMps2,
+    };
+  });
 }
 
 function formatIsoTime(isoValue) {
@@ -153,6 +192,7 @@ export default function App() {
   const [sensitivityDraftByTarget, setSensitivityDraftByTarget] = useState({});
   const [distanceDraftByTarget, setDistanceDraftByTarget] = useState({});
   const [activeTab, setActiveTab] = useState("live");
+  const [speedUnit, setSpeedUnit] = useState("kmh");
   const [savedResults, setSavedResults] = useState([]);
   const [savedResultsLoading, setSavedResultsLoading] = useState(false);
   const [savedResultLoading, setSavedResultLoading] = useState(false);
@@ -511,6 +551,13 @@ export default function App() {
     ? selectedSavedPayload.latestLapResults
     : [];
 
+  const savedMonitoringPointRows = useMemo(
+    () => buildMonitoringPointRows(savedLatestLapResults),
+    [savedLatestLapResults],
+  );
+
+  const monitoringPointRows = useMemo(() => buildMonitoringPointRows(latestLapResults), [latestLapResults]);
+
   useEffect(() => {
     if (hostStartSensorNanos === null) {
       raceClockBaseMsRef.current = null;
@@ -576,6 +623,10 @@ export default function App() {
       return hostStopSensorNanos !== null;
     }
     return firedSplitRoles.has(roleLabel);
+  }
+
+  function toggleSpeedUnit() {
+    setSpeedUnit((previous) => (previous === "kmh" ? "mps" : "kmh"));
   }
 
   return (
@@ -712,31 +763,28 @@ export default function App() {
                         <table className="min-w-full text-left text-sm">
                           <thead className="text-xs uppercase tracking-wide text-slate-500">
                             <tr>
-                              <th className="pb-2 pr-3">Rank</th>
-                              <th className="pb-2 pr-3">Device</th>
-                              <th className="pb-2 pr-3">Role</th>
-                              <th className="pb-2 pr-3">Elapsed</th>
-                              <th className="pb-2 pr-3">Lap</th>
                               <th className="pb-2 pr-3">Distance</th>
-                              <th className="pb-2 pr-3">Lap Speed</th>
-                              <th className="pb-2">Avg Speed</th>
+                              <th className="pb-2 pr-3">Time</th>
+                              <th className="pb-2 pr-3">Speed ({speedUnit === "kmh" ? "km/h" : "m/s"})</th>
+                              <th className="pb-2">Acceleration (m/s^2)</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
-                            {savedLatestLapResults.map((lap, index) => {
-                              const lapElapsedNanos = Number.isFinite(lap.lapElapsedNanos)
-                                ? lap.lapElapsedNanos
-                                : lap.elapsedNanos;
+                            {savedMonitoringPointRows.map(({ lap, pointSpeedMps, accelerationMps2 }, index) => {
                               return (
                                 <tr key={lap.id ?? `${lap.roleLabel ?? "lap"}-${index}`}>
-                                  <td className="py-2 pr-3 font-semibold text-slate-700">{index + 1}</td>
-                                  <td className="py-2 pr-3 text-slate-900">{lap.senderDeviceName ?? "-"}</td>
-                                  <td className="py-2 pr-3 text-slate-700">{lap.roleLabel ?? "-"}</td>
-                                  <td className="py-2 pr-3 font-mono text-slate-900">{formatDurationNanos(lap.elapsedNanos)}</td>
-                                  <td className="py-2 pr-3 font-mono text-slate-700">{formatDurationNanos(lapElapsedNanos)}</td>
                                   <td className="py-2 pr-3 text-slate-700">{formatMeters(lap.distanceMeters)}</td>
-                                  <td className="py-2 pr-3 text-slate-700">{formatSpeed(lap.lapSpeedMps)}</td>
-                                  <td className="py-2 text-slate-700">{formatSpeed(lap.averageSpeedMps)}</td>
+                                  <td className="py-2 pr-3 font-mono text-slate-900">{formatDurationNanos(lap.elapsedNanos)}</td>
+                                  <td className="py-2 pr-3 text-slate-700">
+                                    <button
+                                      type="button"
+                                      onClick={toggleSpeedUnit}
+                                      className="font-mono underline decoration-dotted underline-offset-2"
+                                    >
+                                      {formatSpeedWithUnit(pointSpeedMps, speedUnit)}
+                                    </button>
+                                  </td>
+                                  <td className="py-2 text-slate-700">{formatAcceleration(accelerationMps2)}</td>
                                 </tr>
                               );
                             })}
@@ -982,7 +1030,7 @@ export default function App() {
 
               <Card
                 title={monitoringActive ? "Monitoring Results" : "Latest Lap Results"}
-                subtitle="Timing, configured distance, and computed lap speed"
+                subtitle="Distance checkpoints with time, speed at point, and acceleration"
               >
                 {latestLapResults.length === 0 ? (
                   <p className="text-sm text-slate-500">
@@ -993,33 +1041,28 @@ export default function App() {
                     <table className="min-w-full text-left text-sm">
                       <thead className="text-xs uppercase tracking-wide text-slate-500">
                         <tr>
-                          <th className="pb-2 pr-3">Rank</th>
-                          <th className="pb-2 pr-3">Device</th>
-                          <th className="pb-2 pr-3">Role</th>
-                          <th className="pb-2 pr-3">Elapsed</th>
-                          <th className="pb-2 pr-3">Lap</th>
                           <th className="pb-2 pr-3">Distance</th>
-                          <th className="pb-2 pr-3">Lap Speed</th>
-                          <th className="pb-2">Avg Speed</th>
+                          <th className="pb-2 pr-3">Time</th>
+                          <th className="pb-2 pr-3">Speed ({speedUnit === "kmh" ? "km/h" : "m/s"})</th>
+                          <th className="pb-2">Acceleration (m/s^2)</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {latestLapResults.map((lap, index) => {
-                          const matchingClient = clients.find(
-                            (client) => client.endpointId === lap.endpointId || client.roleTarget === lap.endpointId,
-                          );
-                          const roleLabel = lap.roleLabel ?? matchingClient?.assignedRole ?? "Unassigned";
-                          const lapElapsedNanos = Number.isFinite(lap.lapElapsedNanos) ? lap.lapElapsedNanos : lap.elapsedNanos;
+                        {monitoringPointRows.map(({ lap, pointSpeedMps, accelerationMps2 }) => {
                           return (
                             <tr key={lap.id}>
-                              <td className="py-2 pr-3 font-semibold text-slate-700">{index + 1}</td>
-                              <td className="py-2 pr-3 text-slate-900">{lap.senderDeviceName}</td>
-                              <td className="py-2 pr-3 text-slate-700">{roleLabel}</td>
-                              <td className="py-2 pr-3 font-mono text-slate-900">{formatDurationNanos(lap.elapsedNanos)}</td>
-                              <td className="py-2 pr-3 font-mono text-slate-700">{formatDurationNanos(lapElapsedNanos)}</td>
                               <td className="py-2 pr-3 text-slate-700">{formatMeters(lap.distanceMeters)}</td>
-                              <td className="py-2 pr-3 text-slate-700">{formatSpeed(lap.lapSpeedMps)}</td>
-                              <td className="py-2 text-slate-700">{formatSpeed(lap.averageSpeedMps)}</td>
+                              <td className="py-2 pr-3 font-mono text-slate-900">{formatDurationNanos(lap.elapsedNanos)}</td>
+                              <td className="py-2 pr-3 text-slate-700">
+                                <button
+                                  type="button"
+                                  onClick={toggleSpeedUnit}
+                                  className="font-mono underline decoration-dotted underline-offset-2"
+                                >
+                                  {formatSpeedWithUnit(pointSpeedMps, speedUnit)}
+                                </button>
+                              </td>
+                              <td className="py-2 text-slate-700">{formatAcceleration(accelerationMps2)}</td>
                             </tr>
                           );
                         })}
