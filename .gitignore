@@ -1,11 +1,9 @@
 # Miscellaneous
 .agents/
 .claude/
-.claude/skills
-.agents/skills
-
-
-
+.codex/
+.github/
+.gitnexus/
 *.class
 *.log
 *.pyc
@@ -46,6 +44,10 @@ app.*.map.json
 /android/app/release
 /android/build/
 /android/app/build/
+# Root Gradle build output (android module has its own .gitignore)
+/build/
+/.gradle/
+/gradle/wrapper/gradle-wrapper.jar
 .gitnexus
 .claude/
 .serena/

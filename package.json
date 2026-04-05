@@ -1,6 +1,7 @@
 {
   "name": "sprint-sync-tools",
   "private": true,
+
   "scripts": {
     "build:debug:apk": "cd /mnt/c/Users/paul/projects/photo-finish-tcp-device-apks/android && cmd.exe /c gradlew.bat :app:assembleDebug",
     "build:debug:device-flavors": "cd /mnt/c/Users/paul/projects/photo-finish-tcp-device-apks/android && cmd.exe /c gradlew.bat :app:assembleHostXiaomiDebug :app:assembleClientPixelDebug :app:assembleClientOneplusDebug :app:assembleClientHuaweiDebug :app:assembleClientXiaomiDebug",
