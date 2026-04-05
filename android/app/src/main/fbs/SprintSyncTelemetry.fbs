@@ -1,0 +1,51 @@
+namespace SprintSync.Schema;
+
+enum SessionDeviceRole : byte {
+  UNASSIGNED = 0,
+  START = 1,
+  SPLIT1 = 2,
+  SPLIT2 = 3,
+  SPLIT3 = 4,
+  SPLIT4 = 5,
+  STOP = 6,
+  DISPLAY = 7
+}
+
+table SessionSplitMark {
+  role: SessionDeviceRole = UNASSIGNED;
+  hostSensorNanos: long;
+}
+
+table SessionTriggerRequest {
+  role: SessionDeviceRole = UNASSIGNED;
+  triggerSensorNanos: long;
+  mappedHostSensorNanos: long = -1;
+  sourceDeviceId: string (required);
+  sourceElapsedNanos: long;
+  mappedAnchorElapsedNanos: long = -1;
+}
+
+table SessionTrigger {
+  triggerType: string (required);
+  splitIndex: int = -1;
+  triggerSensorNanos: long;
+}
+
+table SessionTimelineSnapshot {
+  hostStartSensorNanos: long = -1;
+  hostStopSensorNanos: long = -1;
+  hostSplitMarks: [SessionSplitMark];
+  sentElapsedNanos: long;
+}
+
+union TelemetryPayload {
+  SessionTriggerRequest,
+  SessionTrigger,
+  SessionTimelineSnapshot
+}
+
+table TelemetryEnvelope {
+  payload: TelemetryPayload;
+}
+
+root_type TelemetryEnvelope;

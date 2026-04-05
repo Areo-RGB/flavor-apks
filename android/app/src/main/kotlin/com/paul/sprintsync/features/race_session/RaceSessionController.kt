@@ -27,6 +27,11 @@ typealias RaceSessionSendClockSyncPayload = (
     payloadBytes: ByteArray,
     onComplete: (Result<Unit>) -> Unit,
 ) -> Unit
+typealias RaceSessionSendTelemetryPayload = (
+    endpointId: String,
+    payloadBytes: ByteArray,
+    onComplete: (Result<Unit>) -> Unit,
+) -> Unit
 typealias RaceSessionClockSyncDelay = suspend (delayMillis: Long) -> Unit
 
 private enum class ClockSyncBurstReason {
@@ -104,6 +109,11 @@ class RaceSessionController(
     private val saveLastRun: RaceSessionSaveLastRun,
     private val sendMessage: RaceSessionSendMessage,
     private val sendClockSyncPayload: RaceSessionSendClockSyncPayload,
+    private val sendTelemetryPayload: RaceSessionSendTelemetryPayload = { endpointId, payloadBytes, onComplete ->
+        val payload = String(payloadBytes, StandardCharsets.ISO_8859_1)
+        sendMessage(endpointId, payload, onComplete)
+    },
+    private val enableBinaryTelemetry: Boolean = false,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val nowElapsedNanos: () -> Long = { ClockDomain.nowElapsedNanos() },
     private val clockSyncDelay: RaceSessionClockSyncDelay = { delayMillis -> kotlinx.coroutines.delay(delayMillis) },
@@ -136,6 +146,10 @@ class RaceSessionController(
         saveLastRun = saveLastRun,
         sendMessage = sendMessage,
         sendClockSyncPayload = { endpointId, payloadBytes, onComplete ->
+            val payload = String(payloadBytes, StandardCharsets.ISO_8859_1)
+            sendMessage(endpointId, payload, onComplete)
+        },
+        sendTelemetryPayload = { endpointId, payloadBytes, onComplete ->
             val payload = String(payloadBytes, StandardCharsets.ISO_8859_1)
             sendMessage(endpointId, payload, onComplete)
         },
@@ -554,6 +568,10 @@ class RaceSessionController(
                 onClockSyncSampleReceived(endpointId = event.endpointId, sample = event.sample)
             }
 
+            is SessionConnectionEvent.TelemetryPayloadReceived -> {
+                handleIncomingTelemetryPayload(endpointId = event.endpointId, payloadBytes = event.payloadBytes)
+            }
+
             is SessionConnectionEvent.Error -> {
                 _uiState.value = _uiState.value.copy(lastError = event.message, lastEvent = "error")
             }
@@ -763,10 +781,14 @@ class RaceSessionController(
                 sourceDeviceId = localDeviceId,
                 sourceElapsedNanos = sourceElapsedNanos,
                 mappedAnchorElapsedNanos = null,
-            ).toJsonString()
+            )
             val mappedState = if (mappedHostSensorNanos != null) "present" else "missing"
             _uiState.value = _uiState.value.copy(lastEvent = "trigger_request_sent_${roleLabel}_mapped_$mappedState")
-            sendToHost(request)
+            if (enableBinaryTelemetry) {
+                sendTelemetryToHost(TelemetryEnvelopeFlatBufferCodec.encodeTriggerRequest(request))
+            } else {
+                sendToHost(request.toJsonString())
+            }
         }
     }
 
@@ -910,8 +932,12 @@ class RaceSessionController(
             triggerType = triggerType,
             splitIndex = splitIndex.takeIf { triggerType.equals("split", ignoreCase = true) },
             triggerSensorNanos = triggerSensorNanos,
-        ).toJsonString()
-        broadcastToConnected(message)
+        )
+        if (enableBinaryTelemetry) {
+            broadcastTelemetryToConnected(TelemetryEnvelopeFlatBufferCodec.encodeTrigger(message))
+        } else {
+            broadcastToConnected(message.toJsonString())
+        }
         broadcastTimelineSnapshot(updated)
     }
 
@@ -1210,52 +1236,7 @@ class RaceSessionController(
         }
 
         SessionTriggerMessage.tryParse(rawMessage)?.let { trigger ->
-            val triggerSensorNanos = if (_uiState.value.networkRole == SessionNetworkRole.CLIENT) {
-                val mapped = mapHostSensorToLocalSensor(trigger.triggerSensorNanos)
-                if (mapped == null) {
-                    if (
-                        trigger.triggerType.equals("start", ignoreCase = true) &&
-                        _uiState.value.monitoringActive &&
-                        _uiState.value.timeline.hostStartSensorNanos == null
-                    ) {
-                        val fallbackStart = estimateLocalSensorNanosNow()
-                        ingestLocalTrigger(
-                            triggerType = "start",
-                            splitIndex = 0,
-                            triggerSensorNanos = fallbackStart,
-                            broadcast = false,
-                        )
-                        _uiState.value = _uiState.value.copy(lastEvent = "trigger_start_applied_unsynced")
-                    } else if (
-                        trigger.triggerType.equals("stop", ignoreCase = true) &&
-                        _uiState.value.monitoringActive &&
-                        _uiState.value.timeline.hostStartSensorNanos != null &&
-                        _uiState.value.timeline.hostStopSensorNanos == null
-                    ) {
-                        val started = _uiState.value.timeline.hostStartSensorNanos ?: estimateLocalSensorNanosNow()
-                        val fallbackStop = maxOf(estimateLocalSensorNanosNow(), started + 1L)
-                        ingestLocalTrigger(
-                            triggerType = "stop",
-                            splitIndex = 0,
-                            triggerSensorNanos = fallbackStop,
-                            broadcast = false,
-                        )
-                        _uiState.value = _uiState.value.copy(lastEvent = "trigger_stop_applied_unsynced")
-                    } else {
-                        _uiState.value = _uiState.value.copy(lastEvent = "trigger_dropped_unsynced")
-                    }
-                    return
-                }
-                mapped
-            } else {
-                trigger.triggerSensorNanos
-            }
-            ingestLocalTrigger(
-                triggerType = trigger.triggerType,
-                splitIndex = trigger.splitIndex ?: 0,
-                triggerSensorNanos = triggerSensorNanos,
-                broadcast = false,
-            )
+            applyIncomingTrigger(trigger)
             return
         }
 
@@ -1263,6 +1244,79 @@ class RaceSessionController(
             ingestTimelineSnapshot(snapshot)
             return
         }
+    }
+
+    private fun handleIncomingTelemetryPayload(endpointId: String, payloadBytes: ByteArray) {
+        val payload = TelemetryEnvelopeFlatBufferCodec.decode(payloadBytes)
+        when (payload) {
+            is DecodedTelemetryEnvelope.TriggerRequest -> {
+                _uiState.value = _uiState.value.copy(lastEvent = "telemetry_payload_received")
+                handleTriggerRequest(endpointId, payload.message)
+            }
+
+            is DecodedTelemetryEnvelope.Trigger -> {
+                _uiState.value = _uiState.value.copy(lastEvent = "telemetry_payload_received")
+                applyIncomingTrigger(payload.message)
+            }
+
+            is DecodedTelemetryEnvelope.TimelineSnapshot -> {
+                _uiState.value = _uiState.value.copy(lastEvent = "telemetry_payload_received")
+                ingestTimelineSnapshot(payload.message)
+            }
+
+            null -> {
+                _uiState.value = _uiState.value.copy(lastEvent = "telemetry_payload_dropped")
+            }
+        }
+    }
+
+    private fun applyIncomingTrigger(trigger: SessionTriggerMessage) {
+        val triggerSensorNanos = if (_uiState.value.networkRole == SessionNetworkRole.CLIENT) {
+            val mapped = mapHostSensorToLocalSensor(trigger.triggerSensorNanos)
+            if (mapped == null) {
+                if (
+                    trigger.triggerType.equals("start", ignoreCase = true) &&
+                    _uiState.value.monitoringActive &&
+                    _uiState.value.timeline.hostStartSensorNanos == null
+                ) {
+                    val fallbackStart = estimateLocalSensorNanosNow()
+                    ingestLocalTrigger(
+                        triggerType = "start",
+                        splitIndex = 0,
+                        triggerSensorNanos = fallbackStart,
+                        broadcast = false,
+                    )
+                    _uiState.value = _uiState.value.copy(lastEvent = "trigger_start_applied_unsynced")
+                } else if (
+                    trigger.triggerType.equals("stop", ignoreCase = true) &&
+                    _uiState.value.monitoringActive &&
+                    _uiState.value.timeline.hostStartSensorNanos != null &&
+                    _uiState.value.timeline.hostStopSensorNanos == null
+                ) {
+                    val started = _uiState.value.timeline.hostStartSensorNanos ?: estimateLocalSensorNanosNow()
+                    val fallbackStop = maxOf(estimateLocalSensorNanosNow(), started + 1L)
+                    ingestLocalTrigger(
+                        triggerType = "stop",
+                        splitIndex = 0,
+                        triggerSensorNanos = fallbackStop,
+                        broadcast = false,
+                    )
+                    _uiState.value = _uiState.value.copy(lastEvent = "trigger_stop_applied_unsynced")
+                } else {
+                    _uiState.value = _uiState.value.copy(lastEvent = "trigger_dropped_unsynced")
+                }
+                return
+            }
+            mapped
+        } else {
+            trigger.triggerSensorNanos
+        }
+        ingestLocalTrigger(
+            triggerType = trigger.triggerType,
+            splitIndex = trigger.splitIndex ?: 0,
+            triggerSensorNanos = triggerSensorNanos,
+            broadcast = false,
+        )
     }
 
     private fun handleConnectionResult(event: SessionConnectionEvent.ConnectionResult) {
@@ -1679,8 +1733,12 @@ class RaceSessionController(
             hostStopSensorNanos = timeline.hostStopSensorNanos,
             hostSplitMarks = timeline.hostSplitMarks,
             sentElapsedNanos = nowElapsedNanos(),
-        ).toJsonString()
-        broadcastToConnected(payload)
+        )
+        if (enableBinaryTelemetry) {
+            broadcastTelemetryToConnected(TelemetryEnvelopeFlatBufferCodec.encodeTimelineSnapshot(payload))
+        } else {
+            broadcastToConnected(payload.toJsonString())
+        }
     }
 
     private fun broadcastSnapshotIfHost() {
@@ -1740,9 +1798,32 @@ class RaceSessionController(
         }
     }
 
+    private fun broadcastTelemetryToConnected(payloadBytes: ByteArray) {
+        _uiState.value.connectedEndpoints.forEach { endpointId ->
+            sendTelemetryPayload(endpointId, payloadBytes) { result ->
+                result.exceptionOrNull()?.let { error ->
+                    _uiState.value = _uiState.value.copy(
+                        lastError = "send failed ($endpointId): ${error.localizedMessage ?: "unknown"}",
+                    )
+                }
+            }
+        }
+    }
+
     private fun sendToHost(message: String) {
         val hostEndpointId = _uiState.value.connectedEndpoints.firstOrNull() ?: return
         sendMessage(hostEndpointId, message) { result ->
+            result.exceptionOrNull()?.let { error ->
+                _uiState.value = _uiState.value.copy(
+                    lastError = "send failed ($hostEndpointId): ${error.localizedMessage ?: "unknown"}",
+                )
+            }
+        }
+    }
+
+    private fun sendTelemetryToHost(payloadBytes: ByteArray) {
+        val hostEndpointId = _uiState.value.connectedEndpoints.firstOrNull() ?: return
+        sendTelemetryPayload(hostEndpointId, payloadBytes) { result ->
             result.exceptionOrNull()?.let { error ->
                 _uiState.value = _uiState.value.copy(
                     lastError = "send failed ($hostEndpointId): ${error.localizedMessage ?: "unknown"}",

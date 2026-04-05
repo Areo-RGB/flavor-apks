@@ -26,5 +26,7 @@ interface SessionConnectionsManager {
 
     fun sendClockSyncPayload(endpointId: String, payloadBytes: ByteArray, onComplete: (Result<Unit>) -> Unit)
 
+    fun sendTelemetryPayload(endpointId: String, payloadBytes: ByteArray, onComplete: (Result<Unit>) -> Unit)
+
     fun stopAll()
 }

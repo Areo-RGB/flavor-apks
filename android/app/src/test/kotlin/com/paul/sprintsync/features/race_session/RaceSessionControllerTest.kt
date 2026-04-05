@@ -1433,4 +1433,84 @@ class RaceSessionControllerTest {
         assertTrue(sentClockSyncPayloads.size > beforeResetCount)
         assertEquals("clock_sync_burst_started_stale", controller.uiState.value.lastEvent)
     }
+
+    @Test
+    fun `telemetry payload event decodes and applies trigger`() {
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            sendClockSyncPayload = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 1_000L },
+            clockSyncDelay = { _ -> },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+        val payloadBytes = TelemetryEnvelopeFlatBufferCodec.encodeTrigger(
+            SessionTriggerMessage(
+                triggerType = "start",
+                splitIndex = null,
+                triggerSensorNanos = 1_234L,
+            ),
+        )
+
+        controller.onConnectionEvent(
+            SessionConnectionEvent.TelemetryPayloadReceived(
+                endpointId = "ep-1",
+                payloadBytes = payloadBytes,
+            ),
+        )
+
+        assertEquals(1_234L, controller.uiState.value.timeline.hostStartSensorNanos)
+    }
+
+    @Test
+    fun `binary telemetry mode broadcasts trigger and timeline envelopes`() {
+        val sentMessages = mutableListOf<String>()
+        val sentTelemetryPayloads = mutableListOf<ByteArray>()
+
+        val controller = RaceSessionController(
+            loadLastRun = { null },
+            saveLastRun = { },
+            sendMessage = { _, message, onComplete ->
+                sentMessages += message
+                onComplete(Result.success(Unit))
+            },
+            sendClockSyncPayload = { _, _, onComplete -> onComplete(Result.success(Unit)) },
+            sendTelemetryPayload = { _, payloadBytes, onComplete ->
+                sentTelemetryPayloads += payloadBytes
+                onComplete(Result.success(Unit))
+            },
+            enableBinaryTelemetry = true,
+            ioDispatcher = Dispatchers.Unconfined,
+            nowElapsedNanos = { 5_000L },
+            clockSyncDelay = { _ -> },
+        )
+
+        controller.setNetworkRole(SessionNetworkRole.HOST)
+        controller.onConnectionEvent(
+            SessionConnectionEvent.ConnectionResult(
+                endpointId = "peer-1",
+                endpointName = "peer",
+                connected = true,
+                statusCode = 0,
+                statusMessage = null,
+            ),
+        )
+
+        controller.ingestLocalTrigger(
+            triggerType = "start",
+            splitIndex = 0,
+            triggerSensorNanos = 123L,
+            broadcast = true,
+        )
+
+        assertEquals(2, sentTelemetryPayloads.size)
+
+        val firstPayload = TelemetryEnvelopeFlatBufferCodec.decode(sentTelemetryPayloads[0])
+        val secondPayload = TelemetryEnvelopeFlatBufferCodec.decode(sentTelemetryPayloads[1])
+        assertTrue(firstPayload is DecodedTelemetryEnvelope.Trigger)
+        assertTrue(secondPayload is DecodedTelemetryEnvelope.TimelineSnapshot)
+    }
 }

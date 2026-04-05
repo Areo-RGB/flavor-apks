@@ -7,6 +7,7 @@ import java.net.ServerSocket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import org.junit.runner.RunWith
@@ -73,6 +74,60 @@ class TcpConnectionsManagerTest {
         }
         assertTrue(awaitWithMainLooper(payloadLatch, timeoutMs = 5_000))
         assertEquals("""{"kind":"hello"}""", hostPayload)
+
+        client.stopAll()
+        host.stopAll()
+    }
+
+    @Test
+    fun `client can send telemetry payload to host`() {
+        val port = ServerSocket(0).use { it.localPort }
+        val host = TcpConnectionsManager(
+            hostIp = "127.0.0.1",
+            hostPort = port,
+            nowNativeClockSyncElapsedNanos = { null },
+        )
+        val client = TcpConnectionsManager(
+            hostIp = "127.0.0.1",
+            hostPort = port,
+            nowNativeClockSyncElapsedNanos = { null },
+        )
+        val payloadLatch = CountDownLatch(1)
+        val clientConnected = CountDownLatch(1)
+        var hostPayload: ByteArray? = null
+        var clientEndpointId: String? = null
+
+        host.setEventListener { event ->
+            if (event is SessionConnectionEvent.TelemetryPayloadReceived) {
+                hostPayload = event.payloadBytes
+                payloadLatch.countDown()
+            }
+        }
+        client.setEventListener { event ->
+            if (event is SessionConnectionEvent.ConnectionResult && event.connected) {
+                clientEndpointId = event.endpointId
+                clientConnected.countDown()
+            }
+        }
+
+        host.startHosting("svc", "host", SessionConnectionStrategy.POINT_TO_STAR) {
+            assertTrue(it.isSuccess)
+        }
+        client.startDiscovery("svc", SessionConnectionStrategy.POINT_TO_STAR) {
+            assertTrue(it.isSuccess)
+        }
+        client.requestConnection("127.0.0.1", "client") {
+            assertTrue(it.isSuccess)
+        }
+        assertTrue(awaitWithMainLooper(clientConnected, timeoutMs = 5_000))
+
+        val telemetryPayload = byteArrayOf(0x0F, 0x01, 0x02)
+        client.sendTelemetryPayload(clientEndpointId!!, telemetryPayload) {
+            assertTrue(it.isSuccess)
+        }
+
+        assertTrue(awaitWithMainLooper(payloadLatch, timeoutMs = 5_000))
+        assertContentEquals(telemetryPayload, hostPayload)
 
         client.stopAll()
         host.stopAll()

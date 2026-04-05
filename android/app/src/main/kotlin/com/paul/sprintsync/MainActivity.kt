@@ -58,7 +58,7 @@ import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsResultCallback {
     companion object {
-        private const val DEFAULT_SERVICE_ID = "sync.sprint.tcp"
+        private const val DEFAULT_SERVICE_ID = "sync.sprint.tcp.v2"
         private const val PC_RECONNECT_ENDPOINT_ID = "192.168.0.100"
         private const val PERMISSIONS_REQUEST_CODE = 7301
         private const val SENSOR_ELAPSED_PROJECTION_MAX_AGE_NANOS = 3_000_000_000L
@@ -140,6 +140,10 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             sendClockSyncPayload = { endpointId, payloadBytes, onComplete ->
                 connectionsManager.sendClockSyncPayload(endpointId, payloadBytes, onComplete)
             },
+            sendTelemetryPayload = { endpointId, payloadBytes, onComplete ->
+                connectionsManager.sendTelemetryPayload(endpointId, payloadBytes, onComplete)
+            },
+            enableBinaryTelemetry = true,
         )
         raceSessionController.setLocalDeviceIdentity(localDeviceId(), localEndpointName())
         sensorNativeController.setEventListener(::onSensorEvent)
@@ -970,7 +974,11 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                             }
                         }
                     }
-                    is SessionConnectionEvent.PayloadReceived, is SessionConnectionEvent.ClockSyncSampleReceived, is SessionConnectionEvent.Error -> Unit
+                    is SessionConnectionEvent.PayloadReceived,
+                    is SessionConnectionEvent.ClockSyncSampleReceived,
+                    is SessionConnectionEvent.TelemetryPayloadReceived,
+                    is SessionConnectionEvent.Error,
+                    -> Unit
                 }
             }
             SessionOperatingMode.DISPLAY_HOST -> {
@@ -1010,6 +1018,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                         }
                     }
                     is SessionConnectionEvent.ClockSyncSampleReceived,
+                    is SessionConnectionEvent.TelemetryPayloadReceived,
                     is SessionConnectionEvent.Error,
                     -> Unit
                 }
@@ -1023,6 +1032,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             is SessionConnectionEvent.EndpointDisconnected -> "endpoint_disconnected"
             is SessionConnectionEvent.PayloadReceived -> "payload_received"
             is SessionConnectionEvent.ClockSyncSampleReceived -> "clock_sync_sample_received"
+            is SessionConnectionEvent.TelemetryPayloadReceived -> "telemetry_payload_received"
             is SessionConnectionEvent.Error -> "error"
         }
         val connectedCount = connectionsManager.connectedEndpoints().size

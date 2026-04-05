@@ -24,7 +24,8 @@ class TcpConnectionsManager(
 ) : SessionConnectionsManager {
     companion object {
         private const val FRAME_KIND_MESSAGE: Byte = 1
-        private const val FRAME_KIND_BINARY: Byte = 2
+        private const val FRAME_KIND_CLOCK_SYNC_BINARY: Byte = 2
+        private const val FRAME_KIND_TELEMETRY_BINARY: Byte = 3
     }
 
     private val ioExecutor = Executors.newCachedThreadPool()
@@ -185,7 +186,11 @@ class TcpConnectionsManager(
     }
 
     override fun sendClockSyncPayload(endpointId: String, payloadBytes: ByteArray, onComplete: (Result<Unit>) -> Unit) {
-        sendFrame(endpointId, FRAME_KIND_BINARY, payloadBytes, onComplete)
+        sendFrame(endpointId, FRAME_KIND_CLOCK_SYNC_BINARY, payloadBytes, onComplete)
+    }
+
+    override fun sendTelemetryPayload(endpointId: String, payloadBytes: ByteArray, onComplete: (Result<Unit>) -> Unit) {
+        sendFrame(endpointId, FRAME_KIND_TELEMETRY_BINARY, payloadBytes, onComplete)
     }
 
     private fun sendFrame(endpointId: String, kind: Byte, payloadBytes: ByteArray, onComplete: (Result<Unit>) -> Unit) {
@@ -232,11 +237,20 @@ class TcpConnectionsManager(
                                 ),
                             )
                         }
-                        FRAME_KIND_BINARY -> {
+                        FRAME_KIND_CLOCK_SYNC_BINARY -> {
                             if (!tryHandleClockSyncPayload(endpointId, payload)) {
                                 emitError("binary payload dropped: unsupported")
                             }
                         }
+                        FRAME_KIND_TELEMETRY_BINARY -> {
+                            emitEvent(
+                                SessionConnectionEvent.TelemetryPayloadReceived(
+                                    endpointId = endpointId,
+                                    payloadBytes = payload,
+                                ),
+                            )
+                        }
+                        else -> emitError("payload dropped: unknown frame kind=$frameKind")
                     }
                 }
             } catch (_: EOFException) {

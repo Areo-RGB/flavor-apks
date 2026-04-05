@@ -35,6 +35,11 @@ sealed interface SessionConnectionEvent {
         val sample: SessionClockSyncBinaryResponse,
     ) : SessionConnectionEvent
 
+    data class TelemetryPayloadReceived(
+        val endpointId: String,
+        val payloadBytes: ByteArray,
+    ) : SessionConnectionEvent
+
     data class Error(
         val message: String,
     ) : SessionConnectionEvent
