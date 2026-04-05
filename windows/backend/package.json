@@ -5,11 +5,18 @@
   "scripts": {
     "dev": "node --watch src/server.mjs",
     "start": "node src/server.mjs",
-    "build": "node -e \"console.log('windows-backend: no build step')\""
+    "build": "node -e \"console.log('windows-backend: no build step')\"",
+    "build:dist": "node scripts/package-exe.mjs",
+    "build:exe": "npm run build:dist",
+    "package": "npm run build:dist",
+    "package:exe": "npm run build:dist"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.4"
   }
 }

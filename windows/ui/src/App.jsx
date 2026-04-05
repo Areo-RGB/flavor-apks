@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const ROLE_ORDER = ["Unassigned", "Start", "Split 1", "Split 2", "Split 3", "Split 4", "Stop"];
+const AUTO_APPLY_DELAY_MS = 350;
 
 function formatDurationNanos(nanos) {
   if (!Number.isFinite(nanos) || nanos <= 0) return "-";
@@ -159,6 +160,8 @@ export default function App() {
   const [selectedSavedMeta, setSelectedSavedMeta] = useState(null);
   const [selectedSavedPayload, setSelectedSavedPayload] = useState(null);
   const raceClockBaseMsRef = useRef(null);
+  const sensitivityApplyTimeoutsRef = useRef(new Map());
+  const distanceApplyTimeoutsRef = useRef(new Map());
 
   async function fetchState() {
     setRefreshing(true);
@@ -266,51 +269,90 @@ export default function App() {
     postControl("/api/control/device-config", { targetId, ...patch }, actionKey);
   }
 
+  function clearScheduledApply(timeoutsRef, targetId) {
+    const timeoutId = timeoutsRef.current.get(targetId);
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+      timeoutsRef.current.delete(targetId);
+    }
+  }
+
   function setCameraFacing(targetId, cameraFacing) {
     updateDeviceConfig(targetId, { cameraFacing }, `device-config-camera:${targetId}`);
   }
 
-  function updateSensitivityDraft(targetId, rawValue) {
+  function updateSensitivityDraft(targetId, rawValue, fallbackSensitivity) {
     setSensitivityDraftByTarget((previous) => ({
       ...previous,
       [targetId]: rawValue,
     }));
-  }
 
-  function applySensitivity(targetId, fallbackSensitivity) {
-    const rawValue = sensitivityDraftByTarget[targetId] ?? String(fallbackSensitivity ?? 100);
+    clearScheduledApply(sensitivityApplyTimeoutsRef, targetId);
+    if (String(rawValue).trim().length === 0) {
+      setLastError("");
+      return;
+    }
+
     const parsedValue = Number(rawValue);
     if (!Number.isInteger(parsedValue) || parsedValue < 1 || parsedValue > 100) {
       setLastError("Sensitivity must be an integer in the range 1 to 100.");
       return;
     }
-    updateDeviceConfig(targetId, { sensitivity: parsedValue }, `device-config-sensitivity:${targetId}`);
-    setSensitivityDraftByTarget((previous) => ({
-      ...previous,
-      [targetId]: String(parsedValue),
-    }));
+
+    const effectiveSensitivity = Number.isInteger(fallbackSensitivity) ? fallbackSensitivity : 100;
+    if (parsedValue === effectiveSensitivity) {
+      setLastError("");
+      return;
+    }
+
+    setLastError("");
+    const timeoutId = window.setTimeout(() => {
+      updateDeviceConfig(targetId, { sensitivity: parsedValue }, `device-config-sensitivity:${targetId}`);
+      setSensitivityDraftByTarget((previous) => ({
+        ...previous,
+        [targetId]: String(parsedValue),
+      }));
+      sensitivityApplyTimeoutsRef.current.delete(targetId);
+    }, AUTO_APPLY_DELAY_MS);
+    sensitivityApplyTimeoutsRef.current.set(targetId, timeoutId);
   }
 
-  function updateDistanceDraft(targetId, rawValue) {
+  function updateDistanceDraft(targetId, rawValue, fallbackDistanceMeters) {
     setDistanceDraftByTarget((previous) => ({
       ...previous,
       [targetId]: rawValue,
     }));
-  }
 
-  function applyDistance(targetId, fallbackDistanceMeters) {
-    const rawValue = distanceDraftByTarget[targetId] ?? String(fallbackDistanceMeters ?? 0);
+    clearScheduledApply(distanceApplyTimeoutsRef, targetId);
+    if (String(rawValue).trim().length === 0) {
+      setLastError("");
+      return;
+    }
+
     const parsedValue = Number(rawValue);
     if (!Number.isFinite(parsedValue) || parsedValue < 0 || parsedValue > 100000) {
       setLastError("Distance must be a number in the range 0 to 100000 meters.");
       return;
     }
+
     const normalizedDistance = Math.round(parsedValue * 1000) / 1000;
-    updateDeviceConfig(targetId, { distanceMeters: normalizedDistance }, `device-config-distance:${targetId}`);
-    setDistanceDraftByTarget((previous) => ({
-      ...previous,
-      [targetId]: String(normalizedDistance),
-    }));
+    const effectiveDistance = Number.isFinite(fallbackDistanceMeters) && fallbackDistanceMeters >= 0 ? fallbackDistanceMeters : 0;
+    const normalizedFallbackDistance = Math.round(effectiveDistance * 1000) / 1000;
+    if (normalizedDistance === normalizedFallbackDistance) {
+      setLastError("");
+      return;
+    }
+
+    setLastError("");
+    const timeoutId = window.setTimeout(() => {
+      updateDeviceConfig(targetId, { distanceMeters: normalizedDistance }, `device-config-distance:${targetId}`);
+      setDistanceDraftByTarget((previous) => ({
+        ...previous,
+        [targetId]: String(normalizedDistance),
+      }));
+      distanceApplyTimeoutsRef.current.delete(targetId);
+    }, AUTO_APPLY_DELAY_MS);
+    distanceApplyTimeoutsRef.current.set(targetId, timeoutId);
   }
 
   async function saveResultsJson() {
@@ -397,6 +439,19 @@ export default function App() {
   useEffect(() => {
     loadSavedResult(selectedSavedFileName);
   }, [selectedSavedFileName]);
+
+  useEffect(() => {
+    return () => {
+      for (const timeoutId of sensitivityApplyTimeoutsRef.current.values()) {
+        window.clearTimeout(timeoutId);
+      }
+      for (const timeoutId of distanceApplyTimeoutsRef.current.values()) {
+        window.clearTimeout(timeoutId);
+      }
+      sensitivityApplyTimeoutsRef.current.clear();
+      distanceApplyTimeoutsRef.current.clear();
+    };
+  }, []);
 
   const session = snapshot?.session ?? {
     stage: "LOBBY",
@@ -807,7 +862,7 @@ export default function App() {
                 {clients.length === 0 ? (
                   <p className="text-sm text-slate-500">No peers connected yet.</p>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="flex gap-3 overflow-x-auto pb-1">
                     {clients.map((client) => {
                       const targetId = client.roleTarget;
                       const actionKey = `assign-role:${targetId}`;
@@ -836,7 +891,7 @@ export default function App() {
                           );
 
                       return (
-                        <div key={client.endpointId} className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                        <div key={client.endpointId} className="min-w-[320px] flex-1 rounded-md border border-slate-200 bg-slate-50 p-3">
                           <div className="text-sm font-semibold text-slate-900">{client.deviceName ?? "Unknown device"}</div>
                           <div className="mb-2 font-mono text-xs text-slate-500">{targetId}</div>
 
@@ -875,46 +930,30 @@ export default function App() {
 
                             <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                               Sensitivity
-                              <div className="mt-1 flex items-center gap-2">
-                                <input
-                                  type="number"
-                                  min={1}
-                                  max={100}
-                                  step={1}
-                                  className="w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700"
-                                  value={sensitivityDraft}
-                                  disabled={busyAction === sensitivityActionKey}
-                                  onChange={(event) => updateSensitivityDraft(targetId, event.target.value)}
-                                />
-                                <ActionButton
-                                  label="Apply"
-                                  onClick={() => applySensitivity(targetId, effectiveSensitivity)}
-                                  busy={busyAction === sensitivityActionKey}
-                                  variant="secondary"
-                                />
-                              </div>
+                              <input
+                                type="number"
+                                min={1}
+                                max={100}
+                                step={1}
+                                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700"
+                                value={sensitivityDraft}
+                                disabled={busyAction === sensitivityActionKey}
+                                onChange={(event) => updateSensitivityDraft(targetId, event.target.value, effectiveSensitivity)}
+                              />
                             </label>
 
                             <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                               Distance (m)
-                              <div className="mt-1 flex items-center gap-2">
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={100000}
-                                  step={0.1}
-                                  className="w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700"
-                                  value={distanceDraft}
-                                  disabled={busyAction === distanceActionKey}
-                                  onChange={(event) => updateDistanceDraft(targetId, event.target.value)}
-                                />
-                                <ActionButton
-                                  label="Apply"
-                                  onClick={() => applyDistance(targetId, effectiveDistance)}
-                                  busy={busyAction === distanceActionKey}
-                                  variant="secondary"
-                                />
-                              </div>
+                              <input
+                                type="number"
+                                min={0}
+                                max={100000}
+                                step={0.1}
+                                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700"
+                                value={distanceDraft}
+                                disabled={busyAction === distanceActionKey}
+                                onChange={(event) => updateDistanceDraft(targetId, event.target.value, effectiveDistance)}
+                              />
                             </label>
                           </div>
 

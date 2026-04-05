@@ -11,6 +11,11 @@
     "dev:backend": "npm run dev --workspace @sprint-sync/windows-backend",
     "dev:ui": "npm run dev --workspace @sprint-sync/windows-ui",
     "build": "npm run build --workspace @sprint-sync/windows-ui && npm run build --workspace @sprint-sync/windows-backend",
+    "python:install": "py -3 -m pip install -r desktop/requirements.txt",
+    "package:backend": "npm run build --workspace @sprint-sync/windows-ui && npm run package --workspace @sprint-sync/windows-backend",
+    "package:backend:exe": "npm run package:backend",
+    "package:desktop": "npm run package:backend && npm run python:install && py -3 desktop/build.py",
+    "package:exe": "npm run package:desktop",
     "start": "npm run start --workspace @sprint-sync/windows-backend",
     "preview:ui": "npm run preview --workspace @sprint-sync/windows-ui"
   },

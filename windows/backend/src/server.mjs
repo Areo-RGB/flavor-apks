@@ -1,5 +1,6 @@
 import net from "node:net";
 import { createServer as createHttpServer } from "node:http";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,9 +38,23 @@ const ROLE_ORDER = [
 
 const SPLIT_ROLE_OPTIONS = ["Split 1", "Split 2", "Split 3", "Split 4"];
 
-const moduleFilePath = fileURLToPath(import.meta.url);
+const moduleFilePath = typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url);
 const moduleDirPath = path.dirname(moduleFilePath);
 const backendRootPath = path.resolve(moduleDirPath, "..");
+const packagedFrontendDistPath = path.join(backendRootPath, "dist", "ui");
+const workspaceFrontendDistPath = path.resolve(backendRootPath, "..", "ui", "dist");
+
+const frontendDistCandidates = [
+  process.env.WINDOWS_UI_DIST_DIR,
+  packagedFrontendDistPath,
+  workspaceFrontendDistPath,
+].filter((candidate) => Boolean(candidate));
+
+const frontendDistPath =
+  frontendDistCandidates.find((candidatePath) => fsSync.existsSync(path.join(candidatePath, "index.html"))) ??
+  packagedFrontendDistPath;
+const frontendIndexPath = path.join(frontendDistPath, "index.html");
+const frontendBundleAvailable = fsSync.existsSync(frontendIndexPath);
 
 const config = {
   tcpHost: process.env.WINDOWS_TCP_HOST ?? "0.0.0.0",
@@ -47,6 +62,7 @@ const config = {
   httpHost: process.env.WINDOWS_HTTP_HOST ?? "0.0.0.0",
   httpPort: toPort(process.env.WINDOWS_HTTP_PORT, 8787),
   resultsDir: path.resolve(process.env.WINDOWS_RESULTS_DIR ?? path.join(backendRootPath, "saved-results")),
+  frontendDistDir: frontendDistPath,
 };
 
 const startedAtMs = Date.now();
@@ -473,12 +489,26 @@ app.post("/api/control/clear-events", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.use((_req, res) => {
+if (frontendBundleAvailable) {
+  app.use(express.static(config.frontendDistDir));
+}
+
+app.use((req, res) => {
+  if (frontendBundleAvailable && isFrontendRouteRequest(req)) {
+    res.sendFile(frontendIndexPath);
+    return;
+  }
+
   res.status(404).json({ error: "Not found" });
 });
 
 const httpServer = createHttpServer(app);
 websocketServer = new WebSocketServer({ server: httpServer, path: "/ws" });
+
+websocketServer.on("error", (error) => {
+  pushEvent("error", `WebSocket server error: ${error.message}`);
+  publishState();
+});
 
 websocketServer.on("connection", (socket) => {
   sendSocketMessage(socket, {
@@ -559,6 +589,11 @@ tcpServer.listen(config.tcpPort, config.tcpHost, () => {
 
 httpServer.listen(config.httpPort, config.httpHost, () => {
   pushEvent("info", `HTTP server listening on ${config.httpHost}:${config.httpPort}`);
+  if (frontendBundleAvailable) {
+    pushEvent("info", `Serving frontend from ${config.frontendDistDir}`);
+  } else {
+    pushEvent("info", "Frontend bundle not found; API-only mode enabled");
+  }
   publishState();
 });
 
@@ -574,6 +609,14 @@ function toPort(value, fallback) {
     return fallback;
   }
   return parsed;
+}
+
+function isFrontendRouteRequest(req) {
+  return (
+    (req.method === "GET" || req.method === "HEAD") &&
+    !req.path.startsWith("/api") &&
+    req.path !== "/ws"
+  );
 }
 
 function appendBounded(array, value, maxSize) {

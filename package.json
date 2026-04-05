@@ -17,5 +17,10 @@
     "windows:dev:backend": "cd windows && npm run dev:backend",
     "windows:dev:ui": "cd windows && npm run dev:ui",
     "windows:build": "cd windows && npm run build",
-    "windows:start": "cd windows && npm run start"
+    "windows:start": "cd windows && npm run start",
+    "windows:python:install": "cd windows && npm run python:install",
+    "windows:package:backend": "cd windows && npm run package:backend",
+    "windows:package:backend:exe": "cd windows && npm run package:backend",
+    "windows:package:desktop": "cd windows && npm run package:desktop",
+    "windows:package:exe": "cd windows && npm run package:desktop"
 }}

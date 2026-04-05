@@ -32,6 +32,37 @@ This starts:
 npm run windows:build
 ```
 
+## Install Python Packaging Dependencies
+
+From repository root:
+
+```powershell
+npm run windows:python:install
+```
+
+## Package Desktop App (PyInstaller + Webview)
+
+From repository root:
+
+```powershell
+npm run windows:package:exe
+```
+
+Output files:
+
+- `windows/backend/dist/server.cjs` (bundled backend entry)
+- `windows/backend/dist/ui/` (frontend bundle served by backend)
+- `windows/desktop/dist/sprint-sync-windows-desktop.exe` (desktop app wrapper)
+
+The desktop wrapper bundles a Node runtime, launches the backend in the background, and opens the UI in a native webview window.
+
+Run the packaged executable:
+
+```powershell
+cd windows/desktop/dist
+.\sprint-sync-windows-desktop.exe
+```
+
 ## Start Backend Only
 
 ```powershell
@@ -44,3 +75,4 @@ npm run windows:start
 - `WINDOWS_TCP_PORT` (default: `9000`)
 - `WINDOWS_HTTP_HOST` (default: `0.0.0.0`)
 - `WINDOWS_HTTP_PORT` (default: `8787`)
+- `WINDOWS_UI_DIST_DIR` (optional override for frontend bundle location)

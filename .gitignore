@@ -32,7 +32,7 @@ app.*.symbols
 
 # Obfuscation related
 app.*.map.json
-
+.agents .claude .github .codex .gitnexus .idea .serena .vscode openspec .gitignore
 # Android Studio will place build artifacts here
 /android/app/debug
 /android/app/profile
@@ -45,3 +45,8 @@ app.*.map.json
 .seren/
 .serena/memories/
 windows/node_modules
+windows/backend/node_modules
+windows/backend/dist
+windows/desktop/dist
+windows/desktop/build
+windows/ui/dist
