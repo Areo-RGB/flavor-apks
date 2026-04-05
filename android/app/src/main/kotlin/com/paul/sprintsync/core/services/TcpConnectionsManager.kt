@@ -9,6 +9,7 @@ import java.io.BufferedOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.EOFException
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
@@ -26,6 +27,7 @@ class TcpConnectionsManager(
         private const val FRAME_KIND_MESSAGE: Byte = 1
         private const val FRAME_KIND_CLOCK_SYNC_BINARY: Byte = 2
         private const val FRAME_KIND_TELEMETRY_BINARY: Byte = 3
+        private const val CONNECT_TIMEOUT_MS = 350
     }
 
     private val ioExecutor = Executors.newCachedThreadPool()
@@ -145,39 +147,120 @@ class TcpConnectionsManager(
             onComplete(Result.failure(IllegalStateException("requestConnection ignored: not in client mode.")))
             return
         }
-        val targetHost = endpointId.substringBefore(":").ifBlank { hostIp }
+        val targetHosts = resolveTargetHosts(endpointId)
         ioExecutor.execute {
-            try {
-                val socket = Socket(targetHost, hostPort)
-                socket.tcpNoDelay = true
-                val connectedId = endpointIdForSocket(socket)
-                connectedSockets[connectedId] = socket
-                endpointNamesById[connectedId] = endpointId
-                discoveryRunning.set(false)
-                emitEvent(
-                    SessionConnectionEvent.ConnectionResult(
-                        endpointId = connectedId,
-                        endpointName = endpointId,
-                        connected = true,
-                        statusCode = 0,
-                        statusMessage = "connected",
-                    ),
-                )
-                startReaderLoop(connectedId, socket)
-                onComplete(Result.success(Unit))
-            } catch (error: Throwable) {
-                emitEvent(
-                    SessionConnectionEvent.ConnectionResult(
-                        endpointId = endpointId,
-                        endpointName = endpointId,
-                        connected = false,
-                        statusCode = -1,
-                        statusMessage = error.localizedMessage ?: "connect failed",
-                    ),
-                )
-                onComplete(Result.failure(error))
+            var lastError: Throwable? = null
+            for (targetHost in targetHosts) {
+                val socket = Socket()
+                try {
+                    socket.connect(InetSocketAddress(targetHost, hostPort), CONNECT_TIMEOUT_MS)
+                    socket.tcpNoDelay = true
+                    val connectedId = endpointIdForSocket(socket)
+                    val resolvedEndpointName = endpointName.ifBlank { targetHost }
+                    connectedSockets[connectedId] = socket
+                    endpointNamesById[connectedId] = resolvedEndpointName
+                    discoveryRunning.set(false)
+                    emitEvent(
+                        SessionConnectionEvent.ConnectionResult(
+                            endpointId = connectedId,
+                            endpointName = resolvedEndpointName,
+                            connected = true,
+                            statusCode = 0,
+                            statusMessage = "connected",
+                        ),
+                    )
+                    startReaderLoop(connectedId, socket)
+                    onComplete(Result.success(Unit))
+                    return@execute
+                } catch (error: Throwable) {
+                    runCatching { socket.close() }
+                    lastError = error
+                }
             }
+
+            val failure = lastError ?: IllegalStateException("connect failed")
+            emitEvent(
+                SessionConnectionEvent.ConnectionResult(
+                    endpointId = endpointId,
+                    endpointName = endpointName.ifBlank { endpointId },
+                    connected = false,
+                    statusCode = -1,
+                    statusMessage = failure.localizedMessage ?: "connect failed",
+                ),
+            )
+            onComplete(Result.failure(failure))
         }
+    }
+
+    private fun resolveTargetHosts(endpointId: String): List<String> {
+        val rawTarget = endpointId.substringBefore(":").ifBlank { hostIp }.trim()
+        if (rawTarget.isBlank()) {
+            return listOf(hostIp)
+        }
+
+        val hosts = linkedSetOf<String>()
+        rawTarget
+            .split(',', ';', ' ')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .forEach { token ->
+                hosts.addAll(expandHostToken(token))
+            }
+
+        if (hosts.isEmpty()) {
+            hosts += rawTarget
+        }
+        return hosts.toList()
+    }
+
+    private fun expandHostToken(token: String): List<String> {
+        if (!token.contains('-')) {
+            return listOf(token)
+        }
+
+        val parts = token.split('-', limit = 2).map { it.trim() }
+        if (parts.size != 2 || parts[0].isBlank() || parts[1].isBlank()) {
+            return listOf(token)
+        }
+
+        val startOctets = parseIpv4Octets(parts[0]) ?: return listOf(token)
+        val startLast = startOctets[3]
+
+        val endLast = parts[1].toIntOrNull() ?: run {
+            val endOctets = parseIpv4Octets(parts[1]) ?: return listOf(token)
+            if (startOctets[0] != endOctets[0] || startOctets[1] != endOctets[1] || startOctets[2] != endOctets[2]) {
+                return listOf(token)
+            }
+            endOctets[3]
+        }
+
+        if (startLast !in 0..255 || endLast !in 0..255) {
+            return listOf(token)
+        }
+
+        val prefix = "${startOctets[0]}.${startOctets[1]}.${startOctets[2]}"
+        val range = if (startLast <= endLast) {
+            startLast..endLast
+        } else {
+            endLast..startLast
+        }
+        return range.map { "$prefix.$it" }
+    }
+
+    private fun parseIpv4Octets(ip: String): IntArray? {
+        val parts = ip.split('.')
+        if (parts.size != 4) {
+            return null
+        }
+        val octets = IntArray(4)
+        for (index in 0 until 4) {
+            val value = parts[index].toIntOrNull() ?: return null
+            if (value !in 0..255) {
+                return null
+            }
+            octets[index] = value
+        }
+        return octets
     }
 
     override fun sendMessage(endpointId: String, messageJson: String, onComplete: (Result<Unit>) -> Unit) {

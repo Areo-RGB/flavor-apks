@@ -3,6 +3,8 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 val flatBuffersSchemaDir = layout.projectDirectory.dir("src/main/fbs")
 val generatedFlatBuffersDir = layout.buildDirectory.dir("generated/source/flatbuffers/kotlin")
+val defaultTcpHostIp = "\"192.168.0.100-192.168.0.110\""
+val defaultTcpHostPort = "9000"
 
 plugins {
     id("com.android.application")
@@ -31,9 +33,9 @@ android {
         versionCode = 1
         versionName = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("boolean", "TCP_ONLY", "false")
-        buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.103\"")
-        buildConfigField("int", "TCP_HOST_PORT", "9000")
+        buildConfigField("boolean", "TCP_ONLY", "true")
+        buildConfigField("String", "TCP_HOST_IP", defaultTcpHostIp)
+        buildConfigField("int", "TCP_HOST_PORT", defaultTcpHostPort)
         buildConfigField("String", "AUTO_START_ROLE", "\"none\"")
         buildConfigField("String", "DEVICE_PROFILE", "\"default\"")
         buildConfigField("boolean", "HOST_CONTROLLER_ONLY", "false")
@@ -47,20 +49,20 @@ android {
             applicationIdSuffix = ".host.xiaomi"
             versionNameSuffix = "-host-xiaomi"
             buildConfigField("boolean", "TCP_ONLY", "true")
-            buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.103\"")
-            buildConfigField("int", "TCP_HOST_PORT", "9000")
-            buildConfigField("String", "AUTO_START_ROLE", "\"host\"")
-            buildConfigField("String", "DEVICE_PROFILE", "\"host_xiaomi\"")
-            buildConfigField("boolean", "HOST_CONTROLLER_ONLY", "true")
-            resValue("string", "app_name", "Sprint Sync Host (Xiaomi)")
+            buildConfigField("String", "TCP_HOST_IP", defaultTcpHostIp)
+            buildConfigField("int", "TCP_HOST_PORT", defaultTcpHostPort)
+            buildConfigField("String", "AUTO_START_ROLE", "\"none\"")
+            buildConfigField("String", "DEVICE_PROFILE", "\"pad_xiaomi\"")
+            buildConfigField("boolean", "HOST_CONTROLLER_ONLY", "false")
+            resValue("string", "app_name", "Sprint Sync Pad (Xiaomi)")
         }
         create("clientPixel") {
             dimension = "deviceProfile"
             applicationIdSuffix = ".client.pixel"
             versionNameSuffix = "-client-pixel"
             buildConfigField("boolean", "TCP_ONLY", "true")
-            buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.103\"")
-            buildConfigField("int", "TCP_HOST_PORT", "9000")
+            buildConfigField("String", "TCP_HOST_IP", defaultTcpHostIp)
+            buildConfigField("int", "TCP_HOST_PORT", defaultTcpHostPort)
             buildConfigField("String", "AUTO_START_ROLE", "\"client\"")
             buildConfigField("String", "DEVICE_PROFILE", "\"client_pixel\"")
             buildConfigField("boolean", "HOST_CONTROLLER_ONLY", "false")
@@ -71,8 +73,8 @@ android {
             applicationIdSuffix = ".client.oneplus"
             versionNameSuffix = "-client-oneplus"
             buildConfigField("boolean", "TCP_ONLY", "true")
-            buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.103\"")
-            buildConfigField("int", "TCP_HOST_PORT", "9000")
+            buildConfigField("String", "TCP_HOST_IP", defaultTcpHostIp)
+            buildConfigField("int", "TCP_HOST_PORT", defaultTcpHostPort)
             buildConfigField("String", "AUTO_START_ROLE", "\"client\"")
             buildConfigField("String", "DEVICE_PROFILE", "\"client_oneplus\"")
             buildConfigField("boolean", "HOST_CONTROLLER_ONLY", "false")
@@ -83,8 +85,8 @@ android {
             applicationIdSuffix = ".client.huawei"
             versionNameSuffix = "-client-huawei"
             buildConfigField("boolean", "TCP_ONLY", "true")
-            buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.103\"")
-            buildConfigField("int", "TCP_HOST_PORT", "9000")
+            buildConfigField("String", "TCP_HOST_IP", defaultTcpHostIp)
+            buildConfigField("int", "TCP_HOST_PORT", defaultTcpHostPort)
             buildConfigField("String", "AUTO_START_ROLE", "\"client\"")
             buildConfigField("String", "DEVICE_PROFILE", "\"client_huawei\"")
             buildConfigField("boolean", "HOST_CONTROLLER_ONLY", "false")
@@ -95,8 +97,8 @@ android {
             applicationIdSuffix = ".client.xiaomi"
             versionNameSuffix = "-client-xiaomi"
             buildConfigField("boolean", "TCP_ONLY", "true")
-            buildConfigField("String", "TCP_HOST_IP", "\"192.168.0.103\"")
-            buildConfigField("int", "TCP_HOST_PORT", "9000")
+            buildConfigField("String", "TCP_HOST_IP", defaultTcpHostIp)
+            buildConfigField("int", "TCP_HOST_PORT", defaultTcpHostPort)
             buildConfigField("String", "AUTO_START_ROLE", "\"client\"")
             buildConfigField("String", "DEVICE_PROFILE", "\"client_xiaomi\"")
             buildConfigField("boolean", "HOST_CONTROLLER_ONLY", "false")

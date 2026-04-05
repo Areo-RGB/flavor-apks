@@ -177,4 +177,44 @@ class TcpConnectionsManagerTest {
         client.stopAll()
         host.stopAll()
     }
+
+    @Test
+    fun `client scans host range and connects to reachable ip`() {
+        val port = ServerSocket(0).use { it.localPort }
+        val host = TcpConnectionsManager(
+            hostIp = "127.0.0.1",
+            hostPort = port,
+            nowNativeClockSyncElapsedNanos = { null },
+        )
+        val client = TcpConnectionsManager(
+            hostIp = "192.168.0.100-192.168.0.102,127.0.0.1",
+            hostPort = port,
+            nowNativeClockSyncElapsedNanos = { null },
+        )
+        val connectedLatch = CountDownLatch(1)
+        var clientEndpointId: String? = null
+
+        client.setEventListener { event ->
+            if (event is SessionConnectionEvent.ConnectionResult && event.connected) {
+                clientEndpointId = event.endpointId
+                connectedLatch.countDown()
+            }
+        }
+
+        host.startHosting("svc", "host", SessionConnectionStrategy.POINT_TO_POINT) {
+            assertTrue(it.isSuccess)
+        }
+        client.startDiscovery("svc", SessionConnectionStrategy.POINT_TO_POINT) {
+            assertTrue(it.isSuccess)
+        }
+        client.requestConnection("192.168.0.100-192.168.0.102,127.0.0.1", "client") {
+            assertTrue(it.isSuccess)
+        }
+
+        assertTrue(awaitWithMainLooper(connectedLatch, timeoutMs = 5_000))
+        assertTrue(clientEndpointId?.startsWith("127.0.0.1:") == true)
+
+        client.stopAll()
+        host.stopAll()
+    }
 }

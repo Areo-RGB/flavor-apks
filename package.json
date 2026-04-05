@@ -2,15 +2,14 @@
   "name": "sprint-sync-tools",
   "private": true,
   "scripts": {
-    "build:debug:apk": "cd android && gradlew.bat :app:assembleDebug",
-    "build:debug:device-flavors": "cd android && gradlew.bat :app:assembleHostXiaomiDebug :app:assembleClientPixelDebug :app:assembleClientOneplusDebug :app:assembleClientHuaweiDebug :app:assembleClientXiaomiDebug",
-    "build:release:apk": "cd android && gradlew.bat :app:assembleRelease",
+    "build:debug:apk": "cd /mnt/c/Users/paul/projects/photo-finish-tcp-device-apks/android && cmd.exe /c gradlew.bat :app:assembleDebug",
+    "build:debug:device-flavors": "cd /mnt/c/Users/paul/projects/photo-finish-tcp-device-apks/android && cmd.exe /c gradlew.bat :app:assembleHostXiaomiDebug :app:assembleClientPixelDebug :app:assembleClientOneplusDebug :app:assembleClientHuaweiDebug :app:assembleClientXiaomiDebug",
+    "build:release:apk": "cd /mnt/c/Users/paul/projects/photo-finish-tcp-device-apks/android && cmd.exe /c gradlew.bat :app:assembleRelease",
     "rebuild:debug:devices": "npm run build:debug:apk && node scripts/install-debug-apk.mjs",
     "install:debug:device-flavors:adb": "node scripts/install-debug-device-flavors-adb.mjs",
     "rebuild:debug:device-flavors:adb": "npm run build:debug:device-flavors && npm run install:debug:device-flavors:adb",
     "install:release:devices": "node scripts/install-release-apk.mjs",
     "rebuild:release:devices": "npm run build:release:apk && node scripts/install-release-apk.mjs",
-    "install:debug:devices:build": "npm run rebuild:debug:devices",
     "windows:install": "cd windows && npm install",
     "windows:dev": "cd windows && npm run dev",
     "windows:start:all": "cd windows && npm run start:all",
@@ -22,5 +21,10 @@
     "windows:package:backend": "cd windows && npm run package:backend",
     "windows:package:backend:exe": "cd windows && npm run package:backend",
     "windows:package:desktop": "cd windows && npm run package:desktop",
-    "windows:package:exe": "cd windows && npm run package:desktop"
+    "windows:package:exe": "cd windows && npm run package:desktop",
+    "install:debug:devices:build": "npm run rebuild:debug:devices",
+    "android:build:install:start": "npm run rebuild:debug:device-flavors:adb",
+    "windows:package:start:exe": "cmd.exe /c \"cd /d C:\\Users\\paul\\projects\\photo-finish-tcp-device-apks\\windows && npm run package:desktop\" && cmd.exe /c start \"\" \"C:\\Users\\paul\\projects\\photo-finish-tcp-device-apks\\windows\\desktop\\dist\\sprint-sync-windows-desktop.exe\"",
+    "run:android-and-exe": "npm run rebuild:debug:device-flavors:adb && npm run windows:package:start:exe"
+
 }}

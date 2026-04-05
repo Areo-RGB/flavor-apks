@@ -327,6 +327,7 @@ fun SprintSyncApp(
                             onReconnectPc = onReconnectPc,
                             showReconnectClientAction =
                                 shouldShowReconnectOnlySetupActions(BuildConfig.AUTO_START_ROLE),
+                            showPcAction = BuildConfig.DEVICE_PROFILE == "pad_xiaomi",
                             hideSingleDeviceAction = uiState.isControllerOnlyHost,
                         )
                     }
@@ -616,6 +617,7 @@ private fun SetupActionsCard(
     onReconnectClient: () -> Unit,
     onReconnectPc: () -> Unit,
     showReconnectClientAction: Boolean = false,
+    showPcAction: Boolean = false,
     hideSingleDeviceAction: Boolean = false,
 ) {
     val setupActionsEnabled = !setupBusy
@@ -652,6 +654,8 @@ private fun SetupActionsCard(
                     enabled = setupActionsEnabled,
                     modifier = Modifier.fillMaxWidth(),
                 )
+            }
+            if (showReconnectClientAction || showPcAction) {
                 PrimaryButton(
                     text = "PC",
                     onClick = onReconnectPc,

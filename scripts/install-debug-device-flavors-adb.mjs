@@ -21,6 +21,72 @@ function fail(message, detail = '') {
   process.exit(1);
 }
 
+function canRun(command) {
+  const probe = spawnSync(command, ['version'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return !probe.error;
+}
+
+function resolveAdbCommand() {
+  const candidates = [process.env.ADB_BIN, process.env.ADB_PATH, 'adb', 'adb.exe'];
+  const sdkRoots = [process.env.ANDROID_SDK_ROOT, process.env.ANDROID_HOME].filter(Boolean);
+  for (const sdkRoot of sdkRoots) {
+    candidates.push(resolve(sdkRoot, 'platform-tools', 'adb'));
+    candidates.push(resolve(sdkRoot, 'platform-tools', 'adb.exe'));
+  }
+
+  if (process.platform === 'linux') {
+    const windowsUsers = new Set([process.env.USER].filter(Boolean));
+    const userProfile = process.env.USERPROFILE;
+    if (userProfile) {
+      const segments = userProfile.replace(/\\/g, '/').split('/').filter(Boolean);
+      if (segments.length > 0) {
+        windowsUsers.add(segments[segments.length - 1]);
+      }
+    }
+    for (const user of windowsUsers) {
+      candidates.push(`/mnt/c/Users/${user}/AppData/Local/Android/Sdk/platform-tools/adb.exe`);
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    if (candidate.includes('/') || candidate.includes('\\')) {
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+      continue;
+    }
+    if (canRun(candidate)) {
+      return candidate;
+    }
+  }
+
+  fail(
+    'Unable to locate adb/adb.exe. Set ADB_BIN to your adb path (for WSL usually /mnt/c/Users/<you>/AppData/Local/Android/Sdk/platform-tools/adb.exe).',
+  );
+}
+
+const adbCommand = resolveAdbCommand();
+
+function toAdbFilePath(filePath) {
+  if (!adbCommand.toLowerCase().endsWith('.exe')) {
+    return filePath;
+  }
+
+  const normalized = filePath.replace(/\\/g, '/');
+  const match = normalized.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+  if (!match) {
+    return filePath;
+  }
+
+  return `${match[1].toUpperCase()}:\\${match[2].replace(/\//g, '\\')}`;
+}
+
 function resolveConnectedDeviceId(expectedDeviceId, onlineDeviceIds) {
   if (onlineDeviceIds.has(expectedDeviceId)) {
     return expectedDeviceId;
@@ -126,7 +192,7 @@ if (missing.length > 0) {
   );
 }
 
-const adbDevices = run('adb', ['devices']);
+const adbDevices = run(adbCommand, ['devices']);
 if (adbDevices.status !== 0) {
   fail('Failed to run "adb devices".', adbDevices.stderr);
 }
@@ -154,7 +220,7 @@ for (const entry of installs) {
   }
 
   console.log(`Installing ${entry.label} on ${connectedDeviceId}...`);
-  const installResult = run('adb', ['-s', connectedDeviceId, 'install', '-r', entry.apkPath]);
+  const installResult = run(adbCommand, ['-s', connectedDeviceId, 'install', '-r', toAdbFilePath(entry.apkPath)]);
   const output = `${installResult.stdout}\n${installResult.stderr}`.trim();
   const success = installResult.status === 0 && output.includes('Success');
   if (!success) {
@@ -163,7 +229,7 @@ for (const entry of installs) {
   console.log(`Install success for ${entry.label}.`);
 
   console.log(`Launching ${entry.label} (${entry.packageName})...`);
-  const launchResult = run('adb', [
+  const launchResult = run(adbCommand, [
     '-s',
     connectedDeviceId,
     'shell',
